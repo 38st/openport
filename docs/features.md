@@ -154,7 +154,8 @@ simulation's limits.
   the server's own feed without network services. Index chains have product ticks,
   sessions, AM monthlies through their last trading day, same-date PM series and VIX
   forward term structure; earlier generator revisions stay reproducible.
-  [Scenario format](scenarios.md).
+  [Scenario format](scenarios.md). The developer demo soak supports `--seed` and
+  sorted JSON summaries (`--json [PATH]`, stdout by default) for comparing runs.
 - **Alerts**: price levels on an underlying (drawn on its chart) and every fill, shown in
   the terminal and as browser notifications with an optional chime while it is open.
   Account alerts on an option's quote, implied volatility or Greeks, a spread's net mark,
@@ -294,6 +295,7 @@ special opening quotation; live providers keep manual imports.
 - [x] F72: held-size close tickets, confirmed cancellations with persistent results,
       fresh finished runs in the switcher, held-strategy gamma and vega, and sizing labels
       that name the binding floor, buying power or limit
+- [x] Seeded demo soak with JSON run identity, counters and exit status (F73)
 
 - [x] Opening share positions for hedges, covered calls and collars, with share previews and terminal shortcuts
 - [x] A flatten that works until flat: spreads close as one order, large closes split,

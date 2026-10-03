@@ -1,5 +1,10 @@
 """Offline tests for demo_soak.py against a scripted replay API; no server runs."""
+from contextlib import redirect_stderr, redirect_stdout
+import io
+import json
 from pathlib import Path
+import tempfile
+from unittest.mock import patch
 import sys
 import unittest
 
@@ -18,6 +23,7 @@ class FakeReplay:
     probe's quote and what an order does can be scripted."""
 
     def __init__(self, snapshots=3, quote=(2.90, 3.10), fills=False, finish_before_probe=False):
+        self.base = "http://fake-replay"
         self.snapshots, self.quote, self.fills = snapshots, quote, fills
         self.finish_before_probe = finish_before_probe
         self.paused, self.polls, self.finished = False, 0, False
@@ -82,6 +88,51 @@ def run(replay, seed=None):
 
 
 class DemoSoakTest(unittest.TestCase):
+    def test_json_writer_retains_summary_and_server_identity(self):
+        result, _ = run(FakeReplay())
+        result["refused"] = {"Z_RULE": 2, "A_RULE": 1}
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "soak.json"
+            demo_soak.write_json(result, path)
+            text = path.read_text()
+        self.assertEqual(json.loads(text), result)
+        self.assertEqual(text, json.dumps(result, sort_keys=True, indent=2) + "\n")
+        self.assertEqual(result["seed"], "123")
+        self.assertEqual((result["url"], result["speed"], result["plan"], result["scenario"]),
+                         ("http://fake-replay", 300, "practice", "reversal"))
+        self.assertEqual(result["expiry"], "2026-09-18PM")
+        self.assertEqual(len(result["legs"]), 4)
+        self.assertEqual(result["legs"]["short put"], SHORT_PUT)
+        self.assertEqual((result["start_market_time"], result["end_market_time"]), ("t", "t"))
+        self.assertEqual(result["exit_status"], 0)
+
+    def test_json_stdout_and_progress_stderr(self):
+        for option in (["--json"], ["--json", "-"]):
+            stdout, stderr = io.StringIO(), io.StringIO()
+            with patch.object(demo_soak, "Client", return_value=FakeReplay(snapshots=1, fills=True)), \
+                    patch.object(demo_soak.time, "sleep"), redirect_stdout(stdout), redirect_stderr(stderr):
+                status = demo_soak.main(["http://fake-replay", "300", "practice", "--seed", "18446744073709551615", *option])
+            summary = json.loads(stdout.getvalue())
+            self.assertEqual(summary["seed"], "18446744073709551615")
+            self.assertEqual((summary["exit_status"], status, summary["probe_fills"]), (1, 1, 1))
+            self.assertIn("demo day reversal seed 18446744073709551615", stderr.getvalue())
+            self.assertIn("probes 1", stderr.getvalue())
+
+    def test_text_output_and_json_file_keep_progress_on_stdout(self):
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "soak.json"
+            outputs = []
+            for option in ([], ["--json", str(path)]):
+                stdout, stderr = io.StringIO(), io.StringIO()
+                with patch.object(demo_soak, "Client", return_value=FakeReplay(snapshots=0)), \
+                        patch.object(demo_soak.time, "sleep"), redirect_stdout(stdout), redirect_stderr(stderr):
+                    self.assertEqual(demo_soak.main(["http://fake-replay", *option]), 0)
+                self.assertEqual(stderr.getvalue(), "")
+                outputs.append(stdout.getvalue())
+            self.assertEqual(outputs[0], outputs[1])
+            self.assertIn("portfolio samples 1", outputs[0])
+            self.assertEqual(json.loads(path.read_text())["exit_status"], 0)
+
     def test_probe_price_is_under_the_ask_and_inside_the_band(self):
         for bid, ask, expected in ((2.90, 3.10, 2.90), (3.00, 3.10, 3.00), (3.05, 3.20, 3.00),
                                    (0.10, 0.20, 0.10), (1.00, 3.00, 1.50), (5.00, 5.00, None), (0, 0.05, None)):

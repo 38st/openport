@@ -2,14 +2,17 @@
 """Soak test: hold an SPX iron condor with far wings through a demo-market day and
 check, every few seconds, that the account can still trade.
 
-    tools/demo_soak.py URL [SPEED] [PLAN] [--seed SEED]
+    tools/demo_soak.py URL [SPEED] [PLAN] [--seed SEED] [--json [PATH]]
 
 URL is an openportd to test, such as one started for it with
 `openportd --port 8094 --no-history --paper-journal /tmp/soak/paper.jsonl`. The soak
 replaces any replay running there and trades only the replay's own in-memory account.
 SPEED is the replay's speed (default 120), PLAN its plan (default practice) and SEED
 the demo day's seed (default: one the server picks). The report prints the seed, so
-a run can be repeated.
+a run can be repeated. --json writes a sorted JSON summary to PATH; omit PATH or
+use - for stdout, with human progress on stderr. Without --json, text output is
+unchanged. The JSON includes run identity, market times, leg symbols, all counters
+and exit_status. Probe timing still depends on playback and HTTP scheduling.
 
 Each probe pauses the replay, places a limit buy of the short put inside the price
 band and under the ask, cancels it and resumes, so it asks whether the account can
@@ -105,6 +108,7 @@ def soak(client, speed=120, plan="practice", seed=None, out=print, pause=1.0):
         start["seed"] = str(seed)
     status, body = client.call("POST", "/api/replay", start)
     assert status in (200, 201), (status, body)
+    identity = body["replay"]
     out("demo day", body["replay"].get("scenario"), "seed", body["replay"].get("seed"), "plan", plan, "speed", speed)
     while True:
         _, st = client.call("GET", "/api/replay/status")
@@ -112,6 +116,8 @@ def soak(client, speed=120, plan="practice", seed=None, out=print, pause=1.0):
         if spx and spx["options"] > 0 and spx["paper"]["accepting"]:
             break
         time.sleep(0.5)
+
+    _, initial_portfolio = client.call("GET", "/api/replay/portfolio")
 
     # The condor: the second expiry, shorts near 10 delta, wings near 3 delta.
     _, summary = client.call("GET", "/api/replay/underlyings/SPX/summary")
@@ -200,7 +206,22 @@ def soak(client, speed=120, plan="practice", seed=None, out=print, pause=1.0):
         f"filled {result['probe_fills']} (sold back {result['restored']}), skipped {result['skipped']}")
     out(f"portfolio samples {result['samples']}, with incomplete marks {result['incomplete']}, "
         f"oldest mark {result['worst_age']:.0f} s")
+    result.update(url=client.base, speed=speed, plan=plan, seed=identity.get("seed"),
+                  scenario=identity.get("scenario"), expiry=expiry,
+                  legs={name: leg["symbol"] for name, leg in legs.items()},
+                  start_market_time=initial_portfolio.get("time"), end_market_time=portfolio.get("time"),
+                  exit_status=1 if result["probe_fills"] else 0)
     return result
+
+
+def write_json(result, destination):
+    """Write one stable, newline-terminated summary; - selects stdout."""
+    text = json.dumps(result, sort_keys=True, indent=2, allow_nan=False) + "\n"
+    if destination == "-":
+        sys.stdout.write(text)
+    else:
+        with open(destination, "w", encoding="utf-8") as output:
+            output.write(text)
 
 
 def main(argv=None):
@@ -209,9 +230,14 @@ def main(argv=None):
     parser.add_argument("speed", nargs="?", type=int, default=120)
     parser.add_argument("plan", nargs="?", default="practice")
     parser.add_argument("--seed", type=int, help="demo day seed; the server picks one when omitted")
+    parser.add_argument("--json", nargs="?", const="-", metavar="PATH",
+                        help="write JSON summary to PATH (default: stdout, progress on stderr)")
     args = parser.parse_args(argv)
-    result = soak(Client(args.url), args.speed, args.plan, args.seed)
-    return 1 if result["probe_fills"] else 0
+    out = (lambda *parts: print(*parts, file=sys.stderr)) if args.json == "-" else print
+    result = soak(Client(args.url), args.speed, args.plan, args.seed, out=out)
+    if args.json is not None:
+        write_json(result, args.json)
+    return result["exit_status"]
 
 
 if __name__ == "__main__":
