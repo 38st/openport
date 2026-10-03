@@ -621,6 +621,18 @@ require an imported AM value. Waiting positions say `settle_by: opening_print`
 or `manual` accordingly. References and provenance remain available through
 `GET /api/settlements`, its replay mirror, and finished-run history.
 
+Finished, stopped and replaced replay runs save `journal: {transactions, head, bytes}`
+in their `.json` sidecar. Resuming an interrupted run replaces that final checkpoint
+when it ends again. Older sidecars without a checkpoint remain readable.
+`GET /api/replay/history` (also `GET /api/replay`'s `history`) and archived account
+reads expose `journal_found` alongside the checkpoint. `torn: true`, `bytes_cut`
+and `integrity_message` identify an incomplete final line and point to
+`--repair-journals` with the server stopped. `mismatch` and `truncated` flag a changed
+head/count/size, including records removed at a complete line boundary; the message
+names expected and found counts and heads. Summaries are cached by journal size and
+modification time. Repairing a torn line does not restore missing records or replace
+the saved final checkpoint.
+
 ### Verifying a run
 
 ```sh

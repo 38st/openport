@@ -802,6 +802,10 @@ void Desk::publish_trading() {
       view->replay_start = options_.replay_start;
       view->replay_end = options_.replay_end;
       view->snapshot = session.snapshot();
+      if (account.journal) {
+        view->journal_transactions = account.journal->sequence();
+        view->journal_head = account.journal->head();
+      }
       if (playbooks_) {
         // Quote batches publish far more often than playbooks change.
         auto& published = playbook_publications_[account.id];

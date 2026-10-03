@@ -94,6 +94,8 @@ struct RunIdentity {
 /// The reducer snapshot and its pricing inputs are published together so HTTP
 /// readers never combine portfolio state with a different risk frame.
 struct TradingView {
+  std::uint64_t journal_transactions = 0;
+  std::string journal_head;
   std::shared_ptr<const trading::TradingSnapshot> snapshot;
   trading::SessionConfig config;
   trading::Contracts contracts;

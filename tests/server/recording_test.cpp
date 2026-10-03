@@ -791,6 +791,9 @@ TEST(ReplayHost, AnInterruptedRunResumesWhereItStoppedWithTheSameJournal) {
   ASSERT_EQ(history.size(), 1U);
   // A stopped run has ended, as one that played to its end has.
   EXPECT_EQ(history[0]["interrupted"], false);
+  const auto final = trading::FileJournal::read((crashed / "replays" / (id + ".jsonl")).string());
+  EXPECT_EQ(history[0]["journal"]["head"], final.head);
+  EXPECT_EQ(history[0]["journal"]["transactions"], final.records.size());
   const auto ended = call(host, "POST", "/api/replay", json{{"resume", id}}.dump());
   EXPECT_EQ(ended.status, 409) << ended.body;
   EXPECT_EQ(json::parse(ended.body)["error"]["code"], "REPLAY_NOT_RESUMABLE");

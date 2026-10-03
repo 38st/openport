@@ -1,3 +1,4 @@
+import type { RunJournal } from "./types"
 import type { Num, PriceRange } from "./types"
 
 /** Exact decimal dollars, including request bodies. Responses keep 2–6 decimals; round only for display. */
@@ -267,6 +268,13 @@ export interface RiskWarning {
   limit: number | null
 }
 export interface Account {
+  journal?: RunJournal
+  journal_found?: RunJournal
+  torn?: boolean
+  bytes_cut?: number
+  truncated?: boolean
+  mismatch?: boolean
+  integrity_message?: string
   breach?: Breach
   /** Absent on older servers. */
   warnings?: RiskWarning[]

@@ -4410,6 +4410,34 @@
           }
         }
       }
+    },
+    "/api/replay/history": {
+      "get": {
+        "summary": "List saved replay runs and journal integrity warnings",
+        "responses": {
+          "200": {
+            "description": "Saved runs",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "history": {
+                      "type": "array",
+                      "items": {
+                        "$ref": "#/components/schemas/ReplayHistory"
+                      }
+                    }
+                  },
+                  "required": [
+                    "history"
+                  ]
+                }
+              }
+            }
+          }
+        }
+      }
     }
   },
   "components": {
@@ -6632,6 +6660,27 @@
               }
             ],
             "description": "Preset ID derived from balance and objective rules, ignoring execution, fee and margin overrides; null for custom rules."
+          },
+          "journal": {
+            "$ref": "#/components/schemas/RunJournal"
+          },
+          "journal_found": {
+            "$ref": "#/components/schemas/RunJournal"
+          },
+          "torn": {
+            "type": "boolean"
+          },
+          "bytes_cut": {
+            "type": "integer"
+          },
+          "truncated": {
+            "type": "boolean"
+          },
+          "mismatch": {
+            "type": "boolean"
+          },
+          "integrity_message": {
+            "type": "string"
           }
         },
         "required": [
@@ -9523,6 +9572,27 @@
             "items": {
               "$ref": "#/components/schemas/AttemptSummary"
             }
+          },
+          "journal": {
+            "$ref": "#/components/schemas/RunJournal"
+          },
+          "journal_found": {
+            "$ref": "#/components/schemas/RunJournal"
+          },
+          "torn": {
+            "type": "boolean"
+          },
+          "bytes_cut": {
+            "type": "integer"
+          },
+          "truncated": {
+            "type": "boolean"
+          },
+          "mismatch": {
+            "type": "boolean"
+          },
+          "integrity_message": {
+            "type": "string"
           }
         },
         "required": [
@@ -18952,6 +19022,25 @@
         },
         "required": [
           "deleted"
+        ]
+      },
+      "RunJournal": {
+        "type": "object",
+        "properties": {
+          "transactions": {
+            "type": "integer"
+          },
+          "head": {
+            "type": "string"
+          },
+          "bytes": {
+            "type": "integer"
+          }
+        },
+        "required": [
+          "transactions",
+          "head",
+          "bytes"
         ]
       }
     }

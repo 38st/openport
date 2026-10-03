@@ -96,7 +96,7 @@ JournalRecovery verify_journal(std::string_view jsonl, std::string_view expected
   try {
     while (start < jsonl.size()) {
       const auto end = jsonl.find('\n', start);
-      if (end == std::string_view::npos) { result.truncated_final_line = true; break; }
+      if (end == std::string_view::npos) { result.truncated_final_line = true; result.bytes_cut = jsonl.size() - start; break; }
       const auto line = jsonl.substr(start, end - start);
       Json j = Json::parse(line);
       if (!j.is_object() || j.size() != 6 || !j.at("payload").is_object() ||
