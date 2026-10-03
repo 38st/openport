@@ -840,12 +840,14 @@ void ReplayHost::resume(const std::string& id, int speed, bool paused, const Api
     session->date = metadata.value("date", std::string());
     session->start_at = metadata.value("start_at", std::string());
     session->target = target;
+    if (day) session->windows = providers::scenario_windows(*day, date);
     providers::ReplayProvider::Options playback;
     playback.file = day ? demos_->get(*day, date, seed) : recording;
     playback.speed = speed;
     // The recorded batches replay unpaced, and playback continues from the last one.
     playback.start_at = target;
     playback.paused = paused;
+    for (const auto& window : session->windows) if (session->windows.size() > 1) playback.max_gap = std::max(playback.max_gap, window.step);
     session->provider = std::make_unique<providers::ReplayProvider>(std::move(playback));
     session->demo = providers::simulated_provider(session->provider->header().provider);
     session->durable = true;
