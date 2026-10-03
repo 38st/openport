@@ -287,7 +287,12 @@ def create_server(client: Client, agent_name: str = "openport") -> MCPServer:
 
     @server.tool()
     def step_replay(account: str, until: str) -> dict:
-        """Step the scenario to New York HH:MM[:SS] or a UTC ISO timestamp, then pause."""
+        """Step the scenario to a time, then pause.
+
+        Use New York HH:MM[:SS] (in a run of several sessions, its next occurrence
+        at or after the replay's time), or a date and time such as 2026-09-17T10:30,
+        New York unless it ends in Z or a UTC offset.
+        """
         return write(account, True, lambda target: target.step_replay(until))
 
     @server.tool()

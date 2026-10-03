@@ -230,6 +230,11 @@ TEST(MultiDayReplay, StartsAndStepsToADateAndTimeInTheRunsSessions) {
   const auto replay = [&] { return json::parse(call(host, "GET", "/api/replay").body)["replay"]; };
   ASSERT_TRUE(test::recording_eventually([&] { return !replay()["fast_forwarding"].get<bool>(); }));
   EXPECT_EQ(replay()["time"], at(friday, 13, 0));
+  // A bare until at the current time stays on Friday rather than skipping to Monday.
+  const auto same_time = call(host, "PUT", "/api/replay", {{"until", "13:00"}});
+  ASSERT_EQ(same_time.status, 200) << same_time.body;
+  EXPECT_EQ(json::parse(same_time.body)["settled_through"], at(friday, 13, 0));
+  EXPECT_EQ(replay()["time"], at(friday, 13, 0));
   auto risk = json::parse(call(host, "GET", "/api/replay/risk").body);
   risk["limits"]["aggregate"]["dollar_delta"] = 2'000'000;
   const auto pending = call(host, "PUT", "/api/replay/risk/limits",

@@ -1406,10 +1406,10 @@ void ReplayHost::control(const ApiRequest& request, const ApiCompletion& complet
           throw std::invalid_argument("until must be a time string and the only control");
         auto value = body.at("until").get<std::string>();
         // A bare time is on the session's date; in a run of several sessions, its next
-        // occurrence in one of them. A date and time is New York unless it names its zone.
+        // occurrence at or after the replay's time. A date and time is New York unless zoned.
         std::optional<md::Timestamp> target = dated_time(value, "until");
         if (!target && session->windows.size() > 1) {
-          target = session_time(value, session->windows, std::max(session->provider->settled_through(), session->provider->market_time()), "until");
+          target = session_time(value, session->windows, std::max(session->provider->settled_through(), session->provider->market_time()) - 1, "until");
         } else if (!target) {
           const auto date = md::trading_date(session->provider->header().started);
           auto day = date;

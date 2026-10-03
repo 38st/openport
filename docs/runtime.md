@@ -583,8 +583,9 @@ seed guarantees and history routes.
 time on the session date, then pauses. A date and time such as `2026-09-17T10:30`
 (seconds optional) is New York's unless it ends in `Z` or a UTC offset.
 For overnight sessions, evening times refer to the preceding calendar date. In a
-scenario of several sessions a bare time is its next occurrence in the run's sessions,
-and a time that falls between them returns 400; give a date and time to step to a later day. `until`
+scenario of several sessions a bare time is its next occurrence at or after the replay's
+time in the run's sessions, and a time that falls between them returns 400; give a date
+and time to step to a later day. `until`
 is the only field in that control request. Streams require a whole-second target;
 a fractional ISO target is rejected rather than reporting an unsettled partial batch.
 It cannot move backwards. A target past the recording's last batch returns 400
