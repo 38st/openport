@@ -1,3 +1,4 @@
+#include <algorithm>
 #include <filesystem>
 #include <gtest/gtest.h>
 
@@ -247,8 +248,38 @@ TEST(TradeGroups, ReturnOnBuyingPowerDividesByWhatTheEntryNeeded) {
   EXPECT_EQ(entry_buying_power({&lives[2], &lives[3]}), dollars("960"));
   // Alone, the short call is naked.
   EXPECT_GT(entry_buying_power({&lives[2]}), dollars("960"));
-  // At once the two needed both; the peak counts every round trip open at an opening.
-  EXPECT_EQ(peak_buying_power({&lives[0], &lives[1], &lives[2], &lives[3]}), entry_buying_power({&lives[0], &lives[1], &lives[2], &lives[3]}));
+  // The later entry hedges the first, even at the same market time; its earlier need stays the peak.
+  EXPECT_EQ(entry_buying_power({&lives[0], &lives[1], &lives[2], &lives[3]}), dollars("180"));
+  EXPECT_EQ(peak_buying_power({&lives[0], &lives[1], &lives[2], &lives[3]}), dollars("220"));
+}
+
+TEST(TradeGroups, PeakBuyingPowerCountsOpeningExecutionsEvenAtTheSameMarketTime) {
+  for (const bool later : {false, true}) {
+    for (const bool open_first : {false, true}) {
+      SCOPED_TRACE(::testing::Message() << "later=" << later << " open_first=" << open_first);
+      Calls m;
+      TradingSession s({}, m.a.time);
+      m.seed(s);
+      ASSERT_TRUE(s.submit(m.order("credit", {{m.a.symbol(), Side::Sell, 1}, {m.b.symbol(), Side::Buy, 1}}), m.a.time).decision.ok());
+      if (later) m.quote(s, "4.00", "2.00");
+      auto roll = m.order("roll", {{m.a.symbol(), Side::Buy, 1}, {m.b.symbol(), Side::Sell, 1},
+                                    {m.c.symbol(), Side::Sell, 1}, {m.d.symbol(), Side::Buy, 1}});
+      if (open_first) std::rotate(roll.legs.begin(), roll.legs.begin() + 2, roll.legs.end());
+      ASSERT_TRUE(s.submit(roll, m.a.time).decision.ok());
+      ASSERT_TRUE(s.submit(m.order("close", {{m.c.symbol(), Side::Buy, 1}, {m.d.symbol(), Side::Sell, 1}}), m.a.time).decision.ok());
+      const auto lives = lifecycles(s.snapshot()->recent_fills, s.snapshot()->closures, s.contracts());
+      ASSERT_EQ(lives.size(), 4U);
+      for (const auto& life : lives) {
+        ASSERT_TRUE(life.closed);
+        EXPECT_EQ(trade_group(life, s.snapshot()->groups), "1");
+      }
+      const auto old_need = entry_buying_power({&lives[0], &lives[1]});
+      const auto new_need = entry_buying_power({&lives[2], &lives[3]});
+      EXPECT_EQ(old_need, dollars("820"));
+      EXPECT_EQ(new_need, dollars("960"));
+      EXPECT_EQ(peak_buying_power({&lives[0], &lives[1], &lives[2], &lives[3]}), std::max(old_need, new_need));
+    }
+  }
 }
 
 TEST(TradeGroups, ACondorRollsWholeInOneEightLegOrderThatOpensNoMoreThanFour) {

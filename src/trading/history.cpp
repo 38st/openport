@@ -178,9 +178,14 @@ Money entry_buying_power(const std::vector<const Lifecycle*>& legs) {
 Money peak_buying_power(const std::vector<const Lifecycle*>& legs) {
   Money peak;
   for (const auto* at : legs) {
+    auto filled = at->first_fill;
+    for (const auto* leg : legs)
+      if (leg->entry_order == at->entry_order && leg->opened == at->opened) filled = std::max(filled, leg->first_fill);
     std::vector<const Lifecycle*> open;
     for (const auto* leg : legs)
-      if (leg->opened <= at->opened && (!leg->closed || *leg->closed > at->opened)) open.push_back(leg);
+      if (leg->first_fill <= filled && (!leg->closed || *leg->closed > at->opened ||
+          (*leg->closed == at->opened && !leg->closure && leg->exit_order != at->entry_order && leg->fills.back() > filled)))
+        open.push_back(leg);
     peak = std::max(peak, entry_buying_power(open));
   }
   return peak;
