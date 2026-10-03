@@ -1231,7 +1231,11 @@ channels with the default filters and distance:
 
 All nine events are enabled by default: `fill`, `order_rejected`, `floor`,
 `rule_trip`, `assignment`, `exercise`, `playbook_ready`, `feed_stalled` and `alert`
-(each firing of an [account alert](paper-trading.md#account-alerts)). An empty
+(each firing of an [account alert](paper-trading.md#account-alerts)). `rule_trip`
+reports a kill switch trip, the personal daily loss limit, and a plan daily loss
+limit locking the day or failing the attempt. Plan notifications fire once on the
+transition, with `code: "DAILY_LOSS_LIMIT"`, `action: "lock"` or `"fail"`, and the
+loss `level` when available in the webhook's `details`. An empty
 `events` array filters all automatic messages. Tests bypass event filters but require
 an enabled channel. `floor_distance` defaults to $500 and compares fixed-point
 `breach.room`, inclusive; missing floor room or incomplete valuation does not alert.
