@@ -102,3 +102,10 @@ it("publishes a stage HTTP order separately from the legacy request", () => {
   expect(playbookTypes).toContain("order?: NewOrder")
   expect(playbookTypes).toContain("request?: Record<string, unknown>")
 })
+
+it("reports nullable preset ids beside plan names", () => {
+  for (const name of ["TradingStatus", "AccountRules", "AttemptSummary"]) {
+    expect(wireType(spec.components.schemas[name]!.properties!.plan_id!)).toBe("null | string")
+    expect(new RegExp(`export interface ${name} \{([^}]+)\}`).exec(source)?.[1]).toContain("plan_id?: string | null")
+  }
+})

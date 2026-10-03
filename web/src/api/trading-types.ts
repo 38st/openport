@@ -14,6 +14,7 @@ export interface TradingStatus {
   fee_per_contract?: Money
   initial_cash?: Money
   /** Active rules' display name; absent on older servers, null without a plan. */
+  plan_id?: string | null
   plan?: string | null
   /** Null without a target or drawdown rule. */
   evaluation?: EvaluationStatus | null
@@ -33,6 +34,7 @@ export interface PayoutRules {
 }
 export type AccountType = "margin" | "cash" | "ira"
 export interface AccountRules {
+  plan_id?: string | null
   plan: string | null
   phase: "evaluation" | "funded"
   profit_target: Money | null
@@ -239,6 +241,7 @@ export interface Evaluation {
 }
 export interface AttemptSummary {
   attempt: number
+  plan_id?: string | null
   plan: string | null
   started: string
   ended: string
@@ -877,7 +880,7 @@ export interface CancelAllResponse { account_version: string; cancelled_orders: 
 export interface AccountListItem { id: string; name: string; archived?: boolean; trading: TradingStatus; equity: Money | null }
 export interface AccountsResponse { accounts: AccountListItem[] }
 export type CreateAccountRequest = { name: string; fill_model?: FillModel; fee_model?: FeeModel } & MarginModel & ({ plan: string } | { initial_cash: Money; rules: AccountRulesInput })
-export interface CreateAccountResponse { account: { id: string; name: string; account_version: string; plan: string | null; equity: Money } }
+export interface CreateAccountResponse { account: { id: string; name: string; account_version: string; plan: string | null; plan_id?: string | null; equity: Money } }
 /** Delivered shares a flatten could not close, as held after it, and why. */
 export interface KeptStock { symbol: string; shares: number; reason: Decision }
 /** A position a flatten left open: contracts still held, those still being worked, and why the rest are not. */

@@ -386,6 +386,7 @@ class ArchivedReplay final : public MetricsSource {
     out.trading.initial_cash = view_->config.initial_cash;
     out.trading.fee_per_contract = view_->config.fee_per_contract;
     out.trading.plan = view_->config.rules.plan;
+    out.trading.plan_id = preset_id(view_->config.initial_cash, view_->config.rules);
     out.accounts.push_back({"main", "Replay (read-only)", out.trading});
     return out;
   }
@@ -544,6 +545,7 @@ class ReplayHost::History {
     return {{"result", result == trading::EvaluationStatus::Passed ? "pass" : result == trading::EvaluationStatus::Failed ? "fail" : "open"},
             {"pnl", (view->snapshot->equity - view->config.initial_cash).str()},
             {"valuation_complete", view->snapshot->valuation_complete}, {"plan_name", view->config.rules.plan},
+            {"plan_id", preset_id(view->config.initial_cash, view->config.rules).empty() ? json(nullptr) : json(preset_id(view->config.initial_cash, view->config.rules))},
             {"time", md::format_timestamp(view->snapshot->time)}};
   }
   std::shared_ptr<ArchivedReplay> recover(const std::filesystem::path& path) const {

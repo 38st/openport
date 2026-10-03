@@ -1252,6 +1252,9 @@ TEST(PaperAccounts, NamedAccountsTradeApartAndRecoverFromTheirOwnJournals) {
     EXPECT_EQ(accounts[0]["id"], "main");
     EXPECT_EQ(accounts[1]["name"], "Swing 50k");
     EXPECT_EQ(accounts[1]["trading"]["plan"], "End-of-day 50K");
+    EXPECT_EQ(accounts[1]["trading"]["plan_id"], "eod-50k");
+    EXPECT_EQ(json::parse(created.body)["account"]["plan_id"], "eod-50k");
+    EXPECT_EQ(read(engine, "/api/account?account=swing-50k")["rules"]["plan_id"], "eod-50k");
     EXPECT_EQ(json::parse(server::tick_message(engine))["accounts"].size(), 3);
 
     provider.sink->publish(md::ContractDefinition{0, market.contract});
@@ -2363,6 +2366,7 @@ TEST(PaperPlans, PresetsListExactRules) {
   EXPECT_EQ(plans[0]["unlocked_by"], nullptr);
   // These presets leave the later evaluation rules off.
   const auto off = [](json rules) {
+    rules["plan_id"] = server::find_plan_named(rules.at("plan").get<std::string>())->id;
     rules.update({{"lock_at_start", false}, {"profit_basis", "equity"}, {"daily_loss_limit", nullptr},
                   {"daily_loss_basis", "equity"}, {"daily_loss_action", "lock"}, {"consistency_percent", 0},
                   {"consistency_basis", "total"}, {"min_trading_days", 0}, {"min_profitable_days", 0},

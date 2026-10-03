@@ -75,6 +75,7 @@ struct TradingStatus {
   trading::Money initial_cash;
   std::string plan;        ///< Active rules' display name; empty without a plan.
   std::string evaluation;  ///< active/passed/failed with a target or drawdown rule, else empty.
+  std::string plan_id = {};  ///< Preset ID; empty for custom rules.
 };
 
 /// The replay run an account belongs to, so exports from several runs can be told

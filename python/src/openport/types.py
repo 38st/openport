@@ -141,6 +141,7 @@ class Portfolio(TypedDict):
 
 
 class AccountRules(TypedDict, total=False):
+    plan_id: str | None
     plan: str | None
     phase: str
     profit_target: str | None

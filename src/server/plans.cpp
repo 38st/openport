@@ -136,4 +136,9 @@ bool follows_plan(const PlanPreset& plan, Money initial_cash, const AccountRules
   return initial_cash == plan.initial_cash && execution == plan.rules;
 }
 
+std::string preset_id(Money initial_cash, const AccountRules& rules) {
+  const auto* plan = find_plan_named(rules.plan);
+  return plan && follows_plan(*plan, initial_cash, rules) ? plan->id : std::string{};
+}
+
 }  // namespace openport::server

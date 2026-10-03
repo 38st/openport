@@ -6621,6 +6621,17 @@
           "interrupted": {
             "type": "boolean",
             "description": "True for a run a crash interrupted, whose metadata still holds its start state: POST /api/replay {\"resume\": id} continues it. False once a run played to its end or was stopped. Absent from older servers."
+          },
+          "plan_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "Preset ID derived from balance and objective rules, ignoring execution, fee and margin overrides; null for custom rules."
           }
         },
         "required": [
@@ -8134,6 +8145,17 @@
                 "type": "null"
               }
             ]
+          },
+          "plan_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "Preset ID derived from balance and objective rules, ignoring execution, fee and margin overrides; null for custom rules."
           }
         },
         "required": [
@@ -8141,7 +8163,8 @@
           "reason",
           "account_version",
           "kill_latched",
-          "write"
+          "write",
+          "plan_id"
         ]
       },
       "PayoutRules": {
@@ -8462,6 +8485,17 @@
             "maximum": 100,
             "default": 0,
             "description": "Off at zero (omitted in responses and journals). A limit strictly inside a spread fills at its limit when this percent of the way from own side to far side. Net combos allocate improvement by leg spread. Displayed size only; latency applies, slippage and impact do not worsen an inside fill. Markets and stops are unchanged."
+          },
+          "plan_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "Preset ID derived from balance and objective rules, ignoring execution, fee and margin overrides; null for custom rules."
           }
         },
         "required": [
@@ -8474,7 +8508,8 @@
           "buy_only",
           "buying_power",
           "expiry_cutoff_seconds",
-          "payouts"
+          "payouts",
+          "plan_id"
         ]
       },
       "BuyingPower": {
@@ -9414,6 +9449,17 @@
               }
             ],
             "description": "As Evaluation.decision_code; null when the attempt was reset while active."
+          },
+          "plan_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "Null: compact historical attempts retain no full rules with which to identify a preset."
           }
         },
         "required": [
@@ -9424,7 +9470,8 @@
           "starting_balance",
           "final_equity",
           "status",
-          "decision"
+          "decision",
+          "plan_id"
         ]
       },
       "Account": {
@@ -13065,6 +13112,17 @@
               },
               "equity": {
                 "$ref": "#/components/schemas/Money"
+              },
+              "plan_id": {
+                "anyOf": [
+                  {
+                    "type": "string"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ],
+                "description": "Preset ID derived from balance and objective rules, ignoring execution, fee and margin overrides; null for custom rules."
               }
             },
             "required": [
@@ -13072,7 +13130,8 @@
               "name",
               "account_version",
               "plan",
-              "equity"
+              "equity",
+              "plan_id"
             ]
           }
         },

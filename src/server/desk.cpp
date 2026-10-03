@@ -835,6 +835,7 @@ void Desk::publish_trading() {
     status.fee_per_contract = config.fee_per_contract;
     status.initial_cash = config.initial_cash;
     status.plan = config.rules.plan;
+    status.plan_id = preset_id(config.initial_cash, config.rules);
     if (view) {
       status.account_version = view->snapshot->account_version;
       status.kill_latched = view->snapshot->risk.kill_latched;
