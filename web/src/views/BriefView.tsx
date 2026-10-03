@@ -7,7 +7,7 @@ import { useLive } from "../api/live"
 import { useAccount, useOpenOrders, usePortfolio, useRefreshTrading, useRisk, useTrades, useTradingSession } from "../api/trading"
 import type { Account, DayNote, Guardrails, Limits, Risk, TradesResponse, TradingStatus } from "../api/trading-types"
 import { Badge, PageHeader, Panel } from "../components/ui"
-import { StagedOrders } from "../components/Playbooks"
+import { AutoPlaybookIndicator, StagedOrders } from "../components/Playbooks"
 import { TradingError, WriteAccess, writeBlocked } from "../components/TradingControls"
 import { invertedTerm, marketDate, notePhase, overnightMove, lossAllowance, orderDeadlines, positionDeadlines, volChange, weekMove, type BriefMove } from "../lib/brief"
 import { saveBriefLevels, useBriefLevels } from "../lib/brief-preferences"
@@ -198,6 +198,7 @@ export function BriefView({ symbol }: { symbol: string | null }) {
     <PageHeader title="Brief" subtitle={<>{symbol ?? "No subscribed symbol"} · {day ?? "Market date unavailable"} · market-data time {Number.isFinite(market.now) && `${barClock(market.now / 1000)} ET`}</>}>
       {simulated && <Badge tone="warn">Simulated prices</Badge>}{live.source === "replay" && <Badge>Replay</Badge>}
     </PageHeader>
+    <AutoPlaybookIndicator />
     <StagedOrders />
     <div className="grid items-start gap-3 md:grid-cols-2 xl:grid-cols-3">
       <BriefMarketPanels market={market} />

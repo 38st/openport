@@ -6,7 +6,8 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
 import { api } from "../api/client"
 import { liveState, useLive } from "../api/live"
 import type { PlaybooksResponse, PlaybookStats } from "../api/playbook-types"
-import { PassOddsCard, StagedOrders } from "../components/Playbooks"
+import type { BacktestReport } from "../api/backtest-types"
+import { AutoPlaybookIndicator, PassOddsCard, StagedOrders } from "../components/Playbooks"
 import { trades, status } from "../test/trading-fixtures"
 import { JournalView } from "./JournalView"
 import { newPlaybook, PlaybooksView } from "./PlaybooksView"
@@ -16,7 +17,7 @@ vi.mock("../api/live", async (original) => ({ ...await original<typeof import(".
 vi.mock("../charts/useSize", () => ({ useSize: () => [{ current: null }, { width: 700, height: 200 }] }))
 const stats: PlaybookStats = { trades: 2, win_rate: .5, average_win: "100", average_loss: "-50", expectancy: "25", profit_factor: 2, no_losses: false, average_r: .25, adherence: .8 }
 function catalogue(): PlaybooksResponse {
-  return { definitions: { "put-spread": { versions: [{ ...newPlaybook, version: 1 }], deleted: false } }, modes: { "put-spread": "stage" }, auto_allowed: false,
+  return { definitions: { "put-spread": { versions: [{ ...newPlaybook, version: 1 }], deleted: false } }, modes: { "put-spread": "stage" }, auto_allowed: true,
     reasons: { "put-spread:SPX": "Ready" }, reports: { "put-spread": { all: stats, followed: stats, deviated: { ...stats, trades: 0 }, trades: [] } },
     staged: [{ id: "stage-1", playbook: "put-spread", version: 1, name: "Morning put spread", underlying: "SPX", units: 2, net: "-1.20", max_loss: "760", max_loss_basis: "expiry_payoff", close_by: "2026-09-22T19:45:00Z", simulated: true,
       legs: [{ symbol: "synthetic-put", side: "sell", ratio: 1, strike: 5900, type: "put", expiry: "2026-09-22PM" }] }] }
@@ -24,6 +25,9 @@ function catalogue(): PlaybooksResponse {
 let root: Root, host: HTMLDivElement, client: QueryClient
 beforeEach(() => {
   vi.stubGlobal("IS_REACT_ACT_ENVIRONMENT", true)
+  Object.defineProperty(HTMLDialogElement.prototype, "showModal", { configurable: true, value() { this.open = true } })
+  Object.defineProperty(HTMLDialogElement.prototype, "close", { configurable: true, value() { this.open = false } })
+  vi.spyOn(api, "backtests").mockResolvedValue({ runs: [], active: null, label: "Simulated" })
   vi.mocked(useLive).mockReturnValue(liveState(status, null, "open"))
   host = document.createElement("div"); document.body.append(host); root = createRoot(host)
   client = new QueryClient({ defaultOptions: { queries: { retry: false, gcTime: Infinity, staleTime: Infinity } } })
@@ -47,11 +51,61 @@ describe("Playbooks page and staged actions", { timeout: renderTimeout }, () => 
     await render(<PlaybooksView />)
     await waitForRender(() => expect(host.textContent).toContain("Morning put spread"))
     expect(host.textContent).toContain("Morning put spread · v1")
-    expect(host.querySelector<HTMLOptionElement>('option[value="auto"]')?.disabled).toBe(true)
+    expect(host.querySelector<HTMLOptionElement>('option[value="auto"]')?.disabled).toBe(false)
     await click("Stats and versions")
     await waitForRender(() => expect(host.textContent).toContain("at least 10 completed days"))
     for (const text of ["Followed rules", "Deviated", "Expectancy", "80.0%", "Saved versions", "Estimate from past results, not a prediction", "at least 10 completed days"]) expect(host.textContent).toContain(text)
     expect(api.passOdds).toHaveBeenCalledWith(20, 1000, "put-spread", expect.any(AbortSignal))
+  })
+  it("confirms the named live account before enabling Auto and allows cancellation", async () => {
+    vi.mocked(useLive).mockReturnValue({ ...liveState(status, null, "open"), account: "named-paper" })
+    await render(<PlaybooksView />)
+    await waitForRender(() => expect(host.textContent).toContain("Morning put spread"))
+    await value('select[aria-label="Mode for Morning put spread"]', "auto")
+    expect(api.playbookMode).not.toHaveBeenCalled()
+    expect(host.querySelector("dialog")?.textContent).toContain("named-paper")
+    expect(host.querySelector("dialog")?.textContent).toContain("Orders will be sent automatically on paper")
+    await click("Cancel")
+    expect(host.querySelector("dialog")).toBeNull()
+    expect(api.playbookMode).not.toHaveBeenCalled()
+    await value('select[aria-label="Mode for Morning put spread"]', "auto")
+    await click("Enable Auto")
+    expect(api.playbookMode).toHaveBeenCalledWith("put-spread", "auto", "open")
+    expect(host.querySelector("dialog")).toBeNull()
+  })
+  it("keeps replay Auto direct and does not fetch live backtest comparisons", async () => {
+    vi.mocked(useLive).mockReturnValue({ ...liveState(status, null, "open"), source: "replay" })
+    await render(<PlaybooksView />)
+    await waitForRender(() => expect(host.textContent).toContain("Morning put spread"))
+    await value('select[aria-label="Mode for Morning put spread"]', "auto")
+    expect(api.playbookMode).toHaveBeenCalledWith("put-spread", "auto", "open")
+    expect(host.querySelector("dialog")).toBeNull()
+    expect(api.backtests).not.toHaveBeenCalled()
+  })
+  it("shows forward windows, stats and only the latest completed backtest of the same version", async () => {
+    const saved = catalogue()
+    saved.modes["put-spread"] = "auto"
+    saved.forward_tests = { "put-spread": { running: true, days_running: 2.5, entries: 3, time_stops: 2, rejected_entries: 1,
+      windows: [{ account: "main", playbook: "put-spread", version: 1, started: "2026-09-22T13:30:00Z", ended: null, actor: "alice", first_order: "1", end_order: null }],
+      report: saved.reports!["put-spread"], versions: { "1": saved.reports!["put-spread"]! } } }
+    vi.mocked(api.playbooks).mockResolvedValue(saved)
+    const summary = { trades: 10, win_rate: .6, expectancy: "42", average_return_on_buying_power: .1 } as BacktestReport["summary"]
+    const run = { id: "000001", status: "completed" as const, phase: "done", completed: 1, total: 1, label: "Simulated", report: null, playbook: { id: "put-spread", version: 1 }, summary }
+    vi.mocked(api.backtests).mockResolvedValue({ active: null, label: "Simulated", runs: [
+      { ...run, id: "000005", playbook: { id: "put-spread", version: 2 } },
+      { ...run, id: "000004", playbook: { id: "other", version: 1 } },
+      { ...run, id: "000003", status: "failed" }, { ...run, id: "000002" }, run,
+    ] })
+    await render(<><PlaybooksView /><AutoPlaybookIndicator /></>)
+    await waitForRender(() => expect(host.textContent).toContain("Latest saved backtest 000002"))
+    for (const text of ["Forward test · Running", "2.50 elapsed market days", "3 entries", "2 time stops", "1 rejected entries", "alice", "Auto paper trading · 1 playbook on main", "All forward trades", "60.0%", "42"]) expect(host.textContent).toContain(text)
+    expect(host.textContent).not.toContain("000005")
+  })
+  it("supports older publications and explains a missing same-version backtest", async () => {
+    await render(<PlaybooksView />)
+    await waitForRender(() => expect(host.textContent).toContain("Forward test · Stopped"))
+    expect(host.textContent).toContain("No completed saved backtest for this version")
+    expect(host.textContent).toContain("Forward-test windows (0)")
   })
   it("keeps archived statistics and versions readable without offering new entries", async () => {
     const saved = catalogue()

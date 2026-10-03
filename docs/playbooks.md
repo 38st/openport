@@ -228,7 +228,7 @@ for those entries, including delayed closes after a window ends. All values deri
 from the catalogue and journal, with no wall-clock counters.
 
 `days_running` sums elapsed market-time durations in 24-hour days, including
-weekends and downtime, through the account's latest journal market time for an
+weekends and downtime, through the account's latest published market time for an
 open window. It is not a count of observed sessions. A running window means Auto
 is enabled, not that the feed is healthy or that a trade is currently eligible.
 The Playbooks page shows these windows and results beside the latest completed

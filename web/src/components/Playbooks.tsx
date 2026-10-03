@@ -14,6 +14,13 @@ export function usePlaybooks() {
   return useQuery({ queryKey: ["playbooks", live.accountScope, live.trading?.account_version],
     queryFn: ({ signal }) => api.playbooks(signal), enabled: live.trading?.enabled === true, refetchInterval: 3000, retry: false })
 }
+export function AutoPlaybookIndicator() {
+  const live = useLive()
+  const query = usePlaybooks()
+  const active = Object.entries(query.data?.modes ?? {}).filter(([id, mode]) => mode === "auto" && !query.data?.definitions[id]?.deleted)
+  if (!active.length) return null
+  return <p role="status" className="text-xs text-warn">Auto paper trading · {active.length} playbook{active.length === 1 ? "" : "s"} on {live.account}</p>
+}
 export function StagedOrders() {
   const live = useLive()
   return <Stages key={live.accountScope} />
