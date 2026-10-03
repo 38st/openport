@@ -115,7 +115,7 @@ export function Strategies({ groups, trading, now = Date.now() }: { groups: read
   return <>
     <div className="max-w-full overflow-x-auto" tabIndex={0} role="region" aria-label="Strategies">
       <table className="w-full text-right text-xs tabular whitespace-nowrap">
-        <thead className="text-muted"><tr>{["Strategy", "Units", "Opened", "Now", "Open P&L", "Max profit", "Max loss", "Dollar delta", "Theta", "To expiry", ""].map((h, i) =>
+        <thead className="text-muted"><tr>{["Strategy", "Units", "Opened", "Now", "Open P&L before fees", "Max profit", "Max loss", "Dollar delta", "Gamma / 1%", "Vega", "Theta", "To expiry", ""].map((h, i) =>
           <th key={h} scope="col" className={`px-2 py-2 text-[11px] font-normal uppercase tracking-wide ${i === 0 ? "text-left" : ""}`}>{h}</th>)}</tr></thead>
         <tbody className="[&_td]:px-2 [&_td]:py-2 [&_tr]:border-t [&_tr]:border-border/40">
           {groups.map((group) => {
@@ -132,6 +132,8 @@ export function Strategies({ groups, trading, now = Date.now() }: { groups: read
               <td className="text-bullish">{group.profile ? group.profile.maxProfit == null ? "Unlimited" : formatMoney(group.profile.maxProfit.toFixed(2)) : "—"}</td>
               <td className="text-bearish">{group.profile ? group.profile.maxLoss == null ? "Unlimited" : formatMoney(group.profile.maxLoss.toFixed(2)) : "—"}</td>
               <td>{fixed(group.greeks.dollar_delta, 2)}</td>
+              <td>{fixed(group.greeks.dollar_gamma_1pct, 2)}</td>
+              <td>{fixed(group.greeks.vega_dollars, 2)}</td>
               <td>{fixed(group.greeks.theta_dollars, 2)}</td>
               <td>{left == null ? "—" : days(Math.max(0, left))}</td>
               <td><div className="flex justify-end gap-1">
@@ -145,7 +147,7 @@ export function Strategies({ groups, trading, now = Date.now() }: { groups: read
         </tbody>
       </table>
     </div>
-    <p className="mt-2 text-[11px] text-muted">A strategy is the positions one multi-leg order opened, while they are still held together. P&L is before fees; max profit and loss are at expiry.</p>
+    <p className="mt-2 text-[11px] text-muted">A strategy is the positions one multi-leg order opened, while they are still held together. P&L is before fees; max profit and loss are at expiry. Greeks are dollars: gamma per 1% spot move, vega per volatility point, theta per day.</p>
     {closing && <CloseStrategyDialog plan={closingPlan(closing)} underlying={closing.underlying} title={`Close ${closing.label.toLowerCase()}`}
       trading={trading} onClose={() => setClosing(null)} />}
     {exiting && <SpreadExitsDialog group={exiting} trading={trading} onClose={() => setExiting(null)} />}

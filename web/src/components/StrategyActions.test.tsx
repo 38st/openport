@@ -9,7 +9,7 @@ import type { Order } from "../api/trading-types"
 import type { Chain, ChainRow } from "../api/types"
 import { closingPlan, strategyGroups } from "../lib/positions"
 import { account, order, portfolio, quote, selection, status, trading } from "../test/trading-fixtures"
-import { RollDialog, SpreadExitsDialog } from "./StrategyActions"
+import { RollDialog, SpreadExitsDialog, Strategies } from "./StrategyActions"
 import { StrategyTicket } from "./StrategyTicket"
 import { renderTimeout, waitForRender } from "../test/render"
 
@@ -213,3 +213,17 @@ it.each([false, true])("caps a held ticket's quantity and hides sizing (roll: %s
   await act(async () => host.querySelector("form")!.dispatchEvent(new Event("submit", { bubbles: true, cancelable: true })))
   expect(api.submitOrder).toHaveBeenCalledWith(expect.objectContaining({ quantity: 2 }), trading.write)
 }, renderTimeout)
+
+
+it("renders held gamma and vega in a table that scrolls within narrow layouts", async () => {
+  await render(<Strategies groups={[{ ...spread, greeks: { ...spread.greeks, dollar_gamma_1pct: -123.45, vega_dollars: 67.89 } }]} trading={trading} />)
+  const region = host.querySelector('[aria-label="Strategies"]')!
+  expect(region.classList.contains("max-w-full")).toBe(true)
+  expect(region.classList.contains("overflow-x-auto")).toBe(true)
+  expect(region.getAttribute("tabindex")).toBe("0")
+  expect(region.textContent).toContain("Gamma / 1%")
+  expect(region.textContent).toContain("Vega")
+  expect(region.textContent).toContain("-123.45")
+  expect(region.textContent).toContain("67.89")
+  expect(region.textContent).toContain("Open P&L before fees")
+})

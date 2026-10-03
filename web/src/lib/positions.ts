@@ -43,7 +43,7 @@ export interface StrategyGroup {
   value: number | null
   /** Open P&L before fees: (value − cost) per unit, times units and the multiplier. */
   pnl: number | null
-  greeks: { dollar_delta: number | null; vega_dollars: number | null; theta_dollars: number | null }
+  greeks: { dollar_delta: number | null; dollar_gamma_1pct: number | null; vega_dollars: number | null; theta_dollars: number | null }
   /** At expiry, for legs sharing one expiry; null for calendars and diagonals. */
   profile: RiskProfile | null
   /** The earliest leg expiry id, and when it settles. */
@@ -118,7 +118,7 @@ export function strategyGroups(positions: readonly Position[], orders: readonly 
       title: title(members[0]!.position.underlying, strategy),
       underlying: members[0]!.position.underlying,
       pnl: cost != null && value != null ? Math.round((value - cost) * units * 100 * 100) / 100 : null,
-      greeks: { dollar_delta: sum((p) => p.greeks.dollar_delta), vega_dollars: sum((p) => p.greeks.vega_dollars), theta_dollars: sum((p) => p.greeks.theta_dollars) },
+      greeks: { dollar_delta: sum((p) => p.greeks.dollar_delta), dollar_gamma_1pct: sum((p) => p.greeks.dollar_gamma_1pct), vega_dollars: sum((p) => p.greeks.vega_dollars), theta_dollars: sum((p) => p.greeks.theta_dollars) },
       profile: cost == null ? null : riskProfile(strategy, units, cost),
       expiry: strategy.map((l) => l.expiry).sort()[0]!,
       expires: Math.min(...members.map(({ position: p }) =>
