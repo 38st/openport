@@ -243,3 +243,50 @@ it("copies a selected live account's settings into a replay", async () => {
   await click("Start")
   expect(api.startReplay).toHaveBeenCalledWith({ demo: "selloff" }, 10, "open", expect.objectContaining({ copy_settings_from: "main" }))
 })
+
+it("verifies finished runs, shows progress and downloads a passed receipt with read access", async () => {
+  const start = vi.spyOn(api, "verifyReplay").mockResolvedValue({ status: "running", message: "Verifying saved-run" })
+  const download = vi.spyOn(api, "downloadVerificationReceipt").mockResolvedValue()
+  await render()
+  await click("Verify")
+  expect(start).toHaveBeenCalledWith("saved-run", "open")
+  const setVerification = async (verification: NonNullable<NonNullable<ReplayListing["history"]>[number]["verification"]>, write: ReplayListing["write"] = "open") => {
+    const next = { ...listing, write, history: listing.history!.map((run) => ({ ...run, verification })) }
+    vi.mocked(api.replay).mockResolvedValue(next)
+    await act(async () => { client.setQueryData(["replay-listing"], next) })
+    await render()
+  }
+  await setVerification({ status: "running", message: "Checking transaction hashes", progress: 0.5 })
+  expect(host.textContent).toContain("Verifying · 50%")
+  expect(host.textContent).toContain("Checking transaction hashes")
+  for (const label of ["Verify", "Delete"]) {
+    expect([...host.querySelectorAll("button")].find((b) => b.textContent === label)!.disabled).toBe(true)
+  }
+  await setVerification({ status: "passed", message: "Run saved-run verified; head abc", transactions: 12, equity: "25000.00", head: "abc" }, "disabled")
+  expect(host.textContent).toContain("Verification passed")
+  expect(host.textContent).toContain("Run saved-run verified; head abc")
+  await click("Download receipt")
+  expect(download).toHaveBeenCalledWith("saved-run")
+  expect([...host.querySelectorAll("button")].find((b) => b.textContent === "Verify")!.disabled).toBe(true)
+})
+
+it.each(["torn", "truncated", "mismatch"] as const)("warns about %s journals and shows verification failure", async (flag) => {
+  const next = { ...listing, history: listing.history!.map((run) => ({ ...run, [flag]: true,
+    integrity_message: "Expected 12 transactions, found 11; --repair-journals",
+    verification: { status: "failed" as const, message: "Run saved-run disagrees with recorded final" } })) }
+  client.setQueryData(["replay-listing"], next)
+  vi.mocked(api.replay).mockResolvedValue(next)
+  await render()
+  expect(host.querySelector('[role="alert"]')!.textContent).toContain(flag === "torn" ? "Torn journal" : flag === "truncated" ? "Truncated journal" : "Journal mismatch")
+  expect(host.textContent).toContain("Expected 12 transactions, found 11; --repair-journals")
+  expect(host.textContent).toContain("Verification failed")
+  expect(host.textContent).toContain("Run saved-run disagrees with recorded final")
+})
+
+it("shows verification conflicts without changing the selected account", async () => {
+  vi.spyOn(api, "verifyReplay").mockRejectedValue(new Error("Already verifying another run"))
+  await render()
+  await click("Verify")
+  expect(host.textContent).toContain("Already verifying another run")
+  expect(switchSource).not.toHaveBeenCalled()
+})

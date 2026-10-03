@@ -3,7 +3,7 @@ import type { Playbook, PlaybooksResponse, PassOdds } from "./playbook-types"
 import type { StrategyTemplate, TemplateResult } from "../lib/strategy"
 import type { Volatility, VolatilitySeries } from "./types"
 import type { NotificationChannel, NotificationStatus } from "./types"
-import type { CandleInterval, Candles, Chain, ExposureMatrix, Probability, ReplayListing, ReplayState, Status, Summary, Surface } from "./types"
+import type { CandleInterval, Candles, Chain, ExposureMatrix, Probability, ReplayListing, ReplayState, Status, Summary, Surface, RunVerification } from "./types"
 import type { Account, AccountsResponse, UpdateAccountRequest, UpdateAccountResponse, DeleteAccountResponse, AlertDeleted, AlertRequest, AlertResponse, AlertsResponse, CancelAllResponse, ClosePositionsResponse, CreateAccountRequest, CreateAccountResponse, DayNote, EquityHistory, FillsResponse, FlattenPreview, FlattenPricing, GroupResponse, Guardrails, KillResponse, Limits, Money, NewOrder, OrderChange, OrderPreview, OrderResponse, OrdersResponse, PlansResponse, Portfolio, ResetRequest, Risk, RiskProfile, RiskProfileQuery, SettlementsResponse, SettlementResponse, Side, StockPreview, SubmitOrderResponse, TradeNote, TradeNoteResponse, TradesResponse, WhatIfResponse, WriteMode } from "./trading-types"
 import { activeAccount, MAIN_ACCOUNT } from "../lib/active-account"
 import { dataSource } from "../lib/data-source"
@@ -73,7 +73,7 @@ export function readHeaders(): Record<string, string> {
 }
 const get = <T,>(path: string, signal?: AbortSignal) => request<T>(routed(path), { signal, headers: readHeaders() })
 
-export async function downloadCsv(path: string, filename: string) {
+export async function downloadFile(path: string, filename: string) {
   const response = await fetch(path, { headers: readHeaders() })
   if (!response.ok) throw mapApiError(response.status, await response.json().catch(() => null), response.statusText)
   const url = URL.createObjectURL(await response.blob())
@@ -83,6 +83,8 @@ export async function downloadCsv(path: string, filename: string) {
   link.click()
   setTimeout(() => URL.revokeObjectURL(url), 1000)
 }
+export const downloadCsv = downloadFile
+
 function write<T>(path: string, method: "POST" | "PUT" | "PATCH" | "DELETE", mode: WriteMode, body?: unknown) {
   const headers: Record<string, string> = { Accept: "application/json", "Content-Type": "application/json" }
   if (mode === "disabled") return Promise.reject(new ApiError(403, "Trading writes are disabled by the server.", "WRITE_DISABLED"))
@@ -219,6 +221,9 @@ export const api = {
     write<{ replay: ReplayState }>("/api/replay", "POST", mode, { ...source, speed, ...options }),
   /** Continues a saved run a crash interrupted, paused where it stopped. */
   resumeReplay: (id: string, speed: number, mode: WriteMode) => write<{ replay: ReplayState }>("/api/replay", "POST", mode, { resume: id, speed }),
+  verifyReplay: (id: string, mode: WriteMode) => write<RunVerification>(`/api/replay/history/${encodeURIComponent(id)}/verify`, "POST", mode, {}),
+  replayVerification: (id: string, signal?: AbortSignal) => get<RunVerification>(`/api/replay/history/${encodeURIComponent(id)}/verify`, signal),
+  downloadVerificationReceipt: (id: string) => downloadFile(`/api/replay/history/${encodeURIComponent(id)}/verify?format=receipt`, `${id}-verification.json`),
   deleteReplay: (id: string, mode: WriteMode) => write<{ deleted: string }>(`/api/replay/history/${encodeURIComponent(id)}`, "DELETE", mode),
   controlReplay: (change: { speed?: number; paused?: boolean; skip?: boolean; until?: string }, mode: WriteMode) =>
     write<{ replay: ReplayState }>("/api/replay", "PUT", mode, change),

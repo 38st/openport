@@ -142,7 +142,11 @@ simulation's limits.
 
   - **Reproducible runs**: playback speed leaves batches, fills and journals unchanged.
     Step to a market time with `PUT /api/replay {"until":"10:30"}`, or a date and time
-    in the terminal; check a saved run with `openportd --verify-run JOURNAL`.
+    in the terminal; check a saved run with **Finished runs → Verify** or
+    `openportd --verify-run JOURNAL`. Final journal heads and counts detect missing
+    tails; history flags torn and truncated runs. Verification runs in the background,
+    survives restart and offers a JSON receipt naming inputs, plan, final equity,
+    head/count, build and time. Changed journals invalidate saved results.
   - **Multi-day runs**: scenarios of several regular, curb and overnight sessions over
     several days play as one steppable run on one account, with the rollover, the
     end-of-day ratchet, GTC carry, gaps at the open, early assignment and dividends.
@@ -354,6 +358,7 @@ special opening quotation; live providers keep manual imports.
 - [x] Scenario library: simulated drills with fresh or repeatable seeds, start times and
       replay journals that are kept
 - [x] Deterministic replay batches, verifiable run journals and synchronous market-time stepping
+- [x] In-app run verification, persisted final head/count, damaged-run warnings and shareable JSON receipts
 - [x] Multi-day and cross-session scenario runs: regular, curb and overnight sessions over
       several days on one account, steppable to a date and time, with journals that verify
 - [x] Shares in the journal, and early assignment of shorts trading below exercise value
