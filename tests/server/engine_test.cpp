@@ -72,6 +72,23 @@ TEST(Engine, KeepsErrorsPerUnderlyingAndExpiresHealthUsingReceiptTime) {
   engine.stop();
 }
 
+TEST(Engine, FeedMessageKeepsEachDistinctMessageOnceInUnderlyingOrder) {
+  ManualProvider provider;
+  server::Engine::Options options;
+  options.clock = [] { return 1000 * md::kNanosPerSecond; };
+  server::Engine engine(provider, {{"QQQ", "SPX", "SPY", "XSP"}}, options);
+  engine.start();
+  for (const auto& symbol : {"QQQ", "SPY", "XSP"})
+    provider.sink->publish(md::ProviderStatus{1, md::FeedState::Live, "demo: simulated prices", symbol});
+  provider.sink->publish(md::ProviderStatus{1, md::FeedState::Error, "SPX: offline", "SPX"});
+  ASSERT_TRUE(eventually([&] { return engine.status().underlyings.at("SPX").last_error_time > 0; }));
+  const auto status = engine.status();
+  EXPECT_EQ(status.feed_message, "demo: simulated prices; SPX: offline");
+  EXPECT_EQ(status.feed_state, md::FeedState::Error);
+  EXPECT_EQ(status.underlyings.at("SPY").message, "demo: simulated prices");
+  engine.stop();
+}
+
 TEST(Engine, StreamingQuotesRefreshOnlyTheirUnderlyingWithASixtySecondMinimum) {
   ManualProvider provider;
   provider.caps.realtime = true;

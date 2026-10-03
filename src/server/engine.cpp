@@ -186,6 +186,7 @@ EngineStatus Engine::status() const {
   };
   int worst = -1;
   out.feed_message.clear();
+  std::vector<std::string> messages;
   for (auto& [symbol, health] : out.underlyings) {
     const auto since = health.last_success > 0 ? health.last_success : out.started;
     if (health.state != md::FeedState::Stopped && since > 0 && now - since > stale_after) {
@@ -197,8 +198,12 @@ EngineStatus Engine::status() const {
       worst = severity(health.state);
       out.feed_state = health.state;
     }
-    if (!out.feed_message.empty()) out.feed_message += "; ";
-    out.feed_message += health.message.empty() ? symbol + ": connecting" : health.message;
+    const auto message = health.message.empty() ? symbol + ": connecting" : health.message;
+    if (std::find(messages.begin(), messages.end(), message) == messages.end()) {
+      messages.push_back(message);
+      if (!out.feed_message.empty()) out.feed_message += "; ";
+      out.feed_message += message;
+    }
   }
   // Persist storage failures even if subsequent market events report healthy.
   if (const auto error = recording_error(); !error.empty()) {
