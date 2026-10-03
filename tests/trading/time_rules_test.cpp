@@ -51,14 +51,18 @@ TEST(TimeRules, LegacyPlanJournalBytes) {
   const auto recovery = FileJournal::read(file.path);
   // Recorded by the pre-time-rules reducer at 85e64e20 with this scripted market.
   EXPECT_EQ(recovery.head, "4e40378560db4e891c76cb27a686dfd2baf9c5a98dbae7ab4590dbd30d57acb0");
-  // Default-off fields are absent in every checkpoint, delta and event.
+  // Default-off fields are absent in every checkpoint, delta and event. The
+  // calendar's "events" name also names the legacy transaction envelope, so
+  // its omission from rules is covered by the unchanged hash above.
   for (const auto& record : recovery.records)
-    for (const auto* key : {"time_limit_days", "inactivity_days", "underlyings", "trading_start", "trading_end", "last_activity", "flat_time", "no_overnight", "flat_time_day", "flat_pending", "events", "news_before_minutes", "news_after_minutes", "news_action",
+    for (const auto* key : {"time_limit_days", "inactivity_days", "underlyings", "trading_start", "trading_end", "last_activity", "flat_time", "no_overnight", "flat_time_day", "flat_pending", "news_before_minutes", "news_after_minutes", "news_action",
                             "hold_restrictions", "hold_cutoff", "hold_calendar", "event_actions", "holding_violations", "event_checked"})
       EXPECT_EQ(record.payload.find(std::string("\"") + key + "\""), std::string::npos) << key;
   // Explicitly disabling each field takes exactly the legacy command path.
   rules.time_limit_days = 0; rules.inactivity_days = 0; rules.underlyings.clear();
   rules.trading_start.reset(); rules.trading_end.reset(); rules.flat_time.reset(); rules.no_overnight = false;
+  rules.events.clear(); rules.news_before_minutes = 0; rules.news_after_minutes = 0; rules.news_action = "block";
+  rules.hold_restrictions.clear(); rules.hold_cutoff = 15 * 60 + 45; rules.hold_calendar.reset();
   ScriptedMarket g;
   JournalFile again;
   {

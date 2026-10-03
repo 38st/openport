@@ -25,7 +25,9 @@ TEST(EventRules, NewsRefusesPreviewCancelsOpeningsAndAllowsReductions) {
   ScriptedMarket f; auto r = news(f); TradingSession s(config(r), f.time); f.seed(s);
   ASSERT_TRUE(s.submit(f.market("held", 2), f.time).decision.ok());
   const auto open = s.submit(f.limit("working", 1, "3.50", Side::Buy, TimeInForce::Gtc), f.time);
-  const auto close = s.submit(f.limit("exit", 1, "8", Side::Sell, TimeInForce::Gtc), f.time);
+  const auto close = s.submit(f.limit("exit", 1, "4.80", Side::Sell, TimeInForce::Gtc), f.time);
+  ASSERT_TRUE(open.decision.ok()) << open.decision.message;
+  ASSERT_TRUE(close.decision.ok()) << close.decision.message;
   tick(s, f, f.time + md::kNanosPerMinute);
   EXPECT_EQ(s.snapshot()->recent_orders.at(*open.order_id - 1).reason.code, Reason::NEWS_BLACKOUT);
   EXPECT_TRUE(s.snapshot()->recent_orders.at(*close.order_id - 1).open());
@@ -139,7 +141,9 @@ TEST(EventRules, FailedCutoffLiquidityFailsAtRollover) {
   ScriptedMarket f; f.time = md::new_york_to_utc({2026, 9, 25}, 15, 44);
   AccountRules r; r.hold_restrictions = {"weekend"}; TradingSession s(config(r), f.time); f.seed(s);
   ASSERT_TRUE(s.submit(f.market("held"), f.time).decision.ok());
-  s.on_quotes({}, {}, md::new_york_to_utc({2026, 9, 25}, 15, 45));
+  f.time = md::new_york_to_utc({2026, 9, 25}, 15, 45); ++f.observation;
+  auto no_bid = f.quote(); no_bid.bid.reset(); no_bid.bid_size = 0;
+  s.on_quotes({no_bid}, {f.valuation()}, f.time);
   ASSERT_FALSE(s.snapshot()->positions.empty());
   ASSERT_TRUE(s.roll_day(md::new_york_to_utc({2026, 9, 25}, 17, 0)).decision.ok());
   EXPECT_EQ(s.snapshot()->evaluation.decision_code, Reason::HOLD_RESTRICTED);
