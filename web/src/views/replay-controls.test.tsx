@@ -218,7 +218,7 @@ it("requires an entered step time and clears it only after a successful step", a
   await render()
   const input = host.querySelector('[aria-label="Step to"]') as HTMLInputElement
   const button = [...host.querySelectorAll("button")].find((b) => b.textContent === "Step")!
-  expect(input.value).toBe("2026-09-16T15:00")
+  expect(input.value).toMatch(/^2026-09-16T15:00:31/)
   expect(button.disabled).toBe(true)
   await click("Step")
   await act(async () => { input.form!.dispatchEvent(new Event("submit", { bubbles: true, cancelable: true })) })
@@ -230,7 +230,7 @@ it("requires an entered step time and clears it only after a successful step", a
   expect(input.value).toBe("2026-09-16T15:01")
   expect(button.disabled).toBe(false)
   await click("Step")
-  expect(input.value).toBe("2026-09-16T15:00")
+  expect(input.value).toMatch(/^2026-09-16T15:00:31/)
   expect(button.disabled).toBe(true)
   await click("Step")
   expect(api.controlReplay).toHaveBeenCalledTimes(2)
@@ -330,4 +330,76 @@ it("shows journal size and the long verification warning before Verify", async (
   expect(host.textContent).toContain("Long verification")
   expect(host.textContent).toContain("Compaction breaks exact")
   expect(verify).not.toHaveBeenCalled()
+})
+
+it("steps relative intervals and snapshots, and watches play-to at the selected speed", async () => {
+  const active = { ...listing, replay }
+  client.setQueryData(["replay-listing"], active)
+  vi.mocked(api.replay).mockResolvedValue(active)
+  const control = vi.spyOn(api, "controlReplay").mockResolvedValue({ replay })
+  await render()
+  for (const [label, until] of [["+15s", "+15s"], ["+1m", "+1m"], ["+5m", "+5m"], ["Next snapshot", "next"]]) {
+    await click(label!)
+    expect(control).toHaveBeenLastCalledWith({ until }, "open")
+  }
+  await change("Step to", "2026-09-16T15:01:15")
+  await click("Play to")
+  expect(control).toHaveBeenLastCalledWith({ play_until: "2026-09-16T15:01:15", speed: 60 }, "open")
+  const playing = { ...active, replay: { ...replay, paused: false, pause_at: "2026-09-16T19:01:15Z", skip_pending: true } }
+  client.setQueryData(["replay-listing"], playing)
+  vi.mocked(api.replay).mockResolvedValue(playing)
+  await render()
+  expect(host.textContent).toContain("Playing to Wed, Sep 16, 15:01:15 ET at 60×")
+  expect(host.textContent).toContain("Skip queued for the next resume")
+  await click("Cancel skip")
+  expect(control).toHaveBeenLastCalledWith({ skip: false }, "open")
+})
+
+it("queues a skip while paused and accepts seconds in an ordinary start", async () => {
+  const active = { ...listing, replay }
+  client.setQueryData(["replay-listing"], active)
+  vi.mocked(api.replay).mockResolvedValue(active)
+  const control = vi.spyOn(api, "controlReplay").mockResolvedValue({ replay })
+  await render()
+  await click("Skip gap")
+  expect(control).toHaveBeenCalledWith({ skip: true }, "open")
+  await change("Start at", "15:00:15")
+  await click("Restart")
+  expect(api.startReplay).toHaveBeenCalledWith({ demo: "selloff" }, 10, "open", expect.objectContaining({ start_at: "15:00:15" }))
+  expect(host.querySelector('[aria-label="Start at"]')?.getAttribute("step")).toBe("1")
+})
+
+it("keeps abort and stop actionable while the step request is pending", async () => {
+  const active = { ...listing, replay }
+  client.setQueryData(["replay-listing"], active)
+  vi.mocked(api.replay).mockResolvedValue(active)
+  let finish: () => void = () => {}
+  const control = vi.spyOn(api, "controlReplay").mockImplementation((change) => change.until
+    ? new Promise((resolve) => { finish = () => resolve({ replay, aborted: true }) })
+    : Promise.resolve({ replay, aborted: true }))
+  const stop = vi.spyOn(api, "stopReplay").mockResolvedValue({ replay: null })
+  await render()
+  await click("+5m")
+  await click("Abort")
+  expect(control).toHaveBeenLastCalledWith({ abort: true }, "open")
+  await click("Stop")
+  expect(stop).toHaveBeenCalledWith("open")
+  await act(async () => finish())
+})
+
+it("restarts a saved run at its start or an active run at a time with seconds", async () => {
+  const restart = vi.spyOn(api, "restartReplay").mockResolvedValue({ replay })
+  await render()
+  await click("Restart from…")
+  await click("Restart run")
+  expect(restart).toHaveBeenLastCalledWith("saved-run", undefined, "open")
+  const active = { ...listing, replay }
+  client.setQueryData(["replay-listing"], active)
+  vi.mocked(api.replay).mockResolvedValue(active)
+  await render()
+  await click("Restart from…")
+  await change("Restart at", "2026-09-16T15:00:15")
+  await click("Restart run")
+  expect(restart).toHaveBeenLastCalledWith("run-1", "2026-09-16T15:00:15", "open")
+  expect(switchSource).toHaveBeenLastCalledWith("replay")
 })

@@ -349,6 +349,7 @@ export interface ReplayState {
   stepping?: boolean
   skip_pending?: boolean
   pause_at?: string | null
+  restarted_from?: { id: string; at: string }
   settled_through?: string | null
   progress?: number
   file: string

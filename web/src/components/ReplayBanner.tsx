@@ -19,11 +19,14 @@ export function ReplayBanner() {
         {at && <span className="text-muted">{at.open ? `${sessions[at.index]!.session} session` : `closed until the ${sessions[at.index]!.session} session`} · {at.index + 1} of {sessions.length}</span>}
         <span className="text-muted">{replay.demo ? `${replay.file} · ${replay.seed ? `seed ${replay.seed} · ` : ""}Simulated prices, not market data` : `${replay.file} · recording`}</span>
         <span className="text-muted">{live.source.startsWith("history:") ? "read-only replay" : replay.fast_forwarding ? `Preparing start state… ${Math.round((replay.progress ?? 0) * 100)}%` : replay.stepping ? "Stepping…" : replay.finished ? "finished" : replay.paused ? "paused" : speedLabel(replay.speed)}</span>
+        {replay.skip_pending && <span className="text-warn">Skip queued for next resume</span>}
+        {replay.pause_at && <span>Playing to {replayClock(replay.pause_at)}</span>}
         <span className="ml-auto flex flex-wrap gap-1">
           {!replay.finished && !replay.fast_forwarding && !replay.stepping && <button type="button" className="trade-button !py-0.5" disabled={controls.pending || controls.blocked}
             onClick={() => void controls.pause(!replay.paused)}>{replay.paused ? "Resume" : "Pause"}</button>}
           {!replay.finished && !replay.fast_forwarding && !replay.stepping && !replay.paused && <button type="button" className="trade-button !py-0.5" disabled={controls.pending || controls.blocked}
             onClick={() => void controls.skip()}>Skip gap</button>}
+          {(replay.stepping || replay.pause_at) && !live.source.startsWith("history:") && <button type="button" className="trade-button !py-0.5" disabled={controls.interruptPending || controls.blocked} onClick={() => void controls.abort()}>Abort</button>}
           {replay.demo && replay.scenario && replay.seed && !live.source.startsWith("history:") && <button type="button" className="trade-button !py-0.5" disabled={controls.pending || controls.blocked}
             onClick={() => void controls.start({ demo: replay.scenario! }, replay.speed, () => live.switchSource("replay"), { seed: replay.seed!, plan: replay.plan, start_at: replay.start_at || undefined, date: replay.date })}>Replay this seed</button>}
           <button type="button" className="trade-button !py-0.5" onClick={() => live.switchSource("live")}>Back to live</button>

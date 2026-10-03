@@ -149,3 +149,19 @@ it("keeps backtest day rows and saved-run controls backward compatible on the wi
   expect(schemas.BacktestState!.required).not.toContain("bytes")
   expect(Object.keys(schemas.BacktestComparison!.properties!)).toEqual(expect.arrayContaining(["runs", "daily", "combined", "different_inputs", "different_plans"]))
 })
+
+it("keeps replay control feedback and restart provenance optional on old sidecars", () => {
+  const state = spec.components.schemas.ReplayState!
+  const history = spec.components.schemas.ReplayHistory!
+  for (const field of ["skip_pending", "pause_at", "settled_through", "restarted_from"]) {
+    expect(source).toMatch(new RegExp(`${field}\\?:`))
+    expect(history.properties![field]).toEqual(state.properties![field])
+    expect(state.required).not.toContain(field)
+    expect(history.required).not.toContain(field)
+  }
+  for (const field of ["until", "play_until", "abort", "skip"])
+    expect(spec.components.schemas.ReplayControl!.properties).toHaveProperty(field)
+  for (const field of ["restart", "at"])
+    expect(spec.components.schemas.ReplayStart!.properties).toHaveProperty(field)
+  expect(spec.components.schemas.ReplayResponse!.properties).toHaveProperty("aborted")
+})

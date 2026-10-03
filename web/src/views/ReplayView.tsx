@@ -38,13 +38,13 @@ export function sessionAt(sessions: ReplaySession[], time: string | null) {
   if (index < 0) return null
   return { index, open: now >= Date.parse(sessions[index]!.open) }
 }
-const nyParts = new Intl.DateTimeFormat("en-CA", { timeZone: "America/New_York", year: "numeric", month: "2-digit", day: "2-digit", hour: "2-digit", minute: "2-digit", hourCycle: "h23" })
+const nyParts = new Intl.DateTimeFormat("en-CA", { timeZone: "America/New_York", year: "numeric", month: "2-digit", day: "2-digit", hour: "2-digit", minute: "2-digit", second: "2-digit", hourCycle: "h23" })
 /** A time as a New York "YYYY-MM-DDTHH:MM", the value a datetime-local input holds. */
 export function newYorkInput(time: string | null) {
   const at = time ? Date.parse(time) : NaN
   if (!Number.isFinite(at)) return ""
   const part = Object.fromEntries(nyParts.formatToParts(at).map((p) => [p.type, p.value]))
-  return `${part.year}-${part.month}-${part.day}T${part.hour}:${part.minute}`
+  return `${part.year}-${part.month}-${part.day}T${part.hour}:${part.minute}${part.second === "00" ? "" : `:${part.second}`}`
 }
 const size = (bytes: number) => bytes >= 1e9 ? `${(bytes / 1e9).toFixed(1)} GB` : bytes >= 1e6 ? `${(bytes / 1e6).toFixed(1)} MB` : `${Math.max(1, Math.round(bytes / 1e3))} KB`
 
@@ -57,6 +57,9 @@ export function useReplayControls() {
   const [error, setError] = useState<unknown>()
   const [pending, setPending] = useState(false)
   const busy = useRef(false)
+  const interruptBusy = useRef(false)
+  const [interruptPending, setInterruptPending] = useState(false)
+  const [stepping, setStepping] = useState(false)
   const mode = writeStatus.data?.write ?? trading?.write ?? "disabled"
   const blocked = mode === "disabled" || (mode === "token" && !token)
   async function run(request: () => Promise<unknown>, read = false) {
@@ -66,15 +69,29 @@ export function useReplayControls() {
     setError(undefined)
     try { await request() } catch (failure) { setError(failure) } finally { busy.current = false; setPending(false) }
   }
+  async function interrupt(request: () => Promise<unknown>) {
+    if (interruptBusy.current || blocked) return
+    interruptBusy.current = true
+    setInterruptPending(true)
+    setError(undefined)
+    try { await request() } catch (failure) { setError(failure) } finally { interruptBusy.current = false; setInterruptPending(false) }
+  }
   return {
-    error, pending, blocked,
+    error, pending, blocked, interruptPending, stepping,
     speed: (speed: number) => run(() => api.controlReplay({ speed }, mode)),
-    pause: (paused: boolean) => run(() => api.controlReplay({ paused }, mode)),
-    skip: () => run(() => api.controlReplay({ skip: true }, mode)),
-    step: (until: string, then: () => void) => run(async () => { await api.controlReplay({ until }, mode); then() }),
-    stop: () => run(() => api.stopReplay(mode)),
+    pause: (paused: boolean) => (paused ? interrupt : run)(() => api.controlReplay({ paused }, mode)),
+    skip: (skip = true) => run(() => api.controlReplay({ skip }, mode)),
+    step: (until: string, then: () => void = () => {}) => run(async () => {
+      setStepping(true)
+      try { await api.controlReplay({ until }, mode) } finally { setStepping(false) }
+      then()
+    }),
+    playTo: (play_until: string, speed: number) => run(() => api.controlReplay({ play_until, speed }, mode)),
+    abort: () => interrupt(() => api.controlReplay({ abort: true }, mode)),
+    stop: () => interrupt(() => api.stopReplay(mode)),
     start: (source: ReplaySource, speed: number, then: () => void, options?: ReplayStart) => run(async () => { await api.startReplay(source, speed, mode, options); then() }),
     resume: (id: string, speed: number, then: () => void) => run(async () => { await api.resumeReplay(id, speed, mode); then() }),
+    restart: (id: string, at: string | undefined, then: () => void) => run(async () => { await api.restartReplay(id, at, mode); then() }),
     verify: (id: string, then: () => void) => run(async () => { await api.verifyReplay(id, mode); then() }),
     receipt: (id: string) => run(() => api.downloadVerificationReceipt(id), true),
     remove: (id: string, then: () => void) => run(async () => { await api.deleteReplay(id, mode); then() }),
@@ -84,23 +101,33 @@ export function useReplayControls() {
 function Controls({ replay }: { replay: ReplayState }) {
   const controls = useReplayControls()
   const [until, setUntil] = useState("")
-  const idle = controls.pending || controls.blocked || replay.finished || replay.fast_forwarding || replay.stepping
+  const stepping = replay.stepping || controls.stepping
+  const idle = controls.pending || controls.blocked || replay.finished || replay.fast_forwarding || stepping
+  const target = until || newYorkInput(replay.settled_through ?? replay.time)
   return <div className="space-y-3">
     <div className="flex flex-wrap items-center gap-2">
-      <fieldset disabled={controls.pending || controls.blocked}>
+      <fieldset disabled={idle}>
         <Segmented label="Replay speed" value={replay.speed} onChange={(speed) => void controls.speed(speed)}
           options={replaySpeeds.map((speed) => ({ value: speed, label: speedLabel(speed) }))} />
       </fieldset>
       <button type="button" className="trade-button" disabled={controls.pending || controls.blocked || replay.finished || replay.fast_forwarding || replay.stepping}
         onClick={() => void controls.pause(!replay.paused)}>{replay.paused ? "Resume" : "Pause"}</button>
-      <button type="button" className="trade-button" disabled={controls.pending || controls.blocked || replay.finished || replay.fast_forwarding || replay.stepping || replay.paused}
-        title="Play the next event now, skipping a closed market" onClick={() => void controls.skip()}>Skip gap</button>
-      <button type="button" className="trade-button" disabled={controls.pending || controls.blocked} onClick={() => void controls.stop()}>Stop</button>
+      <button type="button" className="trade-button" disabled={controls.pending || controls.blocked || replay.finished || replay.fast_forwarding || stepping}
+        title="Play the next event now, skipping a closed market" onClick={() => void controls.skip(!replay.skip_pending)}>{replay.skip_pending ? "Cancel skip" : "Skip gap"}</button>
+      <button type="button" className="trade-button" disabled={controls.interruptPending || controls.blocked} onClick={() => void controls.stop()}>Stop</button>
+      {(stepping || replay.pause_at) && <button type="button" className="trade-button" disabled={controls.interruptPending || controls.blocked} onClick={() => void controls.abort()}>Abort</button>}
+    </div>
+    {replay.skip_pending && <p role="status" className="text-xs text-warn">Skip queued for the next resume.</p>}
+    {replay.pause_at && <p role="status" className="text-xs">Playing to {replayClock(replay.pause_at)} at {speedLabel(replay.speed)}.</p>}
+    <div className="flex flex-wrap gap-2">
+      {([['+15s', '+15s'], ['+1m', '+1m'], ['+5m', '+5m'], ['next', 'Next snapshot']] as const).map(([value, label]) =>
+        <button key={value} type="button" className="trade-button" disabled={idle} onClick={() => void controls.step(value)}>{label}</button>)}
     </div>
     <form className="flex flex-wrap items-end gap-2 text-xs" onSubmit={(event) => { event.preventDefault(); if (until && !idle) void controls.step(until, () => setUntil("")) }}>
-      <label>Step to (New York)<input aria-label="Step to" type="datetime-local" className="trade-input" value={until || newYorkInput(replay.time)}
-        onChange={(event) => setUntil(event.target.value)} /></label>
+      <label>Step to (New York)<input aria-label="Step to" type="datetime-local" step="1" className="trade-input" value={target}
+        onChange={(event) => setUntil(event.target.value.replace(/\.000$/, ""))} /></label>
       <button type="submit" className="trade-button" disabled={idle || !until} title="Play as fast as possible through this date and time, then pause">Step</button>
+      <button type="button" className="trade-button" disabled={idle || !until} onClick={() => void controls.playTo(until, replay.speed)}>Play to</button>
     </form>
     <TradingError error={controls.error} />
   </div>
@@ -143,6 +170,8 @@ export function ReplayView({ onNavigate }: { onNavigate?: (view: View) => void }
   const [seedMode, setSeedMode] = useState("fresh")
   const [seed, setSeed] = useState("")
   const [deleting, setDeleting] = useState<string>()
+  const [restarting, setRestarting] = useState<string>()
+  const [restartAt, setRestartAt] = useState("")
   const options = (scenario: boolean): ReplayStart => ({ plan, ...(copyFrom ? { copy_settings_from: copyFrom } : {}), ...(startAt ? { start_at: startAt } : {}), paused,
     ...(scenario && seedMode !== "fresh" ? { seed: seedMode === "scenario" ? "scenario" : seed } : {}) })
   const badSeed = seedMode === "typed" && (!/^\d{1,20}$/.test(seed) || BigInt(seed || "0") > 18446744073709551615n)
@@ -163,7 +192,7 @@ export function ReplayView({ onNavigate }: { onNavigate?: (view: View) => void }
           <option value="practice">Practice · practice</option>
           {(plans.data?.plans ?? []).filter((p) => p.id !== "practice" && p.rules.phase !== "funded").map((p) => <option key={p.id} value={p.id}>{p.name} · {p.id}</option>)}
         </select></label>
-        <label>Start at (New York)<input aria-label="Start at" type="time" className="trade-input" value={startAt} onChange={(event) => setStartAt(event.target.value)} /></label>
+        <label>Start at (New York)<input aria-label="Start at" type="time" step="1" className="trade-input" value={startAt} onChange={(event) => setStartAt(event.target.value)} /></label>
         <label>Scenario seed<select aria-label="Seed mode" className="trade-input" value={seedMode} onChange={(event) => setSeedMode(event.target.value)}>
           <option value="fresh">Fresh seed</option><option value="scenario">Scenario’s seed</option><option value="typed">Type a seed</option>
         </select></label>
@@ -190,6 +219,9 @@ export function ReplayView({ onNavigate }: { onNavigate?: (view: View) => void }
         {replay.stepping && <div role="status" className="mb-3 text-sm">Stepping to the requested time; orders wait until it settles.</div>}
         {replay.fast_forwarding && <div role="status" className="mb-3 text-sm">Preparing start state… {Math.round((replay.progress ?? 0) * 100)}%<progress className="ml-2" max={1} value={replay.progress ?? 0} aria-label="Fast-forward progress" /></div>}
         <Controls replay={replay} />
+        {replay.id && replay.durable !== false && <button type="button" className="trade-button mt-2" disabled={controls.pending || controls.blocked || replay.fast_forwarding || replay.stepping}
+          onClick={() => { setRestarting(replay.id); setRestartAt(newYorkInput(replay.settled_through ?? replay.time)) }}>Restart from…</button>}
+        {replay.restarted_from && <p className="mt-2 text-xs text-muted">Restarted from {replay.restarted_from.id} through {replayClock(replay.restarted_from.at)}.</p>}
         {replay.demo && replay.scenario && replay.seed && <button type="button" className="trade-button mt-2" disabled={controls.pending || controls.blocked}
           onClick={() => void controls.start({ demo: replay.scenario! }, replay.speed, started, { plan: replay.plan, seed: replay.seed!, start_at: replay.start_at || undefined, date: replay.date })}>Replay this seed</button>}
       </Panel>
@@ -272,6 +304,8 @@ export function ReplayView({ onNavigate }: { onNavigate?: (view: View) => void }
             <p className="whitespace-pre-line break-all text-muted">{run.verification.message}</p>
           </div>}
           <span className="ml-auto flex flex-wrap gap-2">
+            <button type="button" className="trade-button" disabled={controls.blocked || controls.pending || !!run.error || run.verification?.status === "running"}
+              onClick={() => { setRestarting(run.id); setRestartAt("") }}>Restart from…</button>
             <button type="button" className="trade-button" disabled={!run.finished || controls.blocked || controls.pending || verifying}
               onClick={() => void controls.verify(run.id, () => { void listing.refetch() })}>Verify</button>
             {(run.verification?.status === "passed" || run.verification?.status === "failed") &&
@@ -283,6 +317,14 @@ export function ReplayView({ onNavigate }: { onNavigate?: (view: View) => void }
         </div>)}
       </div>}
     </Panel>
+    {restarting && <Dialog title="Restart with the same commands" onClose={() => setRestarting(undefined)}>
+      <p className="text-sm">Start a new run with this run’s settings and commands through the chosen market time, including commands at that time. The source journal is kept.</p>
+      <label className="mt-3 block text-xs">Restart at (New York)<input aria-label="Restart at" type="datetime-local" step="1" className="trade-input" value={restartAt} onChange={(event) => setRestartAt(event.target.value.replace(/\.000$/, ""))} /></label>
+      <p className="my-2 text-xs text-muted">Leave blank for the source run’s start. The new run starts paused.</p>
+      <TradingError error={controls.error} />
+      <button type="button" className="trade-button" disabled={controls.pending || controls.blocked} onClick={() => void controls.restart(restarting, restartAt || undefined, () => { setRestarting(undefined); started() })}>Restart run</button>
+      <button type="button" className="trade-button" onClick={() => setRestarting(undefined)}>Cancel</button>
+    </Dialog>}
     {deleting && <Dialog title="Delete replay run?" onClose={() => setDeleting(undefined)}>
       <p className="text-sm">This permanently deletes the run’s journal and trades. This cannot be undone.</p>
       <TradingError error={controls.error} />
