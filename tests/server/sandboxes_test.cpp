@@ -249,7 +249,7 @@ TEST_F(Sandboxes, TradeScopeAllowsOwnOrdersPreviewsExitsAndNotes) {
   for (const auto& [method, path] : std::vector<std::pair<std::string, std::string>>{
       {"POST", "/api/orders"}, {"POST", "/api/orders/preview"}, {"PUT", "/api/orders/1"},
       {"DELETE", "/api/orders/1"}, {"POST", "/api/orders/cancel"}, {"POST", "/api/positions/close"},
-      {"POST", "/api/positions/exercise"}, {"POST", "/api/stocks/close"}, {"POST", "/api/positions/abandon"},
+      {"POST", "/api/positions/exercise"}, {"POST", "/api/stocks/close"}, {"POST", "/api/stocks/trade"}, {"POST", "/api/stocks/trade/preview"}, {"POST", "/api/positions/abandon"},
       {"POST", "/api/positions/instruction"},
       {"PUT", "/api/trades/1/note"}, {"PUT", "/api/days/2026-09-25/note"}}) {
     EXPECT_FALSE(server::check_api_write(request(method, path + "?account=" + id(own), token(own)), policy)) << path;

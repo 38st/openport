@@ -1784,4 +1784,67 @@ TEST(ReproducibleRun, PositionDisposalReplaysRecoversAndKeepsSparseCommandFields
   }
 }
 
+TEST(ReproducibleRun, OpeningShareCommandsRecordTheirPriceAndRecoverCoveredCalls) {
+  PolledInstants feed;
+  feed.write({{4.02, 10.20, 2.02}, {4.12, 11.20, 2.12}});
+  const auto journal = feed.file.directory / "shares.jsonl";
+  std::string expected;
+  {
+    server::Desk::Options options;
+    options.replay = true;
+    options.run_input = server::recording_input(feed.file.path);
+    options.paper_journal = journal;
+    options.paper.rules.buying_power = true;
+    auto desk = feed.desk(options);
+    desk.start_trading();
+    md::RecordingReader reader(feed.file.path);
+    providers::ReplayBatches batches(reader, feed.subscription);
+    auto batch = batches.next();
+    for (; batch && batch->time == feed.at(0); batch = batches.next())
+      desk.replay_batch(batch->events, batch->received, batch->time);
+    server::TradingCommand shares;
+    shares.kind = server::TradingCommand::Kind::TradeStock;
+    shares.symbol = "QQQ";
+    shares.quantity = 100;
+    const auto bought = command(desk, shares, feed.at(0), feed.at(0));
+    ASSERT_TRUE(bought.decision.ok()) << bought.decision.message;
+    ASSERT_TRUE(order(desk, feed.symbol(0), trading::Side::Sell, 1, feed.at(0)).decision.ok());
+    EXPECT_EQ(desk.trading_view()->snapshot->buying_power.short_requirement, Money{});
+    for (; batch; batch = batches.next()) desk.replay_batch(batch->events, batch->received, batch->time);
+    shares.kind = server::TradingCommand::Kind::CloseStock;
+    shares.quantity = 1;
+    ASSERT_TRUE(command(desk, shares, desk.market_time(), desk.market_time()).decision.ok());
+    expected = trading::TradingSession::recover(trading::FileJournal::read(journal.string())).snapshot_json();
+    desk.stop();
+  }
+  const auto verified = server::verify_run(journal);
+  EXPECT_TRUE(verified.matched) << verified.message;
+  auto recovered = trading::TradingSession::recover(trading::FileJournal::read(journal.string()));
+  EXPECT_EQ(recovered.snapshot_json(), expected);
+  ASSERT_EQ(recovered.snapshot()->stocks.size(), 1U);
+  EXPECT_EQ(recovered.snapshot()->stocks.front().position.shares, 99);
+  EXPECT_TRUE(recovered.snapshot()->stocks.front().mark.has_value());
+  bool opening = false, closing = false;
+  for (const auto& record : trading::FileJournal::read(journal.string()).records) {
+    const auto payload = json::parse(record.payload);
+    for (const auto& event : payload.at("events")) {
+      if (event.at("type") != "run_input") continue;
+      const auto& input = event.at("payload");
+      if (input.value("kind", "") != "command") continue;
+      const auto& c = input.at("command");
+      if (c.at("kind") == static_cast<int>(server::TradingCommand::Kind::TradeStock)) {
+        opening = true;
+        ASSERT_TRUE(c.contains("stock_price"));
+        EXPECT_EQ(c["stock_price"]["symbol"], "QQQ");
+        EXPECT_EQ(json(c.get<server::TradingCommand>()), c);
+      } else {
+        EXPECT_FALSE(c.contains("stock_price"));
+        if (c.at("kind") == static_cast<int>(server::TradingCommand::Kind::CloseStock)) closing = true;
+      }
+    }
+  }
+  EXPECT_TRUE(opening);
+  EXPECT_TRUE(closing);
+}
+
 }  // namespace

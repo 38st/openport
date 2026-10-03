@@ -32,6 +32,7 @@ inline void to_json(nlohmann::json& j, const TradingCommand& c) {
       {"day", c.day}, {"plan", c.plan}, {"review", c.review}, {"note", c.note}, {"tags", c.tags},
       {"quantity", c.quantity}, {"actor", c.actor}};
   // Later fields are recorded only when set, so earlier commands keep their bytes.
+  if (c.stock_price) j["stock_price"] = {{"symbol", c.stock_price->symbol}, {"time", c.stock_price->time}, {"price", c.stock_price->price}};
   if (c.do_not_exercise) j["do_not_exercise"] = true;
   if (!c.trades.empty()) j["trades"] = c.trades;
   if (c.close_pricing.limit) { j["close_limit"] = true; j["limit_ticks"] = c.close_pricing.limit_ticks; }
@@ -63,6 +64,10 @@ inline void from_json(const nlohmann::json& j, TradingCommand& c) {
   j.at("note").get_to(c.note);
   j.at("tags").get_to(c.tags);
   j.at("quantity").get_to(c.quantity);
+  if (j.contains("stock_price")) {
+    const auto& p = j.at("stock_price");
+    c.stock_price = trading::StockPrice{p.at("symbol").get<std::string>(), p.at("time").get<md::Timestamp>(), p.at("price").get<trading::Money>()};
+  }
   trading::added_field(j, "actor", c.actor);
   trading::added_field(j, "do_not_exercise", c.do_not_exercise);
   trading::added_field(j, "trades", c.trades);

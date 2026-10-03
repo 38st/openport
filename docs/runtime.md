@@ -646,6 +646,14 @@ changes can alter analytic floating-point fields; see the platform qualification
 [architecture](architecture.md#reproducible-runs). Journal compaction changes hashes,
 so keep the original when exact run verification is needed.
 
+Share opening commands append new command kinds without renumbering earlier kinds.
+Their optional `stock_price` input records the underlying symbol, exact micro-dollar
+price and market timestamp before execution, including a first purchase on an idle
+account. It is absent on all older command kinds. The close-only route keeps its
+existing command and transaction bytes. Recovery uses the existing share ledger,
+marks, basis, fills and annotations; no new state fields are needed. Previews are
+never journaled.
+
 ## Demo feed
 
 `openportd --provider demo` rotates the thirteen built-in regular scenarios in their

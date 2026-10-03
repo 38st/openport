@@ -1113,6 +1113,16 @@ ApiResponse command_response(const TradingCommand& command, const TradingReply& 
       break;
     }
     case TradingCommand::Kind::Playbook: body = json::parse(reply.playbook_result); break;
+    case TradingCommand::Kind::PreviewStock: {
+      if (!reply.stock_preview) return api_error(503, "TRADING_UNAVAILABLE", "No share preview available");
+      const auto& p = *reply.stock_preview;
+      body = {{"account_version", std::to_string(s.account_version)}, {"simulated", true},
+              {"decision", p.decision.ok() ? "ok" : to_string(p.decision.code)}, {"reason", decision_json(p.decision)},
+              {"price", money(p.price)}, {"cost", p.price ? json((*p.price * command.quantity).str()) : json(nullptr)},
+              {"current", what_if_account_json(p.current, view.config.scenarios)},
+              {"after", what_if_account_json(p.after, view.config.scenarios)}};
+      break;
+    }
     case TradingCommand::Kind::PreviewClose:
       if (!reply.flatten) return api_error(503, "TRADING_UNAVAILABLE", "No flatten preview available");
       body = flatten_preview_json(*reply.flatten, view);
@@ -1142,6 +1152,7 @@ ApiResponse command_response(const TradingCommand& command, const TradingReply& 
     case TradingCommand::Kind::Payout: body = account_json(view); break;
     case TradingCommand::Kind::Exercise:
     case TradingCommand::Kind::CloseStock:
+    case TradingCommand::Kind::TradeStock:
     case TradingCommand::Kind::Abandon:
     case TradingCommand::Kind::ExerciseInstruction: body = portfolio_json(view); break;
     case TradingCommand::Kind::DayNote: {
@@ -1621,6 +1632,21 @@ TradingCommand parse_command(const ApiRequest& request, std::string_view path) {
     command.do_not_exercise = boolean_field(body, "do_not_exercise");
     return command;
   }
+  if (path == "/api/stocks/trade" || path == "/api/stocks/trade/preview") {
+    fields(body, {"symbol", "side", "shares"});
+    command.kind = path.ends_with("/preview") ? TradingCommand::Kind::PreviewStock : TradingCommand::Kind::TradeStock;
+    command.symbol = string_field(body, "symbol");
+    if (command.symbol.empty() || command.symbol.size() > 16 ||
+        !std::all_of(command.symbol.begin(), command.symbol.end(), [](char c) { return (c >= 'A' && c <= 'Z') || (c >= '0' && c <= '9') || c == '.'; }))
+      throw std::invalid_argument("symbol must be an uppercase stock symbol such as SPY");
+    const auto side = string_field(body, "side");
+    if (side != "buy" && side != "sell") throw std::invalid_argument("side must be buy or sell");
+    command.quantity = integer_field(body, "shares");
+    if (command.quantity <= 0 || command.quantity > 10'000'000)
+      throw std::invalid_argument("shares must be a positive whole number, at most 10,000,000");
+    if (side == "sell") command.quantity = -command.quantity;
+    return command;
+  }
   if (path == "/api/stocks/close") {
     fields(body, {"symbol"}, {"shares"});
     command.kind = TradingCommand::Kind::CloseStock;
@@ -2066,7 +2092,7 @@ void handle_api_async(const ApiRequest& request, MetricsSource& source, ApiCompl
   const bool route = (request.method == "POST" && (path == "/api/orders" || path == "/api/orders/preview" || path == "/api/orders/what-if" ||
       (path.starts_with("/api/orders/") && path.ends_with("/preview")) ||
       path == "/api/orders/cancel" || path == "/api/positions/close" || path == "/api/positions/close/preview" || path == "/api/accounts" ||
-      path == "/api/positions/exercise" || path == "/api/stocks/close" ||
+      path == "/api/positions/exercise" || path == "/api/stocks/close" || path == "/api/stocks/trade" || path == "/api/stocks/trade/preview" ||
       path == "/api/positions/abandon" || path == "/api/positions/instruction" ||
       path == "/api/risk/kill" || path == "/api/settlements" ||
       path == "/api/account/reset" || path == "/api/account/payout" ||

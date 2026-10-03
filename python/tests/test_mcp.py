@@ -17,7 +17,7 @@ def call(server, name, **arguments):
 def test_tool_schemas_name_accounts_and_typed_orders(stub):
     server = create_server(Client(stub.url, "secret"))
     tools = {tool.name: tool for tool in asyncio.run(server.list_tools())}
-    assert set(tools) == {"status", "symbols", "summary", "chain", "volatility", "exposure", "account", "positions", "orders", "risk", "preview_order", "place_order", "cancel_order", "flatten", "list_scenarios", "start_replay", "step_replay", "stop_replay"}
+    assert set(tools) == {"status", "symbols", "summary", "chain", "volatility", "exposure", "account", "positions", "orders", "risk", "preview_order", "place_order", "trade_stock", "preview_stock", "cancel_order", "flatten", "list_scenarios", "start_replay", "step_replay", "stop_replay"}
     for name in ["place_order", "preview_order", "cancel_order", "flatten", "start_replay", "step_replay", "stop_replay"]:
         assert "account" in tools[name].input_schema["required"]
     schema = tools["place_order"].input_schema
@@ -100,3 +100,11 @@ def test_replay_receipt_clock_is_not_reported_as_market_time(stub):
     assert result["as_of"] == TIME
     assert call(server, "stop_replay", account="practice")["error"]["code"] == "INVALID_ACCOUNT"
     assert stub.replay is not None
+
+
+def test_share_tools_forward_scoped_and_replay_requests(stub):
+    server = create_server(Client(stub.url, "secret"))
+    for tool, suffix in [("trade_stock", ""), ("preview_stock", "/preview")]:
+        call(server, tool, account="main", replay=True, symbol="SPY", side="buy", shares=100)
+        assert stub.requests[-1][1] == "/api/replay/stocks/trade" + suffix + "?account=main"
+        assert stub.requests[-1][3] == {"symbol": "SPY", "side": "buy", "shares": 100}

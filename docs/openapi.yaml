@@ -3854,6 +3854,86 @@
           }
         }
       }
+    },
+    "/api/stocks/trade": {
+      "parameters": [
+        {
+          "$ref": "#/components/parameters/account"
+        }
+      ],
+      "post": {
+        "summary": "POST /api/stocks/trade",
+        "description": "Buy or sell 1–10,000,000 shares at a fresh underlying price during the stock regular session (09:30–16:00 ET, early closes). Opens, adds, reduces or reverses. Index underlyings are refused; opening takes account, guardrail, valuation, exposure, daily loss and buying-power checks. Buy-only and defined-risk plans refuse short shares. No fee. Requires trade:ACCOUNT (or trade:*) live, replay scope in replay.",
+        "x-scope": "trade",
+        "responses": {
+          "200": {
+            "description": "Success",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Portfolio"
+                }
+              }
+            }
+          },
+          "default": {
+            "$ref": "#/components/responses/Error"
+          }
+        },
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/StockTradeRequest"
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/replay/stocks/trade": {
+      "$ref": "#/paths/~1api~1stocks~1trade"
+    },
+    "/api/stocks/trade/preview": {
+      "parameters": [
+        {
+          "$ref": "#/components/parameters/account"
+        }
+      ],
+      "post": {
+        "summary": "POST /api/stocks/trade/preview",
+        "description": "Buy or sell 1–10,000,000 shares at a fresh underlying price during the stock regular session (09:30–16:00 ET, early closes). Opens, adds, reduces or reverses. Index underlyings are refused; opening takes account, guardrail, valuation, exposure, daily loss and buying-power checks. Buy-only and defined-risk plans refuse short shares. No fee. Dry run only: accepted/rejected decision, signed cash cost, price, and account before/after; a rejected trade leaves holdings unchanged. Nothing is journaled. Requires trade:ACCOUNT (or trade:*) live, replay scope in replay.",
+        "x-scope": "trade",
+        "responses": {
+          "200": {
+            "description": "Success",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/StockPreview"
+                }
+              }
+            }
+          },
+          "default": {
+            "$ref": "#/components/responses/Error"
+          }
+        },
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/StockTradeRequest"
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/replay/stocks/trade/preview": {
+      "$ref": "#/paths/~1api~1stocks~1trade~1preview"
     }
   },
   "components": {
@@ -17049,6 +17129,97 @@
               }
             }
           }
+        ]
+      },
+      "StockTradeRequest": {
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {
+          "symbol": {
+            "type": "string",
+            "pattern": "^[A-Z0-9.]{1,16}$"
+          },
+          "side": {
+            "anyOf": [
+              {
+                "const": "buy"
+              },
+              {
+                "const": "sell"
+              }
+            ]
+          },
+          "shares": {
+            "type": "integer",
+            "minimum": 1,
+            "maximum": 10000000
+          }
+        },
+        "required": [
+          "symbol",
+          "side",
+          "shares"
+        ]
+      },
+      "StockPreview": {
+        "type": "object",
+        "properties": {
+          "account_version": {
+            "type": "string"
+          },
+          "simulated": {
+            "const": true
+          },
+          "decision": {
+            "type": "string",
+            "description": "ok, or the refusal reason code."
+          },
+          "reason": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/Decision"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "price": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/Money"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "cost": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/Money"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "current": {
+            "$ref": "#/components/schemas/WhatIfAccount"
+          },
+          "after": {
+            "$ref": "#/components/schemas/WhatIfAccount"
+          }
+        },
+        "required": [
+          "account_version",
+          "simulated",
+          "decision",
+          "reason",
+          "price",
+          "cost",
+          "current",
+          "after"
         ]
       }
     }

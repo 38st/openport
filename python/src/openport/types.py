@@ -220,6 +220,17 @@ class WhatIfResult(TypedDict):
     simulated: bool
 
 
+class StockPreview(TypedDict):
+    account_version: str
+    simulated: bool
+    decision: str
+    reason: JSON | None
+    price: str | None
+    cost: str | None
+    current: JSON
+    after: JSON
+
+
 class FlattenPreview(TypedDict):
     account_version: str
     decision: str

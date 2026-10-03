@@ -180,6 +180,8 @@ def test_base_url_rejects_ambiguous_credentials(url):
     ("abandon", ("SPY   261022C00500000",), "POST", "/api/positions/abandon", "Portfolio"),
     ("exercise_instruction", ("SPY   261022C00500000", True), "POST", "/api/positions/instruction", "Portfolio"),
     ("close_stock", ("SPY", 100), "POST", "/api/stocks/close", "Portfolio"),
+    ("trade_stock", ("SPY", "buy", 100), "POST", "/api/stocks/trade", "Portfolio"),
+    ("preview_stock", ("SPY", "sell", 50), "POST", "/api/stocks/trade/preview", "StockPreview"),
     ("delete_replay", ("run-1",), "DELETE", "/api/replay/history/run-1", "DeletedReplay"),
 ])
 def test_each_route_uses_the_terminal_method_and_path(stub, method, arguments, verb, path, schema):
@@ -294,3 +296,13 @@ def test_margin_settings_pass_through_account_requests(stub):
     assert stub.requests[-1][3] == {"reason": "margin test", **settings}
     client.create_account("Portfolio", **settings)
     assert stub.requests[-1][3] == {"name": "Portfolio", **settings}
+
+
+def test_share_trade_does_not_retry_an_uncertain_write(stub):
+    def unavailable(method, target, headers, body):
+        stub.requests.append((method, target, headers, body))
+        return 503, {"error": {"code": "TRADING_UNAVAILABLE", "message": "unavailable"}}
+    stub.respond = unavailable
+    with pytest.raises(ApiError):
+        Client(stub.url, "secret", retries=3, backoff=0).trade_stock("SPY", "buy", 100)
+    assert len(stub.requests) == 1

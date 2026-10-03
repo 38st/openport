@@ -4829,35 +4829,89 @@ CommandResult TradingSession::instruct_exercise(const std::string& symbol, bool 
     return CommandResult{};
   });
 }
-CommandResult TradingSession::trade_stock(const std::string& symbol, Quantity signed_shares, Timestamp time) {
-  if (signed_shares == 0) throw TradingError(Reason::INVALID_ORDER, "Trade a nonzero number of shares");
+CommandResult TradingSession::trade_stock(const std::string& symbol, Quantity signed_shares, Timestamp time,
+                                          std::optional<StockPrice> feed_price, bool reduce_only) {
+  if (signed_shares == 0 || (!reduce_only && (signed_shares < -10'000'000 || signed_shares > 10'000'000)))
+    throw TradingError(Reason::INVALID_ORDER, "Trade a nonzero number of shares, at most 10,000,000");
+  if (!reduce_only && (symbol.empty() || symbol.size() > 16 ||
+      !std::all_of(symbol.begin(), symbol.end(), [](char c) { return (c >= 'A' && c <= 'Z') || (c >= '0' && c <= '9') || c == '.'; })))
+    throw TradingError(Reason::INVALID_ORDER, "Use an uppercase stock or ETF symbol");
+  if (feed_price && (feed_price->symbol != symbol || feed_price->price <= Money{} || feed_price->time < 0 || feed_price->time > time))
+    throw TradingError(Reason::INVALID_QUOTE, "A stock price needs the traded symbol, a positive price and no later time");
   return impl_->transact(time, "stock_trade", [&](State& s, Events& events) {
     if (const auto d = account_type_check(s, {}, {{symbol, signed_shares}}); !d.ok()) return CommandResult{d, {}, 0};
     const auto shares = shares_held(s, symbol);
     const bool reduces = shares != 0 && (shares > 0) != (signed_shares > 0) &&
                          (shares > 0 ? -signed_shares <= shares : signed_shares <= -shares);
-    if (!reduces)
+    if (reduce_only && !reduces)
       return CommandResult{failure(Reason::INVALID_ORDER, "Stock trades only reduce the shares exercise and assignment delivered"), {}, 0};
-    if (const auto d = account_check(s, true); !d.ok()) return CommandResult{d, {}, 0};
+    if (const auto d = account_check(s, reduces); !d.ok()) return CommandResult{d, {}, 0};
+    if (!reduces) {
+      if (md::is_index_underlying(symbol))
+        return CommandResult{failure(Reason::INVALID_ORDER, "Index underlyings settle in cash and have no shares to trade"), {}, 0};
+      if (signed_shares < 0 && s.config.rules.buy_only)
+        return CommandResult{failure(Reason::BUY_ONLY, "This plan is buy-only: share sales may only reduce long shares"), {}, 0};
+      if (signed_shares < 0 && s.config.rules.defined_risk)
+        return CommandResult{failure(Reason::DEFINED_RISK, "This plan allows defined risk only: short shares can lose without limit"), {}, 0};
+    }
+    if (feed_price) {
+      const auto prior = s.stock_marks.find(symbol);
+      if (prior == s.stock_marks.end() || prior->second.time <= feed_price->time)
+        s.stock_marks[symbol] = {feed_price->price, feed_price->time};
+    }
     if (const auto d = share_close_check(s, symbol); !d.ok()) return CommandResult{d, {}, 0};
     const auto price = stock_price(s, symbol);
+    if (!reduces) {
+      const auto before = measure(s);
+      if (!before.valuation_complete)
+        return CommandResult{failure(Reason::STALE_QUOTE, "All held positions need fresh marks before opening shares"), {}, 0};
+      if (const auto d = loss_check(s, before); !d.ok()) return CommandResult{d, {}, 0};
+      State projected = s;
+      trade_shares(projected, symbol, signed_shares, *price, StockSource::Trade);
+      if (const auto d = check_exposure(measure(projected).risk, before.risk); !d.ok()) return CommandResult{d, {}, 0};
+    }
     // Shares can cover options: selling the ones a short call is written against
     // leaves it naked, which may need more than the sale frees.
     if (s.config.rules.buying_power) {
       State projected = s;
       trade_shares(projected, symbol, signed_shares, *price, StockSource::Trade);
-      if (free_power(projected) < free_power(s) && buying_power(projected).total.available < Money{})
+      if (free_power(projected) < free_power(s) && buying_power(projected).total.available < Money{}) {
+        if (!reduces)
+          return CommandResult{{Reason::BUYING_POWER, "These shares need more buying power than the account has available",
+                                (-buying_power(projected).total.available).dollars(), 0.0, symbol}, {}, 0};
         return CommandResult{{Reason::BUYING_POWER, "These shares cover a short option that would need more buying power "
                               "than the account has available; buy the option back first", std::nullopt, std::nullopt, symbol}, {}, 0};
+      }
     }
     const auto realised_before = s.ledger.account().realised;
     trade_shares(s, symbol, signed_shares, *price, StockSource::Trade);
     count_trade(s);
+    if (!reduces) {
+      ++s.guardrails.opening_trades;
+      const auto limit = s.config.guardrails.max_opening_trades;
+      if (limit > 0 && s.guardrails.opening_trades >= limit) latch_guardrail(s, Reason::TRADE_LIMIT, events);
+    }
     if (s.config.guardrails.cooldown_loss > Money{} && s.ledger.account().realised - realised_before < -s.config.guardrails.cooldown_loss)
       begin_cooldown(s, events);
     event(events, "stock_trade", Json{{"symbol", symbol}, {"shares", signed_shares}, {"price", *price}});
     return CommandResult{};
   });
+}
+StockPreview TradingSession::preview_trade_stock(const std::string& symbol, Quantity signed_shares, Timestamp time,
+    std::optional<StockPrice> price, Decision rejection) const {
+  if (impl_->stopped) throw TradingError(Reason::JOURNAL_IO, "Trading stopped after journal failure; recover first");
+  auto copy = std::make_unique<Impl>();
+  copy->state = prepared(impl_->state, time, {});
+  copy->actor = impl_->actor;
+  copy->snapshot = std::make_shared<TradingSnapshot>(snapshot_of(copy->state));
+  const auto base = measure(copy->state).equity;
+  StockPreview result;
+  result.current = what_if_account(copy->state, base, {});
+  TradingSession trial(std::move(copy));
+  result.decision = rejection.ok() ? trial.trade_stock(symbol, signed_shares, time, price).decision : rejection;
+  result.price = stock_price(trial.impl_->state, symbol);
+  result.after = what_if_account(trial.impl_->state, base, {});
+  return result;
 }
 TradingSession TradingSession::recover(const JournalRecovery& recovery, std::shared_ptr<Journal> journal) {
   const auto verified = reverify(recovery);

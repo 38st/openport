@@ -58,7 +58,7 @@ struct TradingSnapshot {
   bool valuation_complete = true;
   bool journal_failed = false;
   std::vector<MarkedPosition> positions;
-  std::vector<MarkedStock> stocks;  ///< Shares from exercise and assignment.
+  std::vector<MarkedStock> stocks;  ///< Shares opened by trading, exercise or assignment.
   std::vector<Order> open_orders;
   SharedVector<Order> recent_orders;  ///< All v1 orders, in acceptance sequence.
   /// Why each open order that is not filling waits, by order ID (see OrderWait).
@@ -269,6 +269,12 @@ struct WhatIfAccount {
   ScenarioGrid scenarios;            ///< Each cell's P&L from today's equity.
   BreachRisk breach;
 };
+struct StockPreview {
+  Decision decision;
+  std::optional<Money> price;
+  WhatIfAccount current;
+  WhatIfAccount after;
+};
 struct WhatIfCandidate {
   Decision decision;            ///< The first order's refusal, or success.
   std::vector<Decision> orders; ///< Each order's checks, after the ones before it filled.
@@ -400,7 +406,7 @@ class TradingSession {
   /// work on later quotes until they fill, the session ends, they are cancelled
   /// or the position closes otherwise; they shrink with the position like the
   /// exits, which keep protecting whatever is still open and are cancelled once
-  /// it is flat. Delivered shares in scope close at their fresh price in the
+  /// it is flat. Shares in scope close at their fresh price in the
   /// stock market's regular session. Expired positions wait for their settlement,
   /// and a long that covers an expired short waits with it. A close the account
   /// (an attempt no longer open), `rejections` (the integration's gate) or the
@@ -489,9 +495,15 @@ class TradingSession {
   /// instruction. At settlement such a long expires worthless and delivers no
   /// shares or cash. The instruction ends with the position.
   CommandResult instruct_exercise(const std::string& symbol, bool do_not_exercise, Timestamp time);
-  /// Reduce or close a stock position at the underlying's fresh price in the
-  /// regular session, without a fee; shares come only from exercise and assignment.
-  CommandResult trade_stock(const std::string& symbol, Quantity signed_shares, Timestamp time);
+  /// Open, add, reduce or reverse shares at a fresh underlying price in the stock
+  /// regular session, without a fee. Opening takes account, exposure and buying-power
+  /// checks; a reversal closes the old position and opens the excess. An optional
+  /// feed price seeds an underlying not held yet. reduce_only preserves stock close.
+  CommandResult trade_stock(const std::string& symbol, Quantity signed_shares, Timestamp time,
+                            std::optional<StockPrice> price = {}, bool reduce_only = false);
+  /// The same trade on a private copy, without recording anything.
+  [[nodiscard]] StockPreview preview_trade_stock(const std::string& symbol, Quantity signed_shares, Timestamp time,
+      std::optional<StockPrice> price = {}, Decision rejection = {}) const;
   [[nodiscard]] std::shared_ptr<const TradingSnapshot> snapshot() const;
 
   /// Read-only integration context, owned by the reducer. The engine copies it

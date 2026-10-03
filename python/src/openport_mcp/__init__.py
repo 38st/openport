@@ -134,6 +134,16 @@ def create_server(client: Client, agent_name: str = "openport") -> MCPServer:
         return response
 
     @server.tool()
+    def trade_stock(account: str, symbol: str, side: Literal["buy", "sell"], shares: int, replay: bool = False) -> dict:
+        """Trade shares at the fresh stock-session price. Not idempotent: inspect positions after an uncertain response."""
+        return write(account, replay, lambda target: target.trade_stock(symbol, side, shares))
+
+    @server.tool()
+    def preview_stock(account: str, symbol: str, side: Literal["buy", "sell"], shares: int, replay: bool = False) -> dict:
+        """Preview shares, including cost, buying power and dollar delta; does not trade."""
+        return write(account, replay, lambda target: target.preview_stock(symbol, side, shares))
+
+    @server.tool()
     def status(replay: bool = False) -> dict:
         """Feed health and market time."""
         target = selected(replay=replay)

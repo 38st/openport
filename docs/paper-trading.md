@@ -150,7 +150,7 @@ positions five minutes before their last trade, so expiry delivery only reaches
 accounts without an expiry cutoff. Greeks and
 scenarios use the analytics' European Black-76 values at the de-Americanised smile IV.
 
-Delivered shares (`TradingSnapshot::stocks`) are marked at the underlying's price,
+Shares opened by trading or delivered (`TradingSnapshot::stocks`) are marked at the underlying's price,
 which `on_quotes` takes in `stocks` (the engine sends it for every underlying whose
 equity options or shares the account holds). The price is fresh within
 `max_quote_age` of the market time while the stock market is open, or of its last
@@ -163,9 +163,35 @@ after-hours trades; without a valid close it keeps the current quote
 They count in equity, daily loss and the rules, at their dollar
 delta in risk limits and scenarios, and in the P&L by Greek (all delta). Short shares
 hold 150% of their value in buying power, and under strategy margin every 100 shares
-can cover an option (see buying power under Account rules). `trade_stock(symbol, shares, time)` only
-reduces them, at the underlying's fresh price in the regular session and without a
-fee; flattening closes them too while the stock market is open (after its close they
+can cover an option (see buying power under Account rules). `trade_stock(symbol, shares, time, price)`
+opens, adds to, reduces or reverses a stock or ETF share position, at the underlying's
+fresh price in the stock regular session (09:30–16:00 ET, 13:00 on early closes),
+without a fee. The optional feed `price` seeds an underlying the account does not yet
+hold; the desk captures it in the command before journaling, so replay uses the same
+price and time. Each trade takes 1–10,000,000 whole shares. Index underlyings (SPX,
+XSP, VIX, RUT, NDX and the other supported cash-settled roots) have no tradable shares.
+
+An opening or adding trade takes the account's checks: active attempt, kill switch,
+personal guardrails, fresh marks and valuations on the book, daily loss, projected
+exposure (delta one per share, dollar delta shares times price), and projected buying
+power when its rule is enabled. Buy-only and defined-risk plans refuse short shares.
+Opening counts once against the personal opening-trade limit; a reversal counts once
+too, closing the old round trip and opening the excess with a new basis. A refusal
+changes no holdings. Reductions remain possible under the kill switch and guardrails.
+New share trades use the same equity, risk, scenarios, P&L attribution, journal notes
+and tags, round trips and dividend accounting as delivered shares. Exercise and
+assignment add to or net against them. Long shares are paid in full under strategy
+margin; every 100 cover a short call, including in a collar with a long put. Portfolio
+margin instead scans the whole book.
+
+The `defined_risk` plan keeps its stricter option-coverage rule: a short call needs
+a long call expiring with it or later. Shares cover calls for margin but do not
+satisfy this plan rule; a put in a collar does not substitute for the required call.
+This preserves the plan's option-only coverage invariant, including pending option
+sales and exercises, and existing journal decisions. Use a plan without `buy_only`
+or `defined_risk` for the covered-call and collar shortcuts.
+
+Flattening closes opened and delivered shares while the stock market is open (after its close they
 stay, and the flatten lists them in `kept_stocks`), and a decided attempt liquidates them, and a reset
 drops them at their mark. With the `buying_power` rule, a sale of shares that a short
 call is written against, which leaves the call naked, must leave available buying power
@@ -793,7 +819,7 @@ and without needing fresh marks on every other position, so an expired position
 awaiting its settlement no longer blocks them. They are the trader's own orders
 (client IDs `openport-close-{version}-{n}`, numbered past any client ID the account
 has already used). Expired positions wait for settlement, and so does a long that
-covers a short that has expired. Delivered shares in scope close at the underlying's
+covers a short that has expired. Shares in scope close at the underlying's
 fresh price in the stock market's regular session. The response lists every position
 in scope still open (`residuals`): the contracts still held, those its closes are
 still working, and why the rest are not being closed (a refusal,
@@ -2420,8 +2446,10 @@ focus at the top of the ticket.
 | `POST /api/positions/exercise` | Canonical `symbol` and positive `quantity` of long equity or ETF contracts to exercise early; returns the portfolio |
 | `POST /api/positions/abandon` | Canonical `symbol` of a long nobody bids for, or one awaiting settlement, to give up at zero without a fee ([disposal](#disposing-of-worthless-positions)); returns the portfolio |
 | `POST /api/positions/instruction` | Canonical `symbol` of a long option and boolean `do_not_exercise`: true makes it expire worthless at settlement, false withdraws that; returns the portfolio, whose positions carry `do_not_exercise` and `no_bid` |
-| `POST /api/stocks/close` | `symbol` of delivered shares (`SPY`) and optional positive `shares`, all of them when left out; closes at the underlying's price in the regular session and returns the portfolio |
-| `GET /api/portfolio` | `time`: the market time the publication is as of, the feed's latest even while the account is idle (as in `GET /api/risk` and `GET /api/account`). Account cash, equity, daily baseline/P&L, realised/unrealised, fees, completeness/quality flags, marked positions and Greeks, delivered `stocks` (symbol, shares, average price, basis, mark and its time, market value, unrealised and realised P&L, fees, freshness and today's attribution), and today's `attribution` (`delta`, `gamma`, `vega`, `theta`, `other`, `costs`, `total` in dollars) for the account and each position (null until the position's next fill or rollover), and `liquidity_used`: the current quotes whose displayed size the account's orders have taken some of, with each side's size and what is left (`bid_left`, `ask_left`) until a new quote |
+| `POST /api/stocks/trade` | `symbol` (`SPY`), `side` (`buy` or `sell`), and integer `shares` (1–10,000,000); opens, adds, reduces or reverses at a fresh stock-session price, returns the portfolio. Not idempotent: inspect positions after an uncertain response before retrying |
+| `POST /api/stocks/trade/preview` | The same body; dry-run decision (`ok` or reason code), `reason`, `price`, signed `cost` (negative receives), `current` and `after` account buying power, exposure and risk; `simulated: true`. Refusals leave projected holdings unchanged; nothing recorded |
+| `POST /api/stocks/close` | `symbol` of shares held (`SPY`) and optional positive `shares`, all of them when left out; closes at the underlying's price in the regular session and returns the portfolio |
+| `GET /api/portfolio` | `time`: the market time the publication is as of, the feed's latest even while the account is idle (as in `GET /api/risk` and `GET /api/account`). Account cash, equity, daily baseline/P&L, realised/unrealised, fees, completeness/quality flags, marked positions and Greeks, opened or delivered `stocks` (symbol, shares, average price, basis, mark and its time, market value, unrealised and realised P&L, fees, freshness and today's attribution), and today's `attribution` (`delta`, `gamma`, `vega`, `theta`, `other`, `costs`, `total` in dollars) for the account and each position (null until the position's next fill or rollover), and `liquidity_used`: the current quotes whose displayed size the account's orders have taken some of, with each side's size and what is left (`bid_left`, `ask_left`) until a new quote |
 | `GET /api/orders?status=all` | All orders, newest first; `status=open` restricts to working, partially filled and armed orders |
 | `POST /api/orders` | `client_order_id`, canonical `symbol`, `side` (`buy`/`sell`), `type` (`limit`/`market`), integer `quantity`, decimal-string `limit_price` for limits, `time_in_force` (`day`/`gtc`/`ioc`/`exto`/`gtc_exto`/`gtd`), `good_till` timestamp required only for GTD, optional `tags` and `note`, optional `trigger` `{source: option\|combo\|underlying, direction: at_or_below\|at_or_above, level}` and `bracket` `{stop_loss?, take_profit?}` whose exits each take one of `trigger` or `limit_price`. A multi-leg order replaces `symbol` and `side` with `legs` (two to four `{symbol, side, ratio?}`, ratio default 1, or up to eight for a roll), allows an entry bracket or a reducing trigger (combo or underlying), counts units in `quantity` and sets a signed net `limit_price` (negative for a credit); `exits_only: true` attaches a bracket to held closing legs as described above; optional `group` joins what the order opens to a [whole trade](#whole-trades); 201 returns version, order and its fills. Orders report `legs` (null for single-leg), with null `symbol` and `side` for multi-leg orders. Retrying with a `client_order_id` already used and the same terms is safe: it returns the first answer (200 with the order as it now stands, also after `PUT /api/orders/{id}` changed it, or the original rejection) and records nothing, while other terms under that ID, the changed ones included, are refused with 409 `DUPLICATE_CLIENT_ID` and record nothing. Client IDs are scoped to an attempt: after an account reset, earlier attempts' IDs name new orders |
 | `POST /api/orders/preview` | The order body plus optional `floor_share` (default 0.5); 200 returns the dry-run decision, buying power, exposure change, labelled maximum loss, floor warnings, `max_units` with its buying-power and floor parts (null when unavailable), projected `breach`, and `execution`: what submitting now would fill at once and the full size's fill schedule, each leg's quote `liquidity`, and `warnings` about stops, targets and triggers already reached, a stop given only a limit price, or slippage that pushes a market order outside the band |
@@ -2430,7 +2458,7 @@ focus at the top of the ticket.
 | `DELETE /api/orders/{id}` | No body; 200 returns version and resulting order |
 | `PUT /api/orders/{id}` | Any of integer `quantity`, decimal-string `limit_price` and `trigger_level`; 200 returns version, the changed order and its fills (see [changing orders](#changing-cancelling-and-flattening)) |
 | `POST /api/orders/cancel` | Optional `underlying`; cancels every open order, or that underlying's, and returns version and `cancelled_orders` |
-| `POST /api/positions/close` | Optional `underlying`; cancels the open orders in scope but the bracket exits and closes its positions at market with reduce-only orders that keep working until filled, returning version, `cancelled_orders`, the closing `orders` (each with its status and reason), their `fills`, the delivered shares it closed (`stock_fills`) and those it could not (`kept_stocks`: symbol, shares and reason), and each position still open (`residuals`: symbol, underlying, signed `quantity`, the contracts still `working` and the `reason` the rest are not, or null). 422 with the reason, and nothing changed, when nothing in scope can close ([flattening](#changing-cancelling-and-flattening)) |
+| `POST /api/positions/close` | Optional `underlying`; cancels the open orders in scope but the bracket exits and closes its positions at market with reduce-only orders that keep working until filled, returning version, `cancelled_orders`, the closing `orders` (each with its status and reason), their `fills`, the shares it closed (`stock_fills`) and those it could not (`kept_stocks`: symbol, shares and reason), and each position still open (`residuals`: symbol, underlying, signed `quantity`, the contracts still `working` and the `reason` the rest are not, or null). 422 with the reason, and nothing changed, when nothing in scope can close ([flattening](#changing-cancelling-and-flattening)) |
 | `POST /api/positions/close/preview` | Optional `underlying`; the flatten's dry run on a private copy: `decision` and `reason`, `cancelled_orders`, the closing `orders` without IDs and their `fills`, `stock_fills`, `kept_stocks`, `remaining` and `remaining_shares` in scope, and the account `current` and `after`; `simulated: true`, nothing recorded ([flattening](#changing-cancelling-and-flattening)) |
 | `GET /api/fills` | Version and fills, newest first, with pre-execution `context` and the `quote` each took: `observation`, `bid`, `ask`, `bid_size`, `ask_size`, `size_left` (displayed size still free for paper orders before the fill), `quoted_at` (when the quote was first given) and `age_seconds` (both null on older fills) |
 | `GET /api/trades.csv`, `GET /api/fills.csv` | CSV downloads with `account`, inclusive New York `from`/`to` dates, fixed columns and exact money; see [CSV downloads](#csv-downloads) |

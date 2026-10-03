@@ -12,7 +12,7 @@ from .types import (JSON, Account, Chain, Fills, OrderResult, Orders, Portfolio,
                     ReplayListing, ReplayResult, Status, Summary, Surface, Trades,
                     Exposure, Volatility, Candles, Risk, OrderPreview, SubmitResult,
                     Plans, Accounts, EquityHistory, CancelAllResult, FlattenResult,
-                    WhatIfResult, FlattenPreview)
+                    WhatIfResult, FlattenPreview, StockPreview)
 
 
 class ApiError(Exception):
@@ -65,7 +65,7 @@ class Client:
                       backoff=self.backoff, history=run_id)
 
     def _request(self, method: str, path: str, body: JSON | None = None, *,
-                 params: JSON | None = None, scoped: bool = False, control: bool = False):
+                 params: JSON | None = None, scoped: bool = False, control: bool = False, retry: bool = True):
         query = {key: value for key, value in (params or {}).items() if value is not None}
         if scoped and self.account_id is not None:
             query["account"] = self.account_id
@@ -79,7 +79,8 @@ class Client:
         if data is not None:
             headers["Content-Type"] = "application/json"
         request = Request(url, data=data, method=method, headers=headers)
-        for attempt in range(self.retries + 1):
+        retries = self.retries if retry else 0
+        for attempt in range(retries + 1):
             try:
                 with self._opener.open(request, timeout=self.timeout) as response:
                     raw = response.read().decode()
@@ -89,7 +90,7 @@ class Client:
                     raw = error.read().decode(errors="replace")
                     status = error.code
                     retry_after = error.headers.get("Retry-After") if error.headers else None
-                if status == 503 and attempt < self.retries:
+                if status == 503 and attempt < retries:
                     time.sleep(self._retry_delay(retry_after, attempt))
                     continue
                 try:
@@ -271,6 +272,14 @@ class Client:
 
     def exercise_instruction(self, symbol: str, do_not_exercise: bool = True) -> Portfolio:
         return self._request("POST", "/positions/instruction", {"symbol": symbol, "do_not_exercise": do_not_exercise}, scoped=True)
+
+    def trade_stock(self, symbol: str, side: str, shares: int) -> Portfolio:
+        """Open, add, reduce or reverse shares at a fresh stock-session price."""
+        return self._request("POST", "/stocks/trade", {"symbol": symbol, "side": side, "shares": shares}, scoped=True, retry=False)
+
+    def preview_stock(self, symbol: str, side: str, shares: int) -> StockPreview:
+        """Preview share cost, buying power and dollar delta without trading."""
+        return self._request("POST", "/stocks/trade/preview", {"symbol": symbol, "side": side, "shares": shares}, scoped=True)
 
     def close_stock(self, symbol: str, shares: int | None = None) -> Portfolio:
         return self._request("POST", "/stocks/close", {"symbol": symbol, **({"shares": shares} if shares is not None else {})}, scoped=True)

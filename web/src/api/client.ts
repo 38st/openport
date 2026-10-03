@@ -4,7 +4,7 @@ import type { StrategyTemplate, TemplateResult } from "../lib/strategy"
 import type { Volatility, VolatilitySeries } from "./types"
 import type { NotificationChannel, NotificationStatus } from "./types"
 import type { CandleInterval, Candles, Chain, ExposureMatrix, ReplayListing, ReplayState, Status, Summary, Surface } from "./types"
-import type { Account, AccountsResponse, CancelAllResponse, ClosePositionsResponse, CreateAccountRequest, CreateAccountResponse, DayNote, EquityHistory, FillsResponse, FlattenPreview, FlattenPricing, GroupResponse, Guardrails, KillResponse, Limits, Money, NewOrder, OrderChange, OrderPreview, OrderResponse, OrdersResponse, PlansResponse, Portfolio, ResetRequest, Risk, SettlementResponse, SubmitOrderResponse, TradeNote, TradeNoteResponse, TradesResponse, WhatIfResponse, WriteMode } from "./trading-types"
+import type { Account, AccountsResponse, CancelAllResponse, ClosePositionsResponse, CreateAccountRequest, CreateAccountResponse, DayNote, EquityHistory, FillsResponse, FlattenPreview, FlattenPricing, GroupResponse, Guardrails, KillResponse, Limits, Money, NewOrder, OrderChange, OrderPreview, OrderResponse, OrdersResponse, PlansResponse, Portfolio, ResetRequest, Risk, SettlementResponse, Side, StockPreview, SubmitOrderResponse, TradeNote, TradeNoteResponse, TradesResponse, WhatIfResponse, WriteMode } from "./trading-types"
 import { activeAccount, MAIN_ACCOUNT } from "../lib/active-account"
 import { dataSource } from "../lib/data-source"
 import { isSandboxToken, writeToken } from "../lib/write-token"
@@ -164,6 +164,10 @@ export const api = {
   abandon: (symbol: string, mode: WriteMode) => write<Portfolio>(scoped("/api/positions/abandon"), "POST", mode, { symbol }),
   exerciseInstruction: (symbol: string, doNotExercise: boolean, mode: WriteMode) =>
     write<Portfolio>(scoped("/api/positions/instruction"), "POST", mode, { symbol, do_not_exercise: doNotExercise }),
+  tradeStock: (symbol: string, side: Side, shares: number, mode: WriteMode) =>
+    write<Portfolio>(scoped("/api/stocks/trade"), "POST", mode, { symbol, side, shares }),
+  previewStock: (symbol: string, side: Side, shares: number, mode: WriteMode) =>
+    write<StockPreview>(scoped("/api/stocks/trade/preview"), "POST", mode, { symbol, side, shares }),
   closeStock: (symbol: string, shares: number | null, mode: WriteMode) =>
     write<Portfolio>(scoped("/api/stocks/close"), "POST", mode, shares == null ? { symbol } : { symbol, shares }),
   updateLimits: (expected_revision: string, limits: Limits, mode: WriteMode) => write<Risk>(scoped("/api/risk/limits"), "PUT", mode, { expected_revision, limits }),

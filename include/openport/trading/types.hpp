@@ -332,7 +332,7 @@ struct Valuation {
 using Contracts = SharedMap<std::string, md::OptionContract>;
 using Valuations = SharedMap<std::string, Valuation>;
 
-/// An underlying's price, for the shares that exercise and assignment deliver.
+/// An underlying's price, for traded and delivered shares.
 struct StockPrice {
   std::string symbol;
   Timestamp time = 0;
