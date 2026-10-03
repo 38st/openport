@@ -5,7 +5,7 @@ import { createRoot, type Root } from "react-dom/client"
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
 import { api } from "../api/client"
 import { liveState, useLive } from "../api/live"
-import type { BacktestReport, BacktestState } from "../api/backtest-types"
+import type { BacktestComparison, BacktestReport, BacktestState } from "../api/backtest-types"
 import { plans, status } from "../test/trading-fixtures"
 import { newPlaybook } from "./PlaybooksView"
 import { BacktestView, BacktestReportView, backtestHistogram } from "./BacktestView"
@@ -24,9 +24,18 @@ const report: BacktestReport = { schema: 1, simulated: true, label, status: "com
   attempts: [{ ...result, first_day: 0, last_day: 0, days: 1 }], errors: [],
   summary: { daily_pnl: distribution, daily_drawdown: { ...distribution, values: ["20.00"], min: "20.00", max: "20.00" }, worst_days: [0], completed_days: 1, marked_days: 1,
     trades: 0, expectancy: null, win_rate: null, day_win_rate: 1, attempts: 1, passed: 0, failed: 0, open: 1, pass_rate: null } }
+const comparison: BacktestComparison = {
+  label, different_inputs: true, different_plans: false, incomplete_inputs: false, apples_to_oranges: true,
+  runs: ["000001", "000002"].map((id) => ({ id, status: "completed", playbook: { id: "test", version: 1 }, plan: { rules: { plan: "eod-50k" } }, input_set: [], summary: report.summary })),
+  daily: [{ date: "2026-09-14", pnl: { "000001": "40.00", "000002": null } }],
+  combined: { label: "Sum of independent single-playbook days. No shared buying power, risk limits or plan floor; not a joint account simulation.",
+    daily_pnl: distribution, curve: [{ date: "2026-09-14", pnl: "40.00", cumulative: "40.00", contributors: 1 }], max_drawdown: "0.00", worst_days: [], day_win_rate: 1 },
+}
 let root: Root, host: HTMLDivElement, client: QueryClient
 beforeEach(() => {
   vi.stubGlobal("IS_REACT_ACT_ENVIRONMENT", true)
+  Object.defineProperty(HTMLDialogElement.prototype, "showModal", { configurable: true, value() { this.open = true } })
+  Object.defineProperty(HTMLDialogElement.prototype, "close", { configurable: true, value() { this.open = false } })
   vi.mocked(useLive).mockReturnValue(liveState(status, null, "open"))
   host = document.createElement("div"); document.body.append(host); root = createRoot(host)
   client = new QueryClient({ defaultOptions: { queries: { retry: false, gcTime: Infinity } } })
@@ -36,6 +45,9 @@ beforeEach(() => {
   vi.spyOn(api, "backtests").mockResolvedValue({ runs: [], active: null, label })
   vi.spyOn(api, "backtest").mockResolvedValue(state)
   vi.spyOn(api, "startBacktest").mockResolvedValue(state)
+  vi.spyOn(api, "compareBacktests").mockResolvedValue(comparison)
+  vi.spyOn(api, "keepBacktest").mockResolvedValue({ ...state, keep: true })
+  vi.spyOn(api, "deleteBacktest").mockResolvedValue({ id: state.id, deleted: true })
   vi.spyOn(api, "cancelBacktest").mockResolvedValue({ ...state, status: "cancelling" })
 })
 afterEach(async () => { await act(async () => root.unmount()); host.remove(); client.clear(); vi.restoreAllMocks(); vi.unstubAllGlobals(); dataSource.set("live") })
@@ -109,6 +121,53 @@ describe("Backtest page", { timeout: renderTimeout }, () => {
     expect(host.textContent).toContain("Partial report")
     expect(host.textContent).toContain("Incomplete marks")
     expect(host.textContent).toContain("Truncated recording")
+  })
+  it("expands attempt day rows while accepting older reports without them", async () => {
+    await render(<BacktestReportView report={{ ...report, schema: 2, attempts: [{ ...report.attempts[0]!, day_rows: [{
+      date: "2026-09-14", day_index: 0, ended: result.ended, start_balance: "50000.00", end_balance: "50040.00", start_equity: "50000.00", end_equity: "50040.00",
+      pnl: "40.00", valuation_complete: true, floor: "48000.00", floor_distance: "2040.00", target: "3000.00", target_progress: "40.00", peak: "50040.00",
+      day_lock: "DAILY_LOSS_LIMIT", outcome: "open", decision: "", decision_code: "NONE", rule_trips: [], trades_opened: 2, trades_closed: 1,
+    }] }] }} />)
+    const summary = [...host.querySelectorAll("summary")].find((item) => item.textContent === "Daily evaluation (1 days)")!
+    await act(async () => summary.click())
+    expect(summary.parentElement?.getAttribute("open")).not.toBeNull()
+    expect(summary.parentElement?.textContent).toContain("$50,000.00 → $50,040.00")
+    expect(summary.parentElement?.textContent).toContain("DAILY_LOSS_LIMIT")
+    expect(summary.parentElement?.textContent).toContain("2 / 1")
+  })
+  it("compares selected saved runs and charts their independent combined curve", async () => {
+    vi.mocked(api.backtests).mockResolvedValue({ active: null, label, runs: ["000001", "000002"].map((id) => ({ ...state, id, status: "completed", summary: report.summary, bytes: 1048576 })) })
+    await render()
+    for (const id of ["000001", "000002"]) await act(async () => host.querySelector<HTMLInputElement>(`[aria-label="Compare run ${id}"]`)!.click())
+    await waitForRender(() => expect(host.textContent).toContain("Compare saved runs"))
+    expect(api.compareBacktests).toHaveBeenCalledWith(["000001", "000002"], expect.any(AbortSignal))
+    expect(host.textContent).toContain("different inputs")
+    expect(host.textContent).toContain("No shared buying power")
+    expect(host.textContent).toContain("1.00 MiB")
+    expect(host.querySelector('path[aria-label="Combined cumulative P&L"]')).not.toBeNull()
+    expect(host.querySelectorAll("table")[1]?.textContent).toContain("—")
+  })
+  it("pins saved runs and confirms permanent deletion", async () => {
+    const finished: BacktestState = { ...state, status: "completed", summary: report.summary, keep: false }
+    vi.mocked(api.backtests).mockResolvedValue({ active: null, label, runs: [finished] })
+    vi.mocked(api.backtest).mockResolvedValue(finished)
+    await render()
+    await act(async () => host.querySelector<HTMLInputElement>('[aria-label="Keep run 000001"]')!.click())
+    await waitForRender(() => expect(api.keepBacktest).toHaveBeenCalledWith("000001", true, "open"))
+    await act(async () => host.querySelector<HTMLButtonElement>('[aria-label="Delete run 000001"]')!.click())
+    expect(api.deleteBacktest).not.toHaveBeenCalled()
+    expect(document.body.textContent).toContain("Permanently delete run 000001")
+    vi.mocked(api.backtests).mockResolvedValue({ active: null, label, runs: [] })
+    const confirm = [...document.body.querySelectorAll("button")].find((item) => item.textContent === "Delete saved run")!
+    await act(async () => confirm.click())
+    await waitForRender(() => expect(api.deleteBacktest).toHaveBeenCalledWith("000001", "open"))
+    expect(document.body.textContent).not.toContain("Delete saved backtest?")
+  })
+  it("disables deletion and comparison for active runs", async () => {
+    vi.mocked(api.backtests).mockResolvedValue({ active: state.id, label, runs: [state] })
+    await render()
+    expect(host.querySelector<HTMLButtonElement>('[aria-label="Delete run 000001"]')!.disabled).toBe(true)
+    expect(host.querySelector<HTMLInputElement>('[aria-label="Compare run 000001"]')!.disabled).toBe(true)
   })
   it("bins every observation, including equal and negative values", () => {
     expect(backtestHistogram([])).toEqual([])
