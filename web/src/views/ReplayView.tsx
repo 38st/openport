@@ -189,7 +189,7 @@ export function ReplayView({ onNavigate }: { onNavigate?: (view: View) => void }
       </Panel>
     ) : null}
     {demos.length > 0 && <Panel title="Demo market">
-      <p className="mb-3 text-sm">Simulated trading days in {joinList(demos[0]!.symbols)} options: prices are generated on this server, not
+      <p className="mb-3 text-sm">Simulated trading days in {joinList([...new Set(demos.flatMap((demo) => demo.symbols))])} options: prices are generated on this server, not
         market data. Each plays like a recording, with its own paper account, so every page works while markets are closed.</p>
       <div className="grid gap-2 md:grid-cols-2 xl:grid-cols-3">
         {demos.map((d) => {
