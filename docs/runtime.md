@@ -411,7 +411,7 @@ loops; malformed data produces `Error`. Neither the daemon nor its web terminal
 exits automatically at replay EOF. The probe retains its readiness/timeout rules
 and stops waiting at EOF if it has not become ready.
 
-**Format v4.** The demo feed (`--provider demo`, including explicit `--demo-days`)
+**Format v4.** The demo feed (`--provider demo`, including explicit `--option days=…`)
 and generated scenarios with stalls or halts use version 4. Other live providers
 keep version 2. Re-recording a replay uses version 4 only when its source header
 enables market controls; ordinary replay sources keep version 2. Writers choose
@@ -763,6 +763,13 @@ Driver 6 also labels automatic playbook entry/exit cancellations
 bytes. Older cancel commands omit the optional `cancel_reason` and default to
 `USER_CANCEL`; existing account journals and saved reports still load. Resuming
 an interrupted run requires the current driver, as before.
+
+Authored-halt decisions use New York time, or say "for the rest
+of the day" when the halt reaches the regular close (including early closes).
+For example: "Trading is halted market-wide by the scenario; it resumes at 10:30 ET".
+Runs keep driver 6; authored halts were not available in earlier shipped builds,
+so there is no older message to preserve. There is no journal-byte change beyond
+the new message on authored halts. Scenario generator revision 5 is unchanged.
 
 Live paper Auto also persists account/version forward-test windows in the optional
 `forward_tests` key of `playbooks.json`. Modes resume after restart, with entry

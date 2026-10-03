@@ -29,7 +29,7 @@ struct Replay {
   std::unique_ptr<server::Desk> desk;
   std::optional<providers::ReplayBatch> next;
   std::map<std::string, md::InstrumentId> ids;
-  explicit Replay(const json& data) {
+  explicit Replay(const json& data, bool recording_input = false) {
     const auto source = file.directory / "stress.json";
     { std::ofstream out(source); out << data; }
     scenario = providers::read_scenario(source);
@@ -37,7 +37,8 @@ struct Replay {
     reader = std::make_unique<md::RecordingReader>(file.path);
     server::Desk::Options options;
     options.replay = true;
-    options.run_input = server::scenario_input(scenario, scenario.date, scenario.seed);
+    options.run_input = recording_input ? server::recording_input(file.path)
+        : server::scenario_input(scenario, scenario.date, scenario.seed);
     options.paper_journal = file.directory / "run.jsonl";
     options.paper.initial_cash = Money::parse("1000000");
     options.paper.limits.max_quote_age = 30 * md::kNanosPerSecond;
@@ -115,7 +116,9 @@ TEST(StressReplay, AbnormalBooksStallAndHaltRecoverAndVerify) {
   EXPECT_TRUE(replay.desk->trading_view()->snapshot->valuation_complete);
   EXPECT_TRUE(replay.order("recovered").decision.ok());
   replay.until(9, 43);
-  EXPECT_EQ(replay.order("halted").decision.code, trading::Reason::MARKET_HALTED);
+  const auto halted = replay.order("halted").decision;
+  EXPECT_EQ(halted.code, trading::Reason::MARKET_HALTED);
+  EXPECT_EQ(halted.message, "Trading is halted market-wide by the scenario; it resumes at 09:45 ET");
   EXPECT_TRUE(replay.desk->breaker().active);
   replay.until(9, 45);
   EXPECT_FALSE(replay.desk->breaker().active);
@@ -146,6 +149,41 @@ TEST(StressReplay, AuthoredReferenceTripsRealBreakerLevelsAndRestOfDayClose) {
   replay.until(10, 40);
   EXPECT_EQ(replay.order("still-level3").decision.code, trading::Reason::MARKET_HALTED);
   replay.verify();
+}
+
+TEST(StressReplay, AuthoredHaltMessagesVerifyWithDriverSix) {
+  auto data = script();
+  data["events"] = json::array({{{"type", "halt"}, {"at", "10:00"}, {"minutes", 30}}});
+  for (const bool recording : {false, true}) {
+    SCOPED_TRACE(recording ? "recording" : "scenario");
+    Replay replay(data, recording);
+    replay.until(10, 1);
+    const auto halted = replay.order("halted").decision;
+    EXPECT_EQ(halted.code, trading::Reason::MARKET_HALTED);
+    EXPECT_EQ(halted.message, "Trading is halted market-wide by the scenario; it resumes at 10:30 ET");
+    replay.verify();
+    const auto inputs = server::run_inputs(trading::FileJournal::read((replay.file.directory / "run.jsonl").string()));
+    ASSERT_FALSE(inputs.empty());
+    EXPECT_EQ(json::parse(inputs.front()).at("driver"), 6);
+  }
+}
+
+TEST(StressReplay, AuthoredHaltMessagesUseNewYorkTimeAndTheRegularOrEarlyClose) {
+  for (const md::Date date : {md::Date{2026, 9, 16}, md::Date{2026, 12, 1}, md::Date{2026, 11, 27}}) {
+    const auto start = md::new_york_to_utc(date, 10, 0);
+    const auto resume = md::new_york_to_utc(date, 10, 30);
+    const auto close = md::new_york_to_utc(date, md::regular_close_hour(date), 0);
+    const auto message = [&](md::Timestamp end) {
+      // Frozen quotes and a delayed driver clock still show the authored halt.
+      return server::paper_acceptance("SPX", start, start + 16 * md::kNanosPerMinute,
+          std::chrono::minutes(15), 30 * md::kNanosPerSecond,
+          {{0, start, end, 0, 0}, {1, start, resume, 5400, 5000}}).message;
+    };
+    EXPECT_EQ(message(resume), "Trading is halted market-wide by the scenario; it resumes at 10:30 ET");
+    EXPECT_EQ(message(resume - md::kNanosPerMinute), "Trading is halted market-wide by the scenario; it resumes at 10:30 ET");
+    EXPECT_EQ(message(close), "Trading is halted market-wide by the scenario for the rest of the day");
+    EXPECT_EQ(message(close + md::kNanosPerMinute), "Trading is halted market-wide by the scenario for the rest of the day");
+  }
 }
 
 TEST(StressReplay, WideChainKeepsStrikesNearSpotAfterLargeMoveAndReachesMarginFloors) {

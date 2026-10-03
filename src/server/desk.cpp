@@ -376,8 +376,19 @@ trading::Decision paper_acceptance(std::string_view underlying, md::Timestamp ma
     authored = authored || halt.level == 0;
     resume = std::max(resume, halt.end);
   }
-  if (authored)
-    return {Reason::MARKET_HALTED, "Authored market-wide halt; trading resumes at " + md::format_timestamp(resume), {}, {}, {}};
+  if (authored) {
+    std::string message = "Trading is halted market-wide by the scenario";
+    const auto date = md::new_york_time(shown).date;
+    const auto close = md::new_york_to_utc(date, md::regular_close_hour(date), 0);
+    if (resume >= close) message += " for the rest of the day";
+    else {
+      const auto minutes = md::new_york_time(resume).seconds / 60;
+      char text[64];
+      std::snprintf(text, sizeof text, "; it resumes at %02d:%02d ET", minutes / 60, minutes % 60);
+      message += text;
+    }
+    return {Reason::MARKET_HALTED, std::move(message), {}, {}, {}};
+  }
   if (market_time <= 0)
     return {Reason::INVALID_QUOTE, std::string(underlying) + " is waiting for market data", {}, {}, {}};
   // A healthy feed shows the market as it was `delay` ago, and stops at the end
