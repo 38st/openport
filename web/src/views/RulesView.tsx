@@ -11,7 +11,7 @@ import { TradingError } from "../components/TradingControls"
 import { Empty, PageHeader, Panel } from "../components/ui"
 import { lockReason, offeredPlans, payoutCap } from "../lib/payouts"
 import { clockText, dailyLossBasisText, dailyLossFact, dayEnd, floorMoves, objectiveFacts } from "../lib/plan-rules"
-import { formatMoney } from "../lib/trading"
+import { compareMoney, formatMoney, subtractMoney } from "../lib/trading"
 
 function Rule({ title, children }: { title: string; children: ReactNode }) {
   return <div className="border-b border-border/50 py-3 last:border-0">
@@ -55,7 +55,10 @@ export function ruleText(account: Account, fee?: string, dailyLoss?: string) {
       : "This account has no drawdown floor." },
     ...(r.daily_loss_limit ? [{ title: "Plan daily loss limit", body: <>
         Each trading day, equity may not touch {formatMoney(r.daily_loss_limit)} below {dailyLossBasisText[r.daily_loss_basis ?? "equity"]}
-        {e.daily_loss ? <>: today <strong className="text-foreground">{formatMoney(e.daily_loss.level)}</strong>, {formatMoney(e.daily_loss.room)} below current equity</> : null}.
+        {e.daily_loss ? <>: today <strong className="text-foreground">{formatMoney(e.daily_loss.level)}</strong>, {compareMoney(e.daily_loss.room, "0") === 1
+          ? <>{formatMoney(e.daily_loss.room)} below current equity</>
+          : <>which equity has reached{compareMoney(e.daily_loss.room, "0") === -1
+            ? <> ({formatMoney(subtractMoney("0", e.daily_loss.room))} below it)</> : null}</>}</> : null}.
         {r.daily_loss_basis === "peak" ? " The level rises with the day's equity high, so it trails the day's gains." : null}
         {r.daily_loss_action === "fail"
           ? " Touching it fails the attempt and closes every position."
@@ -63,7 +66,7 @@ export function ruleText(account: Account, fee?: string, dailyLoss?: string) {
         {e.day_lock && <> <strong className="text-foreground">Today is locked.</strong></>}
         {" "}It is the plan's own rule, apart from your personal daily loss limit below.</> }] : []),
     ...(objectives.length ? [{ title: "Objectives to pass", body: <>
-        {objectives.join("; ")}. A trading day counts once one of your own orders executes on it, or you trade shares; holding a position over a day, or an exercise, does not count.
+        {objectives.map((o, i) => i === 0 ? o : o.charAt(0).toLowerCase() + o.slice(1)).join("; ")}. A trading day counts once one of your own orders executes on it, or you trade shares; holding a position over a day, or an exercise, does not count.
         Days follow the plan's trading day, and a day's profit is {balance ? "what you close that day (net realised P&L after fees)" : "its change in equity"}.
         {r.consistency_percent ? <> The consistency rule never fails the attempt: while the best day is too large a share, the pass waits, as if the target were higher{e.consistency_target ? <> (the best day so far needs {formatMoney(e.consistency_target)} of profit)</> : null}, or for more profitable days.</> : null}</> }] : []),
     ...(p ? [{ title: "Payouts", body: <>

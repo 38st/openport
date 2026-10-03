@@ -111,6 +111,34 @@ describe("plan objectives in the terminal", () => {
     expect(planFacts(presets.at(-1)!)).toEqual(expect.arrayContaining(["$5,000 profit target on the closed balance",
       "$4,000 static drawdown: the floor stays at $46,000", "Trading day ends at 6:00 pm ET"]))
   })
+  it.each([
+    { room: "-53.90", equity: "99696.10", reached: "which equity has reached ($53.90 below it)" },
+    { room: "0.00", equity: "99750.00", reached: "which equity has reached" },
+  ])("explains a locked day's daily loss level with $room room", ({ room, equity, reached }) => {
+    const value: Account = { ...locked,
+      rules: { ...locked.rules, daily_loss_limit: "250.00", daily_loss_basis: "peak" },
+      evaluation: { ...locked.evaluation, equity,
+        daily_loss: { limit: "250.00", basis: "peak", action: "lock", reference: "100000.00", level: "99750.00", room } } }
+    const page = document.createElement("div")
+    page.innerHTML = render(<RulesView />, value)
+    const text = page.textContent!.replace(/\s+/g, " ")
+    expect(text).toContain(`Each trading day, equity may not touch $250.00 below the day's equity high: today $99,750.00, ${reached}.`)
+    expect(text).toContain("Today is locked.")
+    expect(text).not.toMatch(/−\$[\d,.]+ below current equity/)
+    expect(text).not.toContain("below current equity")
+  })
+  it("keeps the daily loss level below current equity when room is positive", () => {
+    const page = document.createElement("div")
+    page.innerHTML = render(<RulesView />, planned)
+    const text = page.textContent!.replace(/\s+/g, " ")
+    expect(text).toContain("Each trading day, equity may not touch $2,000.00 below the day's opening balance: today $98,150.00, $2,117.50 below current equity.")
+    expect(text).not.toContain("which equity has reached")
+  })
+  it("lowercases each objective after the first in the objectives sentence", () => {
+    const value: Account = { ...planned, rules: { ...planned.rules, min_profitable_days: 2, profitable_day_profit: "100.00" } }
+    const html = render(<RulesView />, value)
+    expect(html).toContain("At least 3 trading days; at least 2 profitable days of $100+; best day at most 40% of the total profit.")
+  })
   it("alerts on the plan's daily loss room, a locked day and a target waiting on objectives", () => {
     const near: Account = { ...planned, evaluation: { ...planned.evaluation, daily_loss: { ...planned.evaluation.daily_loss!, room: "400.00" } } }
     expect(ruleAlerts(near, risk).map((a) => a.id)).toEqual(expect.arrayContaining(["plan-loss-50", "plan-loss-25"]))
