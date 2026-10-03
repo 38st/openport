@@ -6962,6 +6962,40 @@
           },
           "journal_size": {
             "$ref": "#/components/schemas/JournalSize"
+          },
+          "skip_pending": {
+            "type": "boolean",
+            "description": "A skip queued while paused, consumed by the next resumed pacing gap. Optional for older sidecars."
+          },
+          "pause_at": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "Pending play_until market target; null when absent, settled, aborted or superseded."
+          },
+          "settled_through": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "Market time through which complete batches and the consumer have settled. Receipt time is time."
+          },
+          "restarted_from": {
+            "type": "object",
+            "properties": {
+              "id": {
+                "type": "string"
+              },
+              "at": {
+                "type": "string"
+              }
+            },
+            "required": [
+              "id",
+              "at"
+            ],
+            "description": "Optional provenance of a restart; at is its inclusive market-time target."
           }
         },
         "required": [
