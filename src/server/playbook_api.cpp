@@ -107,7 +107,7 @@ std::optional<ApiResponse> playbook_read(const ApiRequest& request, const Metric
         if (days < 1 || days > 252 || samples < 1 || samples > 10000) throw std::invalid_argument("days must be 1–252 and samples 1–10000");
       }
     } catch (const std::exception& error) { return api_error(400, "INVALID_REQUEST", error.what()); }
-    const auto account = query_account(request.target);
+    const auto account = query_account(request.target, request.access.sandbox);
     if (!account) return api_error(400, "INVALID_REQUEST", "account must be an account ID");
     const auto view = source.trading_view(*account);
     if (!view || !view->snapshot) return api_error(404, "UNKNOWN_ACCOUNT", "No paper account " + *account);
@@ -177,7 +177,7 @@ bool playbook_write(const ApiRequest& request, MetricsSource& source, ApiComplet
     TradingCommand request_command;
     request_command.kind = TradingCommand::Kind::Playbook;
     request_command.actor = request.actor;
-    const auto account = query_account(request.target);
+    const auto account = query_account(request.target, request.access.sandbox);
     if (!account) { complete(api_error(400, "INVALID_REQUEST", "account must be an account ID")); return true; }
     request_command.account = *account;
     request_command.note = command.dump();

@@ -53,9 +53,9 @@ using ApiCompletion = std::function<void(ApiResponse)>;
 /// a client spells them: %61ccount is account (RFC 3986 equivalence).
 [[nodiscard]] std::optional<std::map<std::string, std::string>> query_parameters(std::string_view query, bool plus_is_space = false);
 /// The account a request addresses: its decoded account=ID query parameter, or the
-/// main account without one. nullopt when the query does not parse or the ID is not
+/// supplied default (main when empty) without one. nullopt when the query does not parse or the ID is not
 /// an account ID (lowercase letters, digits and single hyphens); refuse the request.
-[[nodiscard]] std::optional<std::string> query_account(std::string_view target);
+[[nodiscard]] std::optional<std::string> query_account(std::string_view target, std::string_view default_account = {});
 /// Writes enqueue on the owner thread. Never wait for completion on an I/O thread.
 void handle_api_async(const ApiRequest& request, MetricsSource& source, ApiCompletion complete);
 

@@ -233,12 +233,35 @@ TEST_F(Sandboxes, ScopeCannotReadOrWriteMainOrAnotherSandbox) {
       EXPECT_EQ(rejected->status, 403);
     }
   }
-  EXPECT_EQ(send(request("GET", "/api/account", token(own))).status, 403);
+  EXPECT_EQ(send(request("GET", "/api/account", token(own))).status, 200);
   EXPECT_EQ(send(request("GET", "/api/account?account=" + id(own), token(own))).status, 200);
   for (const auto& query : {"?account=main&account=" + id(own), "?account=" + id(own) + "&account=main", "?%61ccount=" + id(own)}) {
     EXPECT_NE(send(request("POST", "/api/orders" + query, token(own))).status, 200);
   }
 }
+TEST_F(Sandboxes, OmittedAccountUsesOwnSandboxOnReadsAndWrites) {
+  const auto own = create();
+  for (const auto* path : {"/api/account", "/api/account/equity", "/api/portfolio", "/api/orders", "/api/fills",
+                          "/api/settlements", "/api/risk", "/api/risk/profile", "/api/trades", "/api/trades.csv",
+                          "/api/fills.csv", "/api/playbooks", "/api/account/pass-odds", "/api/alerts"}) {
+    const auto implicit = send(request("GET", path, token(own)));
+    const auto explicit_account = send(request("GET", std::string(path) + "?account=" + id(own), token(own)));
+    EXPECT_EQ(implicit.status, explicit_account.status) << path;
+    EXPECT_EQ(implicit.body, explicit_account.body) << path;
+    EXPECT_NE(implicit.status, 403) << path;
+  }
+  const auto result = send(request("POST", "/api/orders/cancel", token(own)));
+  EXPECT_EQ(result.status, 200) << result.body;
+  EXPECT_EQ(source->desk->trading_view(id(own))->snapshot->account_version, 2U);
+  EXPECT_EQ(source->desk->trading_view("main")->snapshot->account_version, 1U);
+  for (const auto& [query, expected] : std::vector<std::pair<std::string, int>>{
+      {"?status=open", 200}, {"?status=open&%61ccount=main", 403},
+      {"?account=", 400}, {"?account=main&%61ccount=main", 400}}) {
+    const auto response = send(request("GET", "/api/orders" + query, token(own)));
+    EXPECT_EQ(response.status, expected) << query;
+  }
+}
+
 TEST_F(Sandboxes, SandboxCannotUseAnyAdministrativeRoute) {
   const auto own = create();
   const std::vector<std::pair<std::string, std::string>> routes{
@@ -266,6 +289,7 @@ TEST_F(Sandboxes, TradeScopeAllowsOwnOrdersPreviewsExitsAndNotes) {
       {"POST", "/api/positions/instruction"},
       {"PUT", "/api/trades/1/note"}, {"PUT", "/api/days/2026-09-25/note"}}) {
     EXPECT_FALSE(server::check_api_write(request(method, path + "?account=" + id(own), token(own)), policy)) << path;
+    EXPECT_FALSE(server::check_api_write(request(method, path, token(own)), policy)) << path;
   }
   EXPECT_FALSE(server::check_api_write(request("GET", "/api/underlyings/SPX/chain", token(own)), policy));
   EXPECT_FALSE(server::check_api_write(request("GET", "/ws", token(own)), policy));

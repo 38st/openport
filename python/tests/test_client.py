@@ -391,3 +391,12 @@ def test_underlying_limit_overrides_live_and_replay(stub):
         target.limits("7", limits)
         assert urlsplit(stub.requests[-1][1]).path == prefix + "/risk/limits"
         assert stub.requests[-1][3] == {"expected_revision": "7", "limits": limits}
+
+
+def test_sandbox_token_omits_account_by_default(stub):
+    client = Client(stub.url, "sandbox_secret")
+    client.account()
+    assert stub.requests[-1][1] == "/api/account"
+    assert stub.requests[-1][2]["Authorization"] == "Bearer sandbox_secret"
+    client.cancel_all()
+    assert stub.requests[-1][1] == "/api/orders/cancel"

@@ -2144,12 +2144,12 @@ std::optional<std::map<std::string, std::string>> query_parameters(std::string_v
   return pairs;
 }
 
-std::optional<std::string> query_account(std::string_view target) {
+std::optional<std::string> query_account(std::string_view target, std::string_view default_account) {
   const auto question = target.find('?');
   const auto pairs = query_parameters(question == std::string_view::npos ? std::string_view{} : target.substr(question + 1));
   if (!pairs) return std::nullopt;
   const auto account = pairs->find("account");
-  if (account == pairs->end()) return std::string(kMainAccount);
+  if (account == pairs->end()) return std::string(default_account.empty() ? kMainAccount : default_account);
   if (!valid_account(account->second)) return std::nullopt;
   return account->second;
 }
@@ -2202,8 +2202,8 @@ json level_json(const std::optional<BreachLevel>& value, double spot) {
 
 /// GET /api/risk/profile: the held book's value across moves of one underlying, or
 /// of a benchmark with every underlying beta-weighted to it, on several dates.
-ApiResponse risk_profile_response(const std::map<std::string, std::string>& query, const MetricsSource& source) {
-  std::string account, underlying, benchmark = "SPY";
+ApiResponse risk_profile_response(const std::map<std::string, std::string>& query, const MetricsSource& source, std::string account) {
+  std::string underlying, benchmark = "SPY";
   std::vector<std::string> days_text{"0", "1"};
   double vol_points = 0, range = 10;
   int steps = 41;
@@ -2355,7 +2355,7 @@ std::optional<ApiResponse> paper_read(const ApiRequest& request, const MetricsSo
   if (path == "/api/risk/profile") {
     const auto pairs = query_parameters(question == std::string::npos ? std::string_view{} : std::string_view(request.target).substr(question + 1));
     if (!pairs) return api_error(400, "INVALID_REQUEST", "Unknown or invalid query parameter");
-    return risk_profile_response(*pairs, source);
+    return risk_profile_response(*pairs, source, request.access.sandbox);
   }
   const auto query = question == std::string::npos ? std::string_view{} : std::string_view(request.target).substr(question + 1);
   // Every route takes account=ID; orders take status=open|all and client_order_id;
@@ -2363,7 +2363,7 @@ std::optional<ApiResponse> paper_read(const ApiRequest& request, const MetricsSo
   const auto pairs = query_parameters(query);
   const bool csv = path == "/api/trades.csv" || path == "/api/fills.csv";
   // CSV exports filter by New York date; the equity history by instant.
-  std::string account, status = "all", attempt = csv ? "all" : "current", from, to;
+  std::string account = request.access.sandbox, status = "all", attempt = csv ? "all" : "current", from, to;
   std::optional<std::string> client_order_id;
   std::optional<Timestamp> since, until;
   bool valid_query = pairs.has_value(), archived = false;
@@ -2519,7 +2519,7 @@ void handle_api_async(const ApiRequest& request, MetricsSource& source, ApiCompl
       (request.method == "DELETE" && (path.starts_with("/api/orders/") || path.starts_with("/api/alerts/"))) ||
       ((request.method == "PATCH" || request.method == "DELETE") && path.starts_with("/api/accounts/"));
   if (!route) { complete(api_error(404, "NOT_FOUND", "Unknown endpoint or method")); return; }
-  std::string account;
+  std::string account = request.access.sandbox;
   if (!pairs || pairs->size() > 1 || (pairs->size() == 1 && (!pairs->contains("account") || !valid_account(pairs->at("account"))) ) ||
       (pairs->size() == 1 && (path == "/api/accounts" || path.starts_with("/api/accounts/")))) {
     complete(api_error(400, "INVALID_REQUEST", "Unknown or invalid query parameter"));
