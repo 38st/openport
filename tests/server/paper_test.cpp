@@ -2434,6 +2434,7 @@ TEST(PaperPlans, PresetsListExactRules) {
 TEST_F(PaperEngine, AccountViewWithoutRulesHasNoTargetOrFloor) {
   const auto account = read(*engine, "/api/account");
   EXPECT_EQ(account["rules"]["plan"], nullptr);
+  EXPECT_EQ(account["rules"]["plan_id"], nullptr);
   EXPECT_EQ(account["evaluation"]["enabled"], false);
   EXPECT_EQ(account["evaluation"]["status"], "active");
   EXPECT_EQ(account["evaluation"]["attempt"], 1);

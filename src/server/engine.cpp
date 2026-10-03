@@ -14,7 +14,7 @@ Engine::Options driver_options(md::Provider& provider, const md::Subscription& s
   if (auto* replay = dynamic_cast<providers::ReplayProvider*>(&provider)) {
     options.replay = true;
     options.replay_start = replay->header().started;
-    options.replay_end = replay->end_time(subscription);
+    if (options.paper_enabled && options.replay_end == 0) options.replay_end = replay->end_time(subscription);
     // Named accounts and visitor sandboxes belong to the live feed, never a replay's copy of its options.
     options.paper_accounts.clear();
     options.sandboxes.reset();

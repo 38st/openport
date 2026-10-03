@@ -95,6 +95,16 @@ TEST(Notifications, FormatsAllFourPayloadsWithoutCredentialsOrMentions) {
     EXPECT_EQ(h.state()["channels"][0]["last_delivery"], "1970-01-01T00:00:01.000Z");
   }
 }
+TEST(Notifications, DeletingAnAccountDropsItsQueuedNotificationsOnly) {
+  Harness h;
+  h.notifications->publish({"fill", "deleted", md::kNanosPerSecond, "old fill", {}});
+  h.notifications->publish({"fill", "remaining", md::kNanosPerSecond, "other fill", {}});
+  h.notifications->remove_account("deleted");
+  h.drain();
+  ASSERT_EQ(h.http->calls.size(), 1U);
+  EXPECT_EQ(json::parse(h.http->calls.front().body).at("account"), "remaining");
+}
+
 TEST(Notifications, FiltersPerChannelAndTestBypassesEventFilters) {
   auto first = channel(); first["events"] = {"rule_trip"};
   auto second = channel("ntfy", "off"); second["enabled"] = false;

@@ -2498,7 +2498,9 @@ Account creation replies, account lists/status `trading`, account `rules`, and r
 history summaries report `plan_id` beside the plan name. It is derived from the
 stored name, starting cash and objective rules, including old journals; execution,
 fee and margin overrides do not change it. Custom or unrecognized rules return
-null. Compact past-attempt summaries lack full rules and report null rather than
+null. When read-back rules are used in a custom request, `plan_id` is accepted
+as metadata and ignored; the server always derives it from the actual rules.
+Compact past-attempt summaries lack full rules and report null rather than
 guessing from the display name. Replay control's existing `plan` remains its starting
 preset ID; history `plan_id` describes the recovered account's current rules.
 

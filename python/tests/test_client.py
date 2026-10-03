@@ -351,3 +351,11 @@ def test_account_lifecycle_routes(stub):
     client.delete_account("swing")
     assert stub.requests[-1][0:2] == ("DELETE", "/api/accounts/swing")
     assert stub.requests[-1][3] is None
+
+
+def test_copy_active_settings_requests(stub):
+    client = Client(stub.url, "secret")
+    client.create_account("Copy", plan="eod-50k", copy_settings_from="main")
+    assert stub.requests[-1][3] == {"name": "Copy", "plan": "eod-50k", "copy_settings_from": "main"}
+    client.start_replay(scenario="reversal", plan="eod-50k", copy_settings_from="evaluation")
+    assert stub.requests[-1][3] == {"scenario": "reversal", "plan": "eod-50k", "copy_settings_from": "evaluation"}

@@ -125,6 +125,19 @@ TEST_F(Sandboxes, CreatesPracticeAccountAndReturnsSecretOnlyOnce) {
     EXPECT_EQ(response.body.find(token(first)), std::string::npos);
   }
 }
+TEST_F(Sandboxes, OperatorCannotRenameArchiveOrDeleteSandboxAccounts) {
+  const auto created = create();
+  const auto account_id = id(created);
+  for (const auto* body : {R"({"name":"renamed"})", R"({"archived":true})"}) {
+    const auto result = send(request("PATCH", "/api/accounts/" + account_id, "operator", body));
+    EXPECT_EQ(result.status, 403) << result.body;
+    EXPECT_EQ(json::parse(result.body).at("error").at("code"), "ACCOUNT_PROTECTED");
+  }
+  const auto removed = send(request("DELETE", "/api/accounts/" + account_id, "operator"));
+  EXPECT_EQ(removed.status, 403);
+  EXPECT_EQ(json::parse(removed.body).at("error").at("code"), "ACCOUNT_PROTECTED");
+}
+
 TEST_F(Sandboxes, NewSandboxesChargeTheOperatorsFee) {
   desk_options.paper.fee_per_contract = trading::Money::parse("1.00");
   configure();

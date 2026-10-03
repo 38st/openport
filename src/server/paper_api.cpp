@@ -1445,11 +1445,14 @@ void margin_fields(const json& j, AccountRules& rules) try {
 /// The phase defaults to evaluation; a funded phase requires payout rules.
 AccountRules parse_rules(const json& j) {
   fields(j, {"profit_target", "max_drawdown", "drawdown_mode", "buy_only", "buying_power", "expiry_cutoff_seconds"},
-         {"plan", "phase", "lock_balance", "payouts", "defined_risk", "slippage_ticks", "margin", "fill_latency_ms", "impact_ticks",
+         {"plan", "plan_id", "phase", "lock_balance", "payouts", "defined_risk", "slippage_ticks", "margin", "fill_latency_ms", "impact_ticks",
           "lock_at_start", "profit_basis", "daily_loss_limit", "daily_loss_basis", "daily_loss_action", "consistency_percent",
           "consistency_basis", "min_trading_days", "min_profitable_days", "profitable_day_profit", "day_end", "fees",
           "account_type", "house_margin_percent", "pm_vol_shock", "inside_fill_percent"});
   AccountRules rules;
+  // Accept read-back rules in a custom request, but always derive the identity.
+  if (j.contains("plan_id") && !j.at("plan_id").is_null() && !j.at("plan_id").is_string())
+    throw std::invalid_argument("plan_id must be a string or null");
   if (j.contains("phase")) {
     const auto phase = string_field(j, "phase");
     if (phase != "evaluation" && phase != "funded") throw std::invalid_argument("phase must be evaluation or funded");
