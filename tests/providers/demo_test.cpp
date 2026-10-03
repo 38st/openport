@@ -294,6 +294,17 @@ TEST(DemoMarket, RevisionTwoRecordingIsUnchanged) {
   std::filesystem::remove(path);
 }
 
+TEST(DemoMarket, RevisionThreeRecordingIsUnchanged) {
+  // Captured before revision 4, including all seven underlyings and AM last trades.
+  const auto& scenarios = providers::builtin_scenarios();
+  const auto day = std::find_if(scenarios.begin(), scenarios.end(), [](const auto& s) { return s.id == "index-spike"; });
+  ASSERT_NE(day, scenarios.end());
+  const auto path = temporary("revision-three");
+  providers::write_scenario_recording(path, *day, day->date, day->seed, 3);
+  EXPECT_EQ(recording_hash(path, true), 10686521240818003107ULL);
+  std::filesystem::remove(path);
+}
+
 TEST(DemoMarket, AHeldSeriesStaysListedUntilItsLastTrade) {
   // B11: the chain listed next month's third Friday only, so on the first of a month a
   // held monthly stopped being quoted two weeks before its last trade.
