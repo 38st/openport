@@ -673,5 +673,7 @@ void validate_limits(const Limits& limits);
 /// 24:00; a floor locks at one level at most, and a static floor not at all.
 /// Fee amounts are $0 to $1,000, with at most 16 named index roots; inside fills are 0-100%.
 void validate_rules(const AccountRules& rules);
+/// Validate the optional calendar and opening restrictions independently.
+void validate_time_rules(const AccountRules& rules);
 
 }  // namespace openport::trading

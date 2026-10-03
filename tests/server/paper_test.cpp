@@ -4260,13 +4260,42 @@ TEST_F(PaperEngine, StopAndRiskRulesRoundTripWithPreviewAndRefusalEvidence) {
 }
 
 namespace {
+TEST_F(PaperEngine, TimeAndTradeRulesSurviveCreateResetAndPresetMatching) {
+  seed();
+  auto rules = read(*engine, "/api/account")["rules"];
+  rules.update({{"plan", "Combined rules"}, {"time_limit_days", 30}, {"inactivity_days", 14},
+                {"underlyings", {"SPX"}}, {"trading_start", "09:30"}, {"trading_end", "16:00"},
+                {"max_contracts_held", 5}, {"require_stop_loss", true}, {"max_trade_risk", "123.456789"},
+                {"max_trade_risk_percent", 25}});
+  auto response = write(*engine, "POST", "/api/accounts", {{"name", "Combined rules"}, {"initial_cash", "100000"}, {"rules", rules}});
+  ASSERT_EQ(response.status, 201) << response.body;
+  test::capture_contract("time-rules", "POST", "/api/accounts", response);
+  EXPECT_EQ(read(*engine, "/api/account?account=combined-rules")["rules"], rules);
+  response = write(*engine, "POST", "/api/account/reset", {{"initial_cash", "100000"}, {"rules", rules}, {"reason", "combined rules"}});
+  ASSERT_EQ(response.status, 200) << response.body;
+  EXPECT_EQ(json::parse(response.body)["rules"], rules);
+  response = write(*engine, "POST", "/api/account/reset", {{"plan", "practice"}, {"reason", "archive combined rules"}});
+  ASSERT_EQ(response.status, 200) << response.body;
+  EXPECT_EQ(json::parse(response.body)["attempts"].back()["rules"], rules);
+  const auto practice = read(*engine, "/api/account")["rules"];
+  for (const auto* field : {"time_limit_days", "inactivity_days", "underlyings", "trading_start",
+                           "max_contracts_held", "require_stop_loss", "max_trade_risk", "max_trade_risk_percent"}) {
+    auto borrowed = practice;
+    borrowed[field] = rules[field];
+    if (std::string_view(field) == "trading_start") borrowed["trading_end"] = rules["trading_end"];
+    expect_error(write(*engine, "POST", "/api/account/reset", {{"initial_cash", "100000"}, {"rules", borrowed},
+        {"reason", "cannot borrow a preset name"}}), 400, "INVALID_RULES");
+  }
+}
 TEST_F(PaperEngine, TimeRulesRoundTripProgressRefusalsAndValidation) {
   seed();
   auto rules = read(*engine, "/api/account")["rules"];
   rules.update({{"plan", "Time rules"}, {"time_limit_days", 30}, {"inactivity_days", 14},
                 {"underlyings", {"SPX"}}, {"trading_start", "09:30"}, {"trading_end", "11:00"}});
   const auto reset = [&](const json& r) {
-    return write(*engine, "POST", "/api/account/reset", {{"initial_cash", "100000"}, {"rules", r}, {"reason", "test time rules"}});
+    const auto response = write(*engine, "POST", "/api/account/reset", {{"initial_cash", "100000"}, {"rules", r}, {"reason", "test time rules"}});
+    test::capture_contract("time-rules", "POST", "/api/account/reset", response);
+    return response;
   };
   auto response = reset(rules);
   ASSERT_EQ(response.status, 200) << response.body;
@@ -4293,12 +4322,24 @@ TEST_F(PaperEngine, TimeRulesRoundTripProgressRefusalsAndValidation) {
   error = json::parse(response.body)["error"];
   EXPECT_EQ(error["code"], "OUTSIDE_PLAN_HOURS");
   EXPECT_EQ(error["actual"], 600); EXPECT_EQ(error["limit"], 630); EXPECT_EQ(error["scope"], "SPX");
-  for (const auto& patch : std::vector<json>{{{"time_limit_days", 367}}, {{"inactivity_days", -1}},
+  for (const auto& patch : std::vector<json>{{{"time_limit_days", 367}}, {{"time_limit_days", nullptr}}, {{"inactivity_days", -1}},
       {{"underlyings", {"SPX", "SPX"}}}, {{"underlyings", {"spx"}}}, {{"trading_end", nullptr}},
-      {{"trading_start", "11:00"}}, {{"trading_start", "09:60"}}, {{"underlyings", "SPX"}}, {{"inactivity_days", 1.5}}}) {
+      {{"trading_start", "11:00"}}, {{"trading_start", "09:60"}}, {{"trading_start", 570}},
+      {{"underlyings", "SPX"}}, {{"underlyings", {1}}}, {{"underlyings", nullptr}}, {{"inactivity_days", 1.5}}}) {
     auto bad = rules; bad.update(patch);
-    EXPECT_EQ(reset(bad).status, 400) << patch.dump();
+    const auto invalid = reset(bad);
+    expect_error(invalid, 422, "INVALID_RULES");
+    EXPECT_NE(json::parse(invalid.body)["error"]["message"].get<std::string>().find(patch.begin().key()), std::string::npos);
+    const auto created = write(*engine, "POST", "/api/accounts", {{"name", "Invalid restrictions"}, {"initial_cash", "100000"}, {"rules", bad}});
+    expect_error(created, 422, "INVALID_RULES");
+    test::capture_contract("time-rules", "POST", "/api/accounts", created);
   }
+  auto funded = rules;
+  funded.update({{"phase", "funded"}, {"profit_target", nullptr}, {"payouts", {{"qualifying_profit", "0"}, {"qualifying_days", 1},
+      {"withdrawal_percent", 50}, {"split_percent", 80}, {"minimum", "0"}, {"caps", json::array()}}}});
+  expect_error(reset(funded), 422, "INVALID_RULES");
+  funded["time_limit_days"] = 0;
+  ASSERT_EQ(reset(funded).status, 200);
   rules.update({{"time_limit_days", 0}, {"inactivity_days", 0}, {"underlyings", json::array()},
                 {"trading_start", nullptr}, {"trading_end", nullptr}});
   response = reset(rules); ASSERT_EQ(response.status, 200) << response.body;

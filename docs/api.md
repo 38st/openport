@@ -47,6 +47,8 @@ refused in funded plans. Account `evaluation` reports `time_limit_days`, `deadli
 `TIME_LIMIT` and `INACTIVITY` fail overdue attempts; `INSTRUMENT_NOT_ALLOWED` and
 `OUTSIDE_PLAN_HOURS` refuse openings while permitting reductions. Hours refusals
 include `actual`/`limit` in New York minutes and the underlying `scope`.
+Invalid values for these five custom rule fields return HTTP 422 `INVALID_RULES`,
+with a message naming the field and its allowed values, on both create and reset.
 See [time rules](paper-trading.md#evaluation-time-inactivity-and-opening-restrictions).
 
 With paper trading on, the same API is the account.
