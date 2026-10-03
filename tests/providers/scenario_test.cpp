@@ -1,5 +1,6 @@
 #include "support/recording.hpp"
 
+#include <array>
 #include <fstream>
 #include <functional>
 #include <map>
@@ -20,7 +21,7 @@ json valid() {
 void write(const std::filesystem::path& file, const json& data) { std::ofstream(file) << data; }
 
 TEST(Scenarios, BuiltinsAreValidAndUsersOverrideAfterThem) {
-  EXPECT_EQ(providers::builtin_scenarios().size(), 18U);
+  EXPECT_EQ(providers::builtin_scenarios().size(), 19U);
   for (const auto& s : providers::builtin_scenarios()) {
     EXPECT_FALSE(s.goal.empty());
     EXPECT_EQ(s.generator, 1);
@@ -35,9 +36,9 @@ TEST(Scenarios, BuiltinsAreValidAndUsersOverrideAfterThem) {
   write(user / "bad.json", bad);
   std::vector<std::string> errors;
   const auto loaded = providers::load_scenarios(user, [&](const auto& error) { errors.push_back(error); });
-  ASSERT_EQ(loaded.size(), 19U);
+  ASSERT_EQ(loaded.size(), 20U);
   EXPECT_EQ(loaded.front().id, "trend");
-  EXPECT_EQ(loaded[17].id, "custom");
+  EXPECT_EQ(loaded[18].id, "custom");
   EXPECT_EQ(loaded.back().id, "reversal");
   EXPECT_EQ(loaded.back().title, "Replacement");
   EXPECT_NE(providers::builtin_scenarios().front().title, "Replacement");
@@ -169,6 +170,77 @@ TEST(Scenarios, SeveralSessionsRejectImpossibleSequencesAndFields) {
   auto many = several();
   for (int i = 0; i < 21; ++i) many["sessions"].push_back(many["sessions"][3]);
   EXPECT_THROW((void)providers::parse_scenario(many.dump(), "several.json"), std::invalid_argument);
+}
+
+TEST(Scenarios, IndexSessionsFollowTheProductCalendar) {
+  for (const auto* symbol : {"SPX", "XSP", "RUT", "VIX"}) {
+    auto data = valid();
+    data["session"] = "overnight";
+    data["symbols"] = {symbol};
+    EXPECT_NO_THROW((void)providers::parse_scenario(data.dump(), "night.json"));
+    data = several();
+    data["symbols"] = {symbol, "SPY", "NDX"};
+    EXPECT_NO_THROW((void)providers::parse_scenario(data.dump(), "several.json"));
+  }
+  for (const auto* symbol : {"SPY", "QQQ", "NDX"}) {
+    auto data = valid();
+    data["session"] = "overnight";
+    data["symbols"] = {symbol};
+    EXPECT_THROW((void)providers::parse_scenario(data.dump(), "night.json"), std::invalid_argument);
+  }
+}
+
+TEST(Scenarios, NewIndicesCarryClosesAndContractsAcrossSessionsWithEtfDividends) {
+  auto data = several();
+  data["symbols"] = {"SPX", "SPY", "QQQ", "XSP", "NDX", "RUT", "VIX"};
+  for (auto& session : data["sessions"]) {
+    session["volatility"] = 0;
+    session["drift"] = {{1, 0}};
+    session["events"] = json::array();
+  }
+  const auto scenario = providers::parse_scenario(data.dump(), "indices.json");
+  const auto windows = providers::scenario_windows(scenario, scenario.date);
+  test::RecordingFile file;
+  providers::write_scenario_recording(file.path, scenario, scenario.date, scenario.seed);
+  md::RecordingReader reader(file.path);
+  std::map<md::InstrumentId, md::OptionContract> initial, contracts;
+  std::array<std::set<std::string>, 4> quoted;
+  std::set<md::InstrumentId> carried;
+  std::map<std::string, double> closes, references, opening;
+  while (const auto event = reader.next()) {
+    std::size_t session = 0;
+    while (session + 1 < windows.size() && event->received >= windows[session + 1].first) ++session;
+    if (const auto* d = std::get_if<md::ContractDefinition>(&event->event)) {
+      contracts[d->id] = d->contract;
+      if (session == 0) initial[d->id] = d->contract;
+    }
+    if (const auto* u = std::get_if<md::UnderlyingQuote>(&event->event)) {
+      if (u->ts == windows[0].close) closes[u->symbol] = u->last;
+      if (u->ts == windows[3].first) opening[u->symbol] = u->last;
+    }
+    if (const auto* c = std::get_if<md::UnderlyingClose>(&event->event); c && c->ts == windows[2].first) {
+      EXPECT_EQ(c->date, windows[0].date);
+      references[c->symbol] = c->price;
+    }
+    if (const auto* q = std::get_if<md::OptionQuote>(&event->event); q && q->ask > 0) {
+      quoted[session].insert(contracts.at(q->id).underlying);
+      if (session == 3) carried.insert(q->id);
+    }
+  }
+  const std::set<std::string> all(scenario.symbols.begin(), scenario.symbols.end());
+  EXPECT_EQ(quoted[0], all);
+  EXPECT_EQ(quoted[3], all);
+  EXPECT_EQ(quoted[1], (std::set<std::string>{"SPX", "XSP", "RUT", "VIX"}));
+  EXPECT_EQ(quoted[2], quoted[1]);
+  EXPECT_EQ(references.size(), 7U);
+  EXPECT_EQ(references, closes);
+  EXPECT_DOUBLE_EQ(opening.at("SPY"), closes.at("SPY") - 1.75);
+  for (const auto* symbol : {"XSP", "NDX", "RUT"}) {
+    EXPECT_DOUBLE_EQ(opening.at(symbol), closes.at(symbol));
+  }
+  for (const auto& [id, contract] : initial) {
+    if (contract.last_trade_time() > windows[3].first) { EXPECT_TRUE(carried.contains(id)) << contract.osi_symbol(); }
+  }
 }
 
 TEST(Scenarios, SeveralSessionsPlayAsOneRecordingThatCarriesTheMarket) {

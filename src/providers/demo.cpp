@@ -18,6 +18,7 @@
 #include "openport/md/recording.hpp"
 #include "openport/pricing/black.hpp"
 #include "openport/providers/snapshot.hpp"
+#include "openport/trading/types.hpp"
 
 namespace openport::providers {
 namespace {
@@ -29,6 +30,11 @@ constexpr double kOpen = 6000.0;     // SPX at the open
 constexpr double kSpyRatio = 10.02;  // index points per SPY dollar
 constexpr double kQqqOpen = 480.0;
 constexpr double kQqqBeta = 1.25;  // QQQ's moves against SPX's
+constexpr double kNdxOpen = 21000.0;
+constexpr double kRutOpen = 2300.0;
+constexpr double kRutBeta = 1.15;
+constexpr double kVixCenter = 17.0;
+constexpr double kVixMean = 19.5;  // the long-run VIX forward
 
 /// splitmix64 with Box-Muller: the same draws on every standard library, which
 /// <random>'s distributions do not promise.
@@ -97,9 +103,16 @@ std::vector<md::OptionContract> list(const Series& series, double center) {
   return contracts;
 }
 
-/// The series a date lists: the date, the next two business days and the Friday after
-/// (SPXW, SPY and QQQ), and next month's third Friday (AM-settled for SPX).
-std::vector<Series> listed_on(md::Date date) {
+/// Thirty days before next month's third Friday, with holiday adjustments.
+md::Date vix_expiry(int year, int month) {
+  const md::Date next{month == 12 ? year + 1 : year, month == 12 ? 1 : month + 1, 1};
+  const auto friday = expiry_on(md::date_from_days(md::days_since_epoch(friday_from(next)) + 14));
+  return expiry_on(md::date_from_days(md::days_since_epoch(friday) - 30));
+}
+bool am_settled(const std::string& root) { return md::conventions_for_root(root).settlement == md::Settlement::AM; }
+
+/// Daily and weekly PM series, next month's monthly, and revision 3's VIX expiries.
+std::vector<Series> listed_on(md::Date date, int revision) {
   const auto d1 = next_business_day(date);
   const auto d2 = next_business_day(d1);
   const auto weekly = expiry_on(friday_from(md::date_from_days(md::days_since_epoch(d2) + 1)));
@@ -117,6 +130,33 @@ std::vector<Series> listed_on(md::Date date) {
   out.push_back({"SPX", monthly, 10, 0.06, true});
   out.push_back({"SPY", monthly, 1, 0.06, true});
   out.push_back({"QQQ", monthly, 1, 0.06, true});
+  if (revision < 3) return out;
+  for (const auto& expiry : {date, d1, d2}) {
+    out.push_back({"XSP", expiry, 1, 0.03, false});
+    out.push_back({"NDXP", expiry, 25, 0.03, false});
+    out.push_back({"RUTW", expiry, 5, 0.03, false});
+  }
+  out.push_back({"XSP", weekly, 1, 0.04, false});
+  out.push_back({"NDXP", weekly, 25, 0.04, false});
+  out.push_back({"RUTW", weekly, 5, 0.04, false});
+  out.push_back({"XSP", monthly, 1, 0.06, true});
+  out.push_back({"NDX", monthly, 50, 0.06, true});
+  out.push_back({"RUT", monthly, 10, 0.06, true});
+  // Two AM monthlies and two Wednesday weeklies, omitting monthly dates.
+  std::vector<md::Date> months;
+  for (int ahead = 0; months.size() < 2; ++ahead) {
+    const int offset = date.month - 1 + ahead;
+    const auto expiry = vix_expiry(date.year + offset / 12, offset % 12 + 1);
+    if (expiry > date) months.push_back(expiry);
+  }
+  for (auto day = md::days_since_epoch(date) + 1, count = std::int64_t{0}; count < 2; ++day) {
+    if (md::weekday(md::date_from_days(day)) != 3) continue;
+    const auto expiry = expiry_on(md::date_from_days(day));
+    if (expiry <= date || std::find(months.begin(), months.end(), expiry) != months.end()) continue;
+    out.push_back({"VIXW", expiry, 1, 0.6, false});
+    ++count;
+  }
+  for (const auto& expiry : months) out.push_back({"VIX", expiry, 1, 0.8, true});
   return out;
 }
 
@@ -131,19 +171,31 @@ struct Centers {
   double spx = kOpen;
   double spy = kOpen / kSpyRatio;
   double qqq = kQqqOpen;
+  double ndx = kNdxOpen;
+  double rut = kRutOpen;
+  double vix = kVixCenter;
+  double for_symbol(const std::string& symbol) const {
+    if (symbol == "SPX") return spx;
+    if (symbol == "XSP") return spx / 10;
+    if (symbol == "SPY") return spy;
+    if (symbol == "QQQ") return qqq;
+    if (symbol == "NDX") return ndx;
+    if (symbol == "RUT") return rut;
+    return vix;
+  }
 };
 std::vector<Listing> listings(const Scenario& script, md::Date date, int revision, const Centers& centers = {}) {
   if (revision < 1 || revision > kScenarioRevision) throw std::invalid_argument("Unsupported scenario revision");
-  auto series = listed_on(date);
+  auto series = listed_on(date, revision);
   if (revision >= 2) {
     // Every series an earlier date listed that still trades, as wide as it ever was,
     // after the date's own: a position opened on an earlier day keeps its quotes. A
-    // series lists at most seven weeks ahead; AM-settled SPX stops the day before.
+    // series lists at most eight weeks ahead; AM-settled series stop the day before.
     std::map<std::pair<std::string, md::Date>, Series> earlier;
     const auto first = md::days_since_epoch(date) - 56;
     for (auto day = md::previous_business_day(date); md::days_since_epoch(day) >= first; day = md::previous_business_day(day)) {
-      for (const auto& s : listed_on(day)) {
-        if (s.root == "SPX" ? s.expiry <= date : s.expiry < date) continue;
+      for (const auto& s : listed_on(day, revision)) {
+        if (am_settled(s.root) ? s.expiry <= date : s.expiry < date) continue;
         const auto [it, added] = earlier.try_emplace({s.root, s.expiry}, s);
         if (added) continue;
         it->second.window = std::max(it->second.window, s.window);
@@ -155,10 +207,9 @@ std::vector<Listing> listings(const Scenario& script, md::Date date, int revisio
   std::vector<Listing> out;
   std::set<std::string> defined;
   for (const auto& s : series) {
-    const bool index = s.root == "SPX" || s.root == "SPXW";
-    const auto symbol = index ? "SPX" : s.root;
+    const auto symbol = md::conventions_for_root(s.root).underlying;
     if (std::find(script.symbols.begin(), script.symbols.end(), symbol) == script.symbols.end()) continue;
-    const double center = index ? centers.spx : s.root == "SPY" ? centers.spy : centers.qqq;
+    const double center = centers.for_symbol(symbol);
     for (auto& contract : list(s, center))
       if (defined.insert(contract.osi_symbol()).second) out.push_back({std::move(contract), s.monthly, center});
   }
@@ -170,6 +221,12 @@ std::vector<Listing> listings(const Scenario& script, md::Date date, int revisio
 double atm_vol(double days, double ratio, double spot_vol, double noise) {
   return 0.132 + 0.018 * std::exp(-days / 1.5) + 0.012 * std::min(days / 30, 1.0) + spot_vol * (ratio - 1) + noise;
 }
+/// The generated SPX 30-day ATM volatility, in points. Events reach it with the
+/// same term weight as SPX options, so spikes and crushes move VIX with that surface.
+double vix_level(double ratio, double spot_vol, double noise, double iv_shift, double event_iv) {
+  return 100 * std::clamp(atm_vol(30, ratio, spot_vol, noise) + iv_shift +
+      event_iv * (0.25 + 0.75 * std::exp(-30.0 / 7)), 0.02, 2.0);
+}
 /// The skew in standardised moneyness: puts richer, calls cheaper, wings up.
 double smile(double atm, double forward, double strike, double years) {
   const double z = std::log(strike / forward) / (atm * std::sqrt(std::max(years, 1e-7)));
@@ -180,12 +237,19 @@ struct Quote {
   double bid = 0;
   double ask = 0;
 };
-/// Quotes around the model price on the product's ticks (trading::tick_size):
-/// SPY and QQQ in pennies, SPX in nickels below $3 and dimes from $3. Far
-/// out-of-the-money series show no bid.
-Quote quote(bool penny, double mid) {
-  const auto tick = [penny](double price) { return penny ? 0.01 : price < 3 ? 0.05 : 0.10; };
-  const double width = penny ? std::max(0.01, 0.01 * mid + 0.01) : std::max(0.05, 0.02 * mid + 0.05);
+/// Cache the product's two tick tiers once per contract, outside the snapshot loop.
+struct Ticks {
+  double below = 0.01, above = 0.01;
+};
+Ticks ticks_for(const std::string& root) {
+  return {trading::tick_size(root, trading::Money{}).dollars(),
+          trading::tick_size(root, trading::Money::from_micros(3'000'000)).dollars()};
+}
+/// Quotes around the model price on the product's ticks. Far OTM series have no bid.
+Quote quote(Ticks ticks, double mid) {
+  const auto tick = [ticks](double price) { return price < 3 ? ticks.below : ticks.above; };
+  const double width = ticks.above == 0.01 ? std::max(0.01, 0.01 * mid + 0.01)
+      : ticks.below == 0.01 ? std::max(0.01, 0.015 * mid + 0.01) : std::max(0.05, 0.02 * mid + 0.05);
   const double low = mid - width / 2;
   const double high = mid + width / 2;
   Quote q;
@@ -197,14 +261,26 @@ Quote quote(bool penny, double mid) {
   return {cents(q.bid), cents(q.ask)};
 }
 
+struct Interest {
+  double base, round, rounder;
+};
+Interest interest_for(const std::string& symbol) {
+  if (symbol == "SPX") return {2500, 25, 100};
+  if (symbol == "NDX") return {600, 250, 1000};
+  if (symbol == "RUT") return {900, 50, 100};
+  if (symbol == "XSP") return {1500, 5, 10};
+  if (symbol == "VIX") return {15000, 5, 10};
+  return {6000, 5, 10};
+}
+
 double open_interest(const md::OptionContract& c, bool monthly, double center, double days, std::uint64_t seed,
                      md::InstrumentId id) {
-  const bool etf = c.root != "SPX" && c.root != "SPXW";
+  const auto interest = interest_for(c.underlying);
   const double x = std::log(c.strike / center);
-  const double width = 0.012 + 0.01 * std::sqrt(days);
-  double oi = (etf ? 6000.0 : 2500.0) * std::exp(-0.5 * (x / width) * (x / width)) * (monthly ? 3 : 1);
-  if (std::fmod(c.strike, etf ? 5 : 25) == 0) oi *= 1.8;
-  if (std::fmod(c.strike, etf ? 10 : 100) == 0) oi *= 1.6;
+  const double width = (c.underlying == "VIX" ? 0.2 : 0.012) + 0.01 * std::sqrt(days);
+  double oi = interest.base * std::exp(-0.5 * (x / width) * (x / width)) * (monthly ? 3 : 1);
+  if (std::fmod(c.strike, interest.round) == 0) oi *= 1.8;
+  if (std::fmod(c.strike, interest.rounder) == 0) oi *= 1.6;
   if (c.type == pricing::OptionType::Put ? c.strike < center : c.strike > center) oi *= 1.3;
   return std::round(oi * (0.6 + 0.8 * draw(seed, id, 0x0A11)));
 }
@@ -220,6 +296,7 @@ struct Listed {
   md::InstrumentId id = 0;
   bool monthly = false;
   double center = 0;  ///< the level its strikes were listed around
+  Ticks ticks;
   Quote last;
   double bid_size = 0;
   double ask_size = 0;
@@ -285,6 +362,9 @@ void write_scenario_recording(const std::filesystem::path& path, const Scenario&
   if (!md::valid_date(date) || !business_day(date)) throw std::invalid_argument("The demo day must be a trading day");
   if (revision < 1 || revision > kScenarioRevision) throw std::invalid_argument("Unsupported scenario revision");
   if (!script.sessions.empty() && revision < 2) throw std::invalid_argument("Multi-session scenarios need revision 2 or later");
+  if (revision < 3 && std::any_of(script.symbols.begin(), script.symbols.end(), [](const auto& symbol) {
+        return symbol != "SPX" && symbol != "SPY" && symbol != "QQQ";
+      })) throw std::invalid_argument("New index underlyings need scenario revision 3 or later");
   const auto windows = [&] {
     try { return scenario_windows(script, date); }
     catch (const std::invalid_argument& error) { throw std::invalid_argument("scenario." + std::string(error.what())); }
@@ -334,6 +414,8 @@ void write_scenario_recording(const std::filesystem::path& path, const Scenario&
   double base = log_reference;
   double base_level = kOpen;
   Random random(seed);
+  Random small_caps(seed ^ 0x52555353454C4Cull);
+  double rut_idio = 0;
   double idio = 0;   // QQQ's own wander
   double noise = 0;  // implied volatility's own wander
   double carried_iv = 0;  // IV events of earlier sessions, which last the run
@@ -355,14 +437,20 @@ void write_scenario_recording(const std::filesystem::path& path, const Scenario&
       double log_center = base;
       for (const auto& event : play.events) if (event.type == "gap") log_center += event.move;
       Centers centers;
-      if (!first) centers = {std::exp(log_center), std::exp(log_center) / kSpyRatio,
-                             kQqqOpen * std::exp(kQqqBeta * (log_center - log_reference) + idio)};
+      if (!first) {
+        centers = {std::exp(log_center), std::exp(log_center) / kSpyRatio,
+                   kQqqOpen * std::exp(kQqqBeta * (log_center - log_reference) + idio),
+                   kNdxOpen * std::exp(kQqqBeta * (log_center - log_reference) + idio),
+                   kRutOpen * std::exp(kRutBeta * (log_center - log_reference) + rut_idio),
+                   vix_level(std::exp(log_center) / kOpen, play.spot_vol, noise, play.iv_shift, carried_iv)};
+      }
       for (auto& [contract, monthly, center] : listings(script, w.date, revision, centers)) {
         if (publisher.known(contract.osi_symbol())) continue;
         Listed listed;
         listed.id = publisher.define(contract.osi_symbol(), contract, sink);
         listed.contract = contract;
         listed.expiry = listed.contract.expiry_time();
+        listed.ticks = ticks_for(contract.root);
         listed.monthly = monthly;
         listed.center = center;
         const double days = md::years_between(w.first, listed.expiry) * 365;
@@ -386,15 +474,22 @@ void write_scenario_recording(const std::filesystem::path& path, const Scenario&
       }
     }
     if (first) {
-      // Overnight the index keeps its last close, printed once; its options follow futures.
-      if (overnight)
-        sink.publish(md::UnderlyingQuote{"SPX", md::new_york_to_utc(md::previous_business_day(date), 16, 0), 0, 0, kOpen});
-      // Each underlying's previous close, the level its gap and path start from, which
-      // market-wide circuit breakers measure a fall against.
+      Centers previous;
+      previous.vix = vix_level(1, play.spot_vol, 0, play.iv_shift, 0);
+      // Overnight cash indices keep their last close; options follow the latent level.
+      if (overnight) {
+        if (revision < 3) {
+          sink.publish(md::UnderlyingQuote{"SPX", md::new_york_to_utc(md::previous_business_day(date), 16, 0), 0, 0, kOpen});
+        } else {
+          const auto day = md::previous_business_day(date);
+          for (const auto& symbol : script.symbols)
+            sink.publish(md::UnderlyingQuote{symbol, md::new_york_to_utc(day, md::regular_close_hour(day), 0),
+                                             0, 0, cents(previous.for_symbol(symbol))});
+        }
+      }
       if (revision >= 2)
         for (const auto& symbol : script.symbols)
-          sink.publish(md::UnderlyingClose{symbol, w.first, md::previous_business_day(date),
-                                           symbol == "SPX" ? kOpen : symbol == "SPY" ? cents(kOpen / kSpyRatio) : kQqqOpen});
+          sink.publish(md::UnderlyingClose{symbol, w.first, md::previous_business_day(date), cents(previous.for_symbol(symbol))});
     }
     // ETF prices drop by a dividend from its ex-date on.
     for (const auto& dividend : play.dividends) paid[dividend.symbol] += dividend.per_share;
@@ -409,6 +504,7 @@ void write_scenario_recording(const std::filesystem::path& path, const Scenario&
     const double revert = std::exp(-static_cast<double>(w.step) / (50.0 * 60 * md::kNanosPerSecond));
     double deviation = 0;
     double close_level = base_level;
+    double close_ndx = kNdxOpen, close_rut = kRutOpen, close_vix = kVixCenter;
     double event_iv = carried_iv;
     for (std::int64_t step = 0; w.first + step * w.step <= w.last; ++step, ++tick) {
       now = w.first + step * w.step;
@@ -421,6 +517,7 @@ void write_scenario_recording(const std::filesystem::path& path, const Scenario&
         deviation = revert * deviation + step_vol * pace * random.normal();
         idio = 0.995 * idio + 0.3 * step_vol * random.normal();
         noise = 0.98 * noise + 0.0008 * random.normal();
+        if (chains.contains("RUT")) rut_idio = 0.995 * rut_idio + 0.4 * step_vol * small_caps.normal();
       }
       // The script: each segment's change spread evenly over its part of the session.
       double scripted = 0;
@@ -457,7 +554,15 @@ void write_scenario_recording(const std::filesystem::path& path, const Scenario&
       double qqq = kQqqOpen * std::exp(kQqqBeta * (log_level - log_reference) + idio);
       if (const auto it = paid.find("SPY"); it != paid.end()) spy = std::max(0.01, spy - it->second);
       if (const auto it = paid.find("QQQ"); it != paid.end()) qqq = std::max(0.01, qqq - it->second);
+      const double ndx = kNdxOpen * std::exp(kQqqBeta * (log_level - log_reference) + idio);
+      const double rut = kRutOpen * std::exp(kRutBeta * (log_level - log_reference) + rut_idio);
+      const double vix = vix_level(ratio, play.spot_vol, noise, play.iv_shift, event_iv);
+      if (!after_close) { close_ndx = ndx; close_rut = rut; close_vix = vix; }
       if (regular) {
+        if (!after_close)
+          for (const auto& [symbol, price] : std::array<std::pair<const char*, double>, 4>{{
+              {"XSP", level / 10}, {"NDX", ndx}, {"RUT", rut}, {"VIX", vix}}})
+            if (chains.contains(symbol)) sink.publish(md::UnderlyingQuote{symbol, now, 0, 0, cents(price)});
         // The index prints until the close; SPY and QQQ trade on after it.
         if (!after_close && chains.contains("SPX")) sink.publish(md::UnderlyingQuote{"SPX", now, 0, 0, cents(level)});
         for (const auto& [symbol, price] : {std::pair<const char*, double>{"SPY", spy}, {"QQQ", qqq}}) {
@@ -468,33 +573,52 @@ void write_scenario_recording(const std::filesystem::path& path, const Scenario&
         // The closing prints: the index's last, and each ETF's first at or after the close.
         if (!after_close) {
           closes = {{"SPX", cents(level)}, {"SPY", cents(spy)}, {"QQQ", cents(qqq)}};
+          if (revision >= 3) {
+            closes["XSP"] = cents(level / 10);
+            closes["NDX"] = cents(ndx);
+            closes["RUT"] = cents(rut);
+            closes["VIX"] = cents(vix);
+          }
           closed = w.date;
         }
       }
       for (auto& [underlying, chain] : chains) {
-        const bool index = underlying == "SPX";
-        if (!regular && !index) {
-          // Outside the regular session only SPX options trade.
+        const bool index = md::is_index_underlying(underlying);
+        const bool trades = revision < 3 ? underlying == "SPX" : md::trading_session(underlying, now).open;
+        if (!regular && !trades) {
+          // Only products with this session in the calendar trade here.
           sink.publish(md::ProviderStatus{now, md::FeedState::Live, "demo " + underlying + ": options closed", underlying});
           continue;
         }
         // SPX options price off the index, which stops at the close (outside the regular
         // session they follow the latent level, as futures do).
-        const double price = index ? (regular ? close_level : level) : underlying == "SPY" ? spy : qqq;
-        const double moved = index ? (regular ? close_level / kOpen : ratio) : underlying == "SPY" ? ratio : qqq / kQqqOpen;
-        const double extra = underlying == "QQQ" ? 0.03 : underlying == "SPY" ? 0.005 : 0.0;
+        const double spx = regular ? close_level : level;
+        const double price = underlying == "SPX" ? spx : underlying == "SPY" ? spy : underlying == "QQQ" ? qqq
+            : underlying == "XSP" ? spx / 10 : underlying == "NDX" ? close_ndx
+            : underlying == "RUT" ? (regular ? close_rut : rut) : (regular ? close_vix : vix);
+        const double moved = underlying == "SPX" || underlying == "XSP" ? (regular ? close_level / kOpen : ratio)
+            : underlying == "SPY" ? ratio : underlying == "QQQ" ? qqq / kQqqOpen
+            : underlying == "NDX" ? price / kNdxOpen : underlying == "RUT" ? price / kRutOpen : 1;
+        const double extra = underlying == "QQQ" || underlying == "NDX" ? 0.03 : underlying == "SPY" ? 0.005
+            : underlying == "RUT" ? 0.04 : 0.0;
         std::set<md::InstrumentId> seen;
         for (auto& listed : chain) {
           const auto& c = listed.contract;
           if (now >= listed.expiry) continue;
           const double years = md::years_between(now, listed.expiry);
-          const double forward = price * std::exp((kRate - kDividend) * years);
+          const double dividend = underlying == "NDX" ? 0.007 : underlying == "RUT" ? 0.012 : kDividend;
+          const double forward = underlying == "VIX" ? kVixMean + (price - kVixMean) * std::exp(-4 * years)
+              : price * std::exp((kRate - dividend) * years);
           const double base_atm = atm_vol(years * 365, moved, play.spot_vol, noise) + play.iv_shift + extra;
           // Short maturities react most; the far end retains 25% of an event's shock.
           const double atm = std::clamp(base_atm + event_iv * (0.25 + 0.75 * std::exp(-years * 365 / 7)), 0.02, 2.0);
-          const double mid = pricing::black_price(c.type, forward, c.strike, years, smile(atm, forward, c.strike, years),
+          // VIX options use a mean-reverting forward and a rising call wing.
+          const double vol = underlying == "VIX"
+              ? std::clamp((0.8 + 0.4 * std::exp(-years * 12)) * (1 + 0.3 * std::log(c.strike / forward)), 0.3, 2.0)
+              : smile(atm, forward, c.strike, years);
+          const double mid = pricing::black_price(c.type, forward, c.strike, years, vol,
                                                   std::exp(-kRate * years));
-          const auto q = quote(!index, mid);
+          const auto q = quote(listed.ticks, mid);
           if (q.bid != listed.last.bid || q.ask != listed.last.ask || listed.ask_size == 0) {
             listed.last = q;
             const double scale = index ? 120 : 800;

@@ -103,19 +103,19 @@ TEST(DemoFeed, FactoryOptionsSymbolsAndDefaultRotation) {
   EXPECT_EQ(demo->capabilities().poll_interval, 15s);
   EXPECT_TRUE(demo->capabilities().open_interest);
   EXPECT_FALSE(demo->capabilities().realtime);
-  EXPECT_EQ(demo->symbols(), (std::vector<std::string>{"SPX", "SPY", "QQQ"}));
+  EXPECT_EQ(demo->symbols(), (std::vector<std::string>{"SPX", "SPY", "QQQ", "XSP", "NDX", "RUT", "VIX"}));
   std::vector<std::string> expected, actual;
   for (const auto& day : providers::builtin_scenarios()) if (!day.overnight && day.sessions.empty()) expected.push_back(day.id);
   for (const auto& day : demo->days()) actual.push_back(day.id);
   EXPECT_EQ(actual, expected);
-  EXPECT_EQ(actual.size(), 12U);
+  EXPECT_EQ(actual.size(), 13U);
   for (const auto speed : {1, 2, 5, 10, 30, 60, 120, 300}) {
     EXPECT_NO_THROW((void)providers::make_provider({"demo", "", {{"speed", std::to_string(speed)}}}));
   }
   for (const auto& option : std::vector<std::pair<std::string, std::string>>{
       {"speed", "max"}, {"speed", "0"}, {"speed", "3"}, {"speed", "1.0"}, {"speed", "301"},
       {"days", ""}, {"days", "trend,"}, {"days", ",trend"}, {"days", "missing"},
-      {"days", "trend,overnight"}, {"days", "overnight-gap"}, {"loop", "on"}}) {
+      {"revision", "0"}, {"revision", "4"}, {"days", "trend,overnight"}, {"days", "overnight-gap"}, {"loop", "on"}}) {
     EXPECT_THROW((void)providers::make_provider({"demo", "", {option}}), std::invalid_argument);
   }
   provider = providers::make_provider({"demo", "", {{"days", "chop,trend,chop"}}});
@@ -132,6 +132,23 @@ TEST(DemoFeed, FactoryOptionsSymbolsAndDefaultRotation) {
   EXPECT_THROW(demo->validate({{}}), std::invalid_argument);
   test::DiscardEvents sink;
   EXPECT_THROW(demo->start({{"DIA"}}, sink), std::invalid_argument);
+}
+
+TEST(DemoFeed, EarlierRevisionsKeepTheirSymbolsAndRotation) {
+  for (const auto revision : {1, 2}) {
+    auto provider = providers::make_provider({"demo", "", {{"revision", std::to_string(revision)}}});
+    const auto* demo = dynamic_cast<providers::DemoProvider*>(provider.get());
+    ASSERT_NE(demo, nullptr);
+    EXPECT_EQ(demo->symbols(), (std::vector<std::string>{"SPX", "SPY", "QQQ"}));
+    EXPECT_EQ(demo->days().size(), 12U);
+    for (const auto& day : demo->days()) {
+      EXPECT_EQ(day.symbols, (std::vector<std::string>{"SPX", "SPY", "QQQ"}));
+    }
+    EXPECT_THROW(demo->validate({{"XSP"}}), std::invalid_argument);
+  }
+  EXPECT_THROW((void)providers::make_provider({"demo", "", {{"revision", "2"}, {"days", "index-spike"}}}), std::invalid_argument);
+  providers::DemoProvider demo(settings());
+  EXPECT_NO_THROW(demo.validate({{"XSP", "NDX", "RUT", "VIX"}}));
 }
 
 TEST(DemoFeed, DatesUseNewYorkWeekendsHolidaysAndRepeatableSeeds) {

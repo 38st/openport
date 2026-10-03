@@ -245,21 +245,28 @@ Scenario parse_scenario(std::string_view source, const std::filesystem::path& fi
       require(session == "regular" || session == "overnight", "session", "expected regular or overnight");
       s.overnight = session == "overnight";
     }
-    const bool closed_sessions = std::any_of(s.sessions.begin(), s.sessions.end(), [](const auto& session) { return session.session != "regular"; });
     require(j.at("symbols").is_array() && !j.at("symbols").empty(), "symbols", "expected a nonempty array");
     std::set<std::string> seen;
     for (const auto& value : j.at("symbols")) {
       const auto symbol = text(value, "symbols");
-      require(symbol == "SPX" || (!(s.overnight && !several) && (symbol == "SPY" || symbol == "QQQ")), "symbols", "supported: SPX, SPY, QQQ; overnight: SPX only");
+      require(symbol == "SPX" || symbol == "SPY" || symbol == "QQQ" || symbol == "XSP" ||
+              symbol == "NDX" || symbol == "RUT" || symbol == "VIX", "symbols", "supported: SPX, SPY, QQQ, XSP, NDX, RUT, VIX");
       require(seen.insert(symbol).second, "symbols", "duplicate symbol");
       s.symbols.push_back(symbol);
     }
-    require(!closed_sessions || seen.contains("SPX"), "symbols", "curb and overnight sessions trade SPX options alone, so list SPX");
     const auto date = text(j.at("date"), "date");
     const auto parsed = md::parse_datetime(date + "T12:00:00", md::Zone::NewYork);
     require(date.size() == 10 && parsed.has_value(), "date", "expected YYYY-MM-DD");
     s.date = md::new_york_time(*parsed).date;
     require(md::trading_date(*parsed) == s.date, "date", "must be a trading day");
+    for (const auto& window : scenario_windows(s, s.date)) {
+      if (window.session == "regular") continue;
+      const auto trades = [&](const auto& symbol) { return md::trading_session(symbol, window.first).open; };
+      require(std::any_of(s.symbols.begin(), s.symbols.end(), trades), "symbols",
+              "curb and overnight sessions need SPX, XSP, RUT or VIX");
+      require(several || std::all_of(s.symbols.begin(), s.symbols.end(), trades), "symbols",
+              "single overnight sessions support SPX, XSP, RUT and VIX only");
+    }
     require(j.at("seed").is_number_unsigned() || (j.at("seed").is_number_integer() && j.at("seed").get<std::int64_t>() >= 0), "seed", "expected uint64");
     s.seed = j.at("seed").get<std::uint64_t>();
     require(j.at("generator").is_number_integer() && j.at("generator") == 1, "generator", "only version 1 is supported");

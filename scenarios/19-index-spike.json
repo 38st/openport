@@ -1,0 +1,19 @@
+{
+  "id": "index-spike",
+  "title": "Index spike on expiry eve",
+  "description": "A simulated midday shock hits every index on the last trading day of the SPX, NDX and RUT AM monthlies, and VIX jumps.",
+  "goal": "Manage index exposure through the spike and crush; compare AM monthlies with same-date PM weeklies and VIX's Wednesday series.",
+  "symbols": ["SPX", "SPY", "QQQ", "XSP", "NDX", "RUT", "VIX"],
+  "session": "regular",
+  "date": "2026-09-17",
+  "seed": 151515,
+  "generator": 1,
+  "drift": [[0.4, 0.002], [0.6, -0.008], [1, -0.004]],
+  "volatility": 0.16,
+  "iv_shift": 0.01,
+  "spot_vol": -2.5,
+  "events": [
+    {"type": "spike", "at": "12:30", "move": -0.006, "iv": 0.04},
+    {"type": "crush", "at": "14:45", "iv": -0.02}
+  ]
+}

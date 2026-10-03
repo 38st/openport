@@ -103,8 +103,8 @@ supported and cause no release request.
 ## Command-line validation
 
 `openportd` defaults to Cboe delayed data for SPX, SPY, QQQ, IWM and DIA, as does
-the Docker image. `--symbols` replaces that subscription. The demo market still
-uses SPX, SPY and QQQ.
+the Docker image. `--symbols` replaces that subscription. The revision 3 demo feed
+uses SPX, SPY, QQQ, XSP, NDX, RUT and VIX.
 
 Ports must be integers from 1 through 65,535. Poll intervals and probe timeout
 seconds must be positive integers. Expiry counts must be nonnegative integers;
@@ -539,7 +539,7 @@ true` then permits trading at that prepared state. Evening overnight times are
 on the calendar date before the session date; morning times are on the session
 date. Recorded feeds retain their original delay and market timestamps.
 
-The demo market has eighteen built-in scenarios, compiled from `scenarios/*.json`,
+The demo market has nineteen built-in scenarios, compiled from `scenarios/*.json`,
 plus `--scenario-dir` additions and overrides. No built-in files need installing
 or locating at runtime. They include the
 five original days, gaps, crushes, pins and reversals, and four runs of several
@@ -550,7 +550,7 @@ assignment and dividends between them, and its state lists its `sessions`. All a
 historical reconstructions. Status keeps `provider.simulated`; the terminal shows
 the scenario and seed with the simulated label. Generated recordings are cached by
 scenario, date and seed, with four completed entries retained. Generation uses
-fixed version 1, at output revision 2 (see [scenarios](scenarios.md)); unsupported
+fixed version 1, at output revision 3 (see [scenarios](scenarios.md)); unsupported
 versions are rejected.
 
 Each run's account journal is retained in `replays/` beside `--paper-journal`, on
@@ -627,7 +627,7 @@ recorded before this recorded a command's input after its transactions, so one c
 between them names the first transaction no recorded input explains.
 
 The journal carries recording name, absolute path, byte size and SHA-256, or scenario
-id, source hash, generator version, date and seed. Built-ins are checked against the
+id, source hash, generator version and output revision, date and seed. Built-ins are checked against the
 embedded source; user scenarios are reopened at their recorded path. Keep original
 recordings and user scenario files there. Generated cache files are unnecessary for
 scenario verification. The initial plan, analytics settings, dividends, calendar
@@ -641,15 +641,23 @@ so keep the original when exact run verification is needed.
 
 ## Demo feed
 
-`openportd --provider demo` rotates the twelve built-in regular scenarios in their
+`openportd --provider demo` rotates the thirteen built-in regular scenarios in their
 Replay listing order, one a trading date: a date plays the scenario its count of
 trading dates from 2 January 2026 selects, so it plays the same one whenever the
 server starts. `--option days=trend,chop` selects and orders built-in ids;
 unknown ids, overnight sessions and empty entries are startup errors. Custom files
 in `--scenario-dir` remain available on Replay. `--option speed=N` accepts 1, 2, 5,
 10, 30, 60, 120 or 300; default 1. Maximum-throughput playback is not supported.
-Without `--symbols`, the feed subscribes to SPX, SPY and QQQ. Other symbols and
+Without `--symbols`, the feed subscribes to SPX, SPY, QQQ, XSP, NDX, RUT and VIX. Other symbols and
 nonzero `--expiries` or `--window` are rejected.
+
+Revision 3 adds those four indices to every selected demo day, without changing
+that built-in's Replay source or symbol list. `--option revision=2` retains the old
+three-symbol feed, generator output and twelve-day rotation; `revision=1` selects
+the original chain. Use the same revision and `days` options when resuming an older
+demo journal: live account journals do not record their feed configuration. Scenario
+replay journals record the revision and select it automatically for verification
+and recovery.
 
 The default first date is the last trading date before startup's New York date.
 Each next session uses the next trading date, skipping weekends and calendar holidays.
