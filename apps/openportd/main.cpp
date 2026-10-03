@@ -85,6 +85,8 @@ struct Settings {
   bool paper_enabled = true;
   bool compact_journals = false;
   bool repair_journals = false;
+  bool repair_dry_run = false;
+  std::filesystem::path repair_file;
   std::filesystem::path paper_journal;
   trading::SessionConfig paper;
   std::vector<trading::Dividend> dividends;
@@ -134,7 +136,7 @@ int usage(const char* error = nullptr) {
       "       openportd --import-day databento|thetadata --date YYYY-MM-DD --symbols SPX,SPY\n"
       "                 [--expiries N] [--window F] [--out DIR] (default ./recordings)\n"
       "       openportd --compact-journals [--paper-journal PATH]\n"
-      "       openportd --repair-journals [--paper-journal PATH]\n"
+      "       openportd --repair-journals [--dry-run] [--file PATH] [--paper-journal PATH]\n"
       "       openportd --version\n\n"
       "paper: durable paper trading on index, equity and ETF options; cash 100000, fee\n"
       "       0.65; more named accounts live in an accounts directory beside the journal\n"
@@ -251,7 +253,8 @@ int compact_journals(const std::filesystem::path& journal, const std::filesystem
 }
 
 /// --repair-journals: cuts torn last lines off the main journal and the accounts' ones.
-int repair_journals(const std::filesystem::path& journal, const std::filesystem::path& accounts) {
+int repair_journals(const std::filesystem::path& journal, const std::filesystem::path& accounts,
+                    bool dry_run, const std::filesystem::path& single) {
   std::vector<std::filesystem::path> files;
   std::error_code ec;
   if (std::filesystem::is_regular_file(journal, ec)) files.push_back(journal);
@@ -263,11 +266,16 @@ int repair_journals(const std::filesystem::path& journal, const std::filesystem:
   }
   std::sort(named.begin(), named.end());
   files.insert(files.end(), named.begin(), named.end());
+  if (!single.empty()) files = {single};
   if (files.empty()) std::printf("no paper journals at %s\n", journal.c_str());
   bool failed = false;
   for (const auto& file : files) {
     try {
-      const auto repaired = trading::FileJournal::repair(file.string());
+      const auto repaired = trading::FileJournal::repair(file.string(), dry_run);
+      if (dry_run) {
+        std::printf("%s: would cut %zu bytes; %zu records kept\n", file.c_str(), repaired.bytes_cut, repaired.records_kept);
+        continue;
+      }
       // An empty journal held no transaction: its account starts afresh.
       if (repaired.bytes_cut == 0) {
         std::printf("%s: %s\n", file.c_str(), repaired.empty ? "empty, holds no transaction" : "whole");
@@ -377,10 +385,12 @@ int run(int argc, char** argv) {
     if (arg == "--no-history") { settings.history = false; continue; }
     if (arg == "--no-cboe-holidays") { settings.cboe_holidays = false; continue; }
     if (arg == "--compact-journals") { settings.compact_journals = true; continue; }
+    if (arg == "--dry-run") { settings.repair_dry_run = true; continue; }
     if (arg == "--repair-journals") { settings.repair_journals = true; continue; }
     if (!has_value) return usage(("missing value for " + arg).c_str());
     const std::string value = argv[++i];
-    if (arg == "--provider") {
+    if (arg == "--file") { settings.repair_file = value; }
+    else if (arg == "--provider") {
       settings.provider.name = value;
     } else if (arg == "--sandboxes") {
       settings.sandboxes.capacity = static_cast<std::size_t>(providers::parse_integer(value, "--sandboxes"));
@@ -536,9 +546,11 @@ int run(int argc, char** argv) {
     if (settings.paper_journal.empty()) return usage("HOME is unavailable; specify --paper-journal");
     return compact_journals(settings.paper_journal, paper_accounts);
   }
+  if ((settings.repair_dry_run || !settings.repair_file.empty()) && !settings.repair_journals)
+    throw std::invalid_argument("--dry-run and --file require --repair-journals");
   if (settings.repair_journals) {
     if (settings.paper_journal.empty()) return usage("HOME is unavailable; specify --paper-journal");
-    return repair_journals(settings.paper_journal, paper_accounts);
+    return repair_journals(settings.paper_journal, paper_accounts, settings.repair_dry_run, settings.repair_file);
   }
   if (settings.require_token && settings.tokens.empty() && settings.write_token.empty() && settings.write_token_file.empty())
     return usage("--require-token needs a configured token");

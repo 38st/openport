@@ -1261,6 +1261,16 @@ Older reviews omit the field and still recover. New configured exits add their
 labelled cancellations and reducing IOC commands; old definitions and saved
 backtest reports retain their original behavior and shape.
 
+Journal repair accepts `openportd --repair-journals --dry-run` to report each
+file, bytes that would be cut, and verified records kept without changing files or
+creating backups. Add `--file PATH` to inspect or repair only that journal. Without
+`--file`, the main journal and its `accounts/` and `replays/` journals are selected.
+Stop the server first: dry-run also requires the journal lock. Exit 0 means all
+selected journals were inspected/repaired; exit 1 means at least one failed
+(including damage before the last line, which is never cut). `--dry-run` and
+`--file` require `--repair-journals`; invalid options exit 2. Repair preserves the
+original in a timestamped sibling backup.
+
 ## Reloading named tokens
 
 `--token-file FILE` requires a valid, nonempty named-token file at startup. The

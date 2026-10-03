@@ -43,7 +43,16 @@ bool full_sync(int fd) {
   return ::fsync(fd) == 0;
 }
 /// A write the disk runs out for would tear the journal, so appends stop short of it.
-constexpr unsigned long long kMinimumFreeBytes = 64ull * 1024 * 1024;
+void reserve_space(std::string_view directory, std::uint64_t device, std::uint64_t available, std::uint64_t bytes) {
+  if (available < kMinimumFreeBytes || available - kMinimumFreeBytes < bytes)
+    io("Disk nearly full: filesystem device " + std::to_string(device) + " (directory " + std::string(directory) +
+       ") has " + std::to_string(available) + " free bytes; reserve " + std::to_string(kMinimumFreeBytes) +
+       " bytes (64 MiB); free space and restart");
+}
+std::string directory_name(const std::filesystem::path& file) {
+  const auto name = std::filesystem::absolute(file).parent_path().filename().string();
+  return name.empty() ? "root" : name;
+}
 std::string read_file(const std::string& path) {
   std::ifstream file(path, std::ios::binary);
   if (!file) io("Cannot read journal");
@@ -52,14 +61,14 @@ std::string read_file(const std::string& path) {
   if (file.bad()) io("Journal read failed");
   return contents.str();
 }
-int open_locked(const std::string& path, bool create) {
-  const int fd = ::open(path.c_str(), O_WRONLY | O_APPEND | O_CLOEXEC | (create ? O_CREAT | O_EXCL : 0), 0600);
+int open_locked(const std::string& path, bool create, bool read_only = false) {
+  const int fd = ::open(path.c_str(), (read_only ? O_RDONLY : O_WRONLY | O_APPEND) | O_CLOEXEC | (create ? O_CREAT | O_EXCL : 0), 0600);
   if (fd < 0 && create && errno == EEXIST) {
     // Preserve create's no-overwrite contract, but report contention consistently,
     // including a concurrent creator winning the Engine's existence-check race.
     const int existing = open_locked(path, false);
     ::close(existing);
-    io("Cannot create journal '" + path + "': file already exists");
+    io("Cannot create journal: file already exists");
   }
   if (fd < 0) io("Cannot open journal: " + std::string(std::strerror(errno)));
   struct stat info {};
@@ -75,21 +84,19 @@ int open_locked(const std::string& path, bool create) {
     const int error = errno;
     ::close(fd);
     if (error == EWOULDBLOCK || error == EAGAIN)
-      throw TradingError(Reason::JOURNAL_LOCKED, "paper journal '" + path +
-          "' is in use by another openportd; use --paper-journal to choose another file or --no-paper");
-    io("Cannot lock paper journal '" + path + "': " + std::strerror(error));
+      throw TradingError(Reason::JOURNAL_LOCKED, "paper journal is in use by another openportd; use --paper-journal to choose another file or --no-paper");
+    io("Cannot lock paper journal: " + std::string(std::strerror(error)));
   }
   // The lock's holder may have removed an empty journal between this open and the
   // lock: writing to the file the path no longer names would lose every record.
   struct stat named {};
   if (::stat(path.c_str(), &named) != 0 || named.st_dev != info.st_dev || named.st_ino != info.st_ino) {
     ::close(fd);
-    io("Journal '" + path + "' was removed or replaced while opening it");
+    io("Journal was removed or replaced while opening it");
   }
   return fd;
 }
-}  // namespace
-JournalRecovery verify_journal(std::string_view jsonl, std::string_view expected_head) {
+JournalRecovery verify_prefix(std::string_view jsonl, std::string_view expected_head, bool prefix) {
   JournalRecovery result;
   result.head = genesis;
   std::size_t start = 0;
@@ -118,11 +125,43 @@ JournalRecovery verify_journal(std::string_view jsonl, std::string_view expected
       start = end + 1;
     }
     if (!expected_head.empty() && result.head != expected_head) corrupt("Journal does not match trusted head");
-  } catch (const Json::exception& e) { corrupt("Invalid journal JSON: " + std::string(e.what())); }
+  } catch (const Json::exception&) {
+    if (!prefix) corrupt("Invalid journal JSON at record " + std::to_string(result.records.size() + 1));
+    result.damage = "Invalid journal JSON at record " + std::to_string(result.records.size() + 1);
+  } catch (const TradingError& error) {
+    if (!prefix || error.code() != Reason::JOURNAL_CORRUPT) throw;
+    result.damage = error.what();
+  }
+  if (prefix && result.truncated_final_line) result.damage = "Torn final journal line";
   return result;
 }
-FileJournal::FileJournal(int fd, std::uint64_t sequence, std::string head, Timestamp last_time, Options options)
-    : fd_(fd), sequence_(sequence), head_(std::move(head)), last_time_(last_time), options_(std::move(options)) {}
+}  // namespace
+void check_storage_space(const std::filesystem::path& file, std::uint64_t bytes) {
+  auto directory = std::filesystem::absolute(file).parent_path();
+  struct statvfs space {};
+  struct stat info {};
+  if (::statvfs(directory.c_str(), &space) == 0 && ::stat(directory.c_str(), &info) == 0)
+    reserve_space(directory_name(file), info.st_dev, static_cast<std::uint64_t>(space.f_bavail) * space.f_frsize, bytes);
+}
+JournalRecovery verify_journal(std::string_view jsonl, std::string_view expected_head) {
+  return verify_prefix(jsonl, expected_head, false);
+}
+FileJournal::FileJournal(int fd, std::uint64_t sequence, std::string head, Timestamp last_time, Options options, std::string directory)
+    : fd_(fd), sequence_(sequence), head_(std::move(head)), last_time_(last_time), options_(std::move(options)), directory_(std::move(directory)) {}
+std::uint64_t FileJournal::bytes() const {
+  struct stat info {};
+  return ::fstat(fd_, &info) == 0 ? static_cast<std::uint64_t>(info.st_size) : 0;
+}
+std::pair<std::shared_ptr<FileJournal>, JournalRecovery> FileJournal::inspect(const std::string& path) {
+  const int fd = open_locked(path, false, true);
+  try {
+    auto recovery = verify_prefix(read_file(path), {}, true);
+    auto journal = std::shared_ptr<FileJournal>(new FileJournal(fd, recovery.records.size(), recovery.head,
+        recovery.records.empty() ? 0 : recovery.records.back().time, {}, directory_name(path)));
+    journal->failed_ = true;
+    return {std::move(journal), std::move(recovery)};
+  } catch (...) { ::close(fd); throw; }
+}
 FileJournal::~FileJournal() {
   try { flush(); } catch (...) {}  // Explicit boundaries report failures; destruction cannot throw.
   if (fd_ >= 0) ::close(fd_);
@@ -131,7 +170,7 @@ std::shared_ptr<FileJournal> FileJournal::create(const std::string& path) {
   return create(path, Options{});
 }
 std::shared_ptr<FileJournal> FileJournal::create(const std::string& path, Options options) {
-  return std::shared_ptr<FileJournal>(new FileJournal(open_locked(path, true), 0, genesis, 0, std::move(options)));
+  return std::shared_ptr<FileJournal>(new FileJournal(open_locked(path, true), 0, genesis, 0, std::move(options), directory_name(path)));
 }
 JournalRecovery FileJournal::read(const std::string& path, std::string_view expected_head) {
   struct stat info {};
@@ -149,24 +188,27 @@ std::shared_ptr<FileJournal> FileJournal::resume(const std::string& path, Option
       io("Torn journal suffix, as a full disk leaves: with openportd stopped, "
          "openportd --repair-journals cuts it off and keeps the original");
     return std::shared_ptr<FileJournal>(new FileJournal(fd, recovery.records.size(), recovery.head,
-        recovery.records.empty() ? 0 : recovery.records.back().time, std::move(options)));
+        recovery.records.empty() ? 0 : recovery.records.back().time, std::move(options), directory_name(path)));
   } catch (...) { ::close(fd); throw; }
 }
-JournalRepair FileJournal::repair(const std::string& path) {
-  const int fd = open_locked(path, false);
+JournalRepair FileJournal::repair(const std::string& path, bool dry_run) {
+  const int fd = open_locked(path, false, dry_run);
   struct Close { int fd; ~Close() { ::close(fd); } } close{fd};
   const auto contents = read_file(path);
-  if (!verify_journal(contents).truncated_final_line) return {0, {}, contents.empty()};
+  const auto recovery = verify_journal(contents);
+  if (!recovery.truncated_final_line) return {0, {}, contents.empty(), recovery.records.size()};
   // A torn first record, the journal's only content, leaves an empty journal: it
   // held no transaction, so its account starts afresh.
   const auto end = contents.rfind('\n');
   const std::size_t keep = end == std::string::npos ? 0 : end + 1;
+  if (dry_run) return {contents.size() - keep, {}, keep == 0, recovery.records.size()};
+  check_storage_space(path, contents.size());
   char stamp[32];
   const std::time_t now = std::time(nullptr);
   std::tm utc{};
   ::gmtime_r(&now, &utc);
   std::strftime(stamp, sizeof stamp, "%Y%m%dT%H%M%SZ", &utc);
-  JournalRepair result{contents.size() - keep, path + ".torn-" + stamp, keep == 0};
+  JournalRepair result{contents.size() - keep, path + ".torn-" + stamp, keep == 0, recovery.records.size()};
   const int copy = ::open(result.backup.c_str(), O_WRONLY | O_CREAT | O_EXCL | O_CLOEXEC, 0600);
   if (copy < 0) io("Cannot create " + result.backup + ": " + std::strerror(errno));
   std::size_t done = 0;
@@ -200,9 +242,12 @@ void FileJournal::append(Timestamp time, std::string_view type, std::string_view
     j["hash"] = hash;
     const std::string line = j.dump() + '\n';
     struct statvfs space {};
-    if (::fstatvfs(fd_, &space) == 0 &&
-        static_cast<unsigned long long>(space.f_bavail) * space.f_frsize < kMinimumFreeBytes + line.size())
-      io("Disk nearly full: the journal stops before a write could tear it; free space and restart");
+    struct stat info {};
+    if (::fstat(fd_, &info) == 0 && (options_.hooks.free_bytes || ::fstatvfs(fd_, &space) == 0)) {
+      const auto available = options_.hooks.free_bytes ? options_.hooks.free_bytes(fd_) :
+          static_cast<std::uint64_t>(space.f_bavail) * space.f_frsize;
+      reserve_space(directory_, info.st_dev, available, line.size());
+    }
     std::size_t done = 0;
     while (done < line.size()) {
       const auto count = ::write(fd_, line.data() + done, line.size() - done);

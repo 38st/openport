@@ -2311,7 +2311,9 @@ cut or kernel panic may lose the last quarter second of replay records. Readers 
 see complete lines before the sync. Batching is append-driven: an idle journal
 waits for another append or a boundary. Compaction and repair still sync fully.
 
-A transaction that would leave less than 64 MiB free on the disk is refused, so a
+A transaction that would leave less than 64 MiB free on the disk is refused. The
+error names the filesystem device and directory basename, free bytes and the
+67,108,864-byte reserve without exposing an absolute path. Thus a
 full disk stops trading without tearing the journal. If a write is torn anyway, resume
 refuses the journal until, with openportd stopped, `openportd --repair-journals` cuts
 the torn last line off it and each account journal beside it, keeping the original as

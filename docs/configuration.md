@@ -102,3 +102,13 @@ origin; behind a proxy that rewrites the Host header, list your public origin wi
 the host of an allowed origin, or a name given with `--allowed-host` (such as a proxy's
 upstream name), so a web page cannot reach it through DNS rebinding. Check your data
 provider's terms before sharing an instance with anyone else.
+
+Journal repair accepts `openportd --repair-journals --dry-run` to report each
+file, bytes that would be cut, and verified records kept without changing files or
+creating backups. Add `--file PATH` to inspect or repair only that journal. Without
+`--file`, the main journal and its `accounts/` and `replays/` journals are selected.
+Stop the server first: dry-run also requires the journal lock. Exit 0 means all
+selected journals were inspected/repaired; exit 1 means at least one failed
+(including damage before the last line, which is never cut). `--dry-run` and
+`--file` require `--repair-journals`; invalid options exit 2. Repair preserves the
+original in a timestamped sibling backup.

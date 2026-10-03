@@ -633,5 +633,53 @@ TEST(TradingJournal, LockedJournalIsRejectedBeforeReadingOrRepairingItsContents)
   }
   EXPECT_EQ(file.read(), "invalid journal contents\n");
 }
+TEST(TradingJournal, LowDiskNamesFilesystemFreeBytesAndReserveWithoutAPath) {
+  TemporaryJournal file;
+  FileJournal::Options options;
+  options.hooks.free_bytes = [](int) { return 12345; };
+  const auto journal = FileJournal::create(file.path, options);
+  try {
+    journal->append(1, "sample", "{}");
+    FAIL() << "Low disk write succeeded";
+  } catch (const TradingError& error) {
+    EXPECT_EQ(error.code(), Reason::JOURNAL_IO);
+    const std::string message = error.what();
+    EXPECT_NE(message.find("filesystem device"), std::string::npos);
+    EXPECT_NE(message.find(std::filesystem::path(file.path).parent_path().filename().string()), std::string::npos);
+    EXPECT_NE(message.find("12345 free bytes"), std::string::npos);
+    EXPECT_NE(message.find("67108864"), std::string::npos);
+    EXPECT_EQ(message.find(file.path), std::string::npos);
+  }
+  EXPECT_TRUE(file.read().empty());
+}
+TEST(TradingJournal, DryRunAndReadOnlyInspectionLeaveDamageUntouched) {
+  TemporaryJournal file;
+  {
+    auto journal = FileJournal::create(file.path);
+    journal->append(1, "first", "{}");
+    journal->append(2, "second", "{}");
+  }
+  const auto good = file.read();
+  file.write(good + "torn");
+  const auto repair = FileJournal::repair(file.path, true);
+  EXPECT_EQ(repair.bytes_cut, 4u);
+  EXPECT_EQ(repair.records_kept, 2u);
+  EXPECT_TRUE(repair.backup.empty());
+  EXPECT_EQ(file.read(), good + "torn");
+  const auto middle = good.find('\n') + 1;
+  const auto damaged = good.substr(0, middle) + "bad\n" + good.substr(middle);
+  file.write(damaged);
+  EXPECT_THROW(FileJournal::read(file.path), TradingError);
+  EXPECT_THROW(FileJournal::repair(file.path, true), TradingError);
+  {
+    auto [journal, recovery] = FileJournal::inspect(file.path);
+    EXPECT_EQ(recovery.records.size(), 1u);
+    EXPECT_FALSE(recovery.damage.empty());
+    EXPECT_EQ(journal->bytes(), damaged.size());
+    EXPECT_THROW(journal->append(3, "refused", "{}"), TradingError);
+    EXPECT_THROW(FileJournal::repair(file.path), TradingError);
+  }
+  EXPECT_EQ(file.read(), damaged);
+}
 }  // namespace
 }  // namespace openport::trading
