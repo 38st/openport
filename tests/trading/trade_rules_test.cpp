@@ -741,6 +741,7 @@ TEST(TradeRules, HedgingChecksNetDeltaAndAllowsReductionsAndSystemExitsAcrossRec
   ASSERT_TRUE(s.submit(put.market("new-direction"), put.time).decision.ok());
   ASSERT_TRUE(s.close_positions({}, put.time).decision.ok());
   // A delta-neutral combo has no opposite direction.
+  ASSERT_TRUE(s.submit(call.market("held-for-neutral"), call.time).decision.ok());
   auto neutral = call.market("neutral"); neutral.symbol.clear();
   neutral.legs = {{call.symbol(), Side::Buy, 1}, {put.symbol(), Side::Buy, 1}};
   ASSERT_TRUE(s.submit(neutral, call.time).decision.ok());
