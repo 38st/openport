@@ -826,6 +826,7 @@ export interface Limits {
   price_band_relative: number
   aggregate: RiskCaps
   per_underlying: RiskCaps
+  underlying_overrides?: Record<string, RiskCaps>
   max_daily_loss: Money
   max_quote_age_seconds: number
   max_valuation_age_seconds: number

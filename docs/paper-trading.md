@@ -2525,6 +2525,17 @@ The terminal’s account switcher opens **Manage accounts** for rename, archive,
 unarchive and confirmed deletion, with archived accounts grouped separately. New
 account and Replay start forms offer **Copy limits and guardrails from**.
 
+Overrides replace the common `per_underlying` cap for that symbol. PUT limits
+replaces the whole map: omission or `{}` removes overrides. Symbols use 1–16
+uppercase letters, digits or dots; unsubscribed symbols are allowed so settings
+can be prepared before market data arrives. Values have the same finite,
+nonnegative validation as aggregate/common caps. In evaluations each tightening
+applies now and each loosening queues, including removal when the fallback is
+looser. Practice changes are immediate. GET risk returns active and pending maps;
+the terminal limits editor adds, edits and removes rows, and risk buckets identify
+the effective override or common cap. Revisions and replay mirror behavior match
+other limits.
+
 ### Commands and views
 
 The engine thread alone owns every session. A bounded FIFO inbox (256 pending
@@ -2805,7 +2816,8 @@ and timestamps use the same UTC ISO format as `as_of`. Analytical values may be
 null. Position Greeks expose per-unit delta/gamma/vega/theta plus signed position
 dollar exposures. Incomplete scenario grids contain null P&Ls, never partial sums.
 Limits contain `max_order_contracts`, `price_band_absolute`, `price_band_relative`,
-`aggregate` and `per_underlying` (`dollar_delta`, `vega`), `max_daily_loss`,
+`aggregate` and `per_underlying` (`dollar_delta`, `vega`), optional
+`underlying_overrides: {"SPX": {"dollar_delta": 500000, "vega": 5000}}`, `max_daily_loss`,
 `max_quote_age_seconds` and `max_valuation_age_seconds`.
 
 Unknown fields, duplicate JSON keys, missing required fields, wrong types and

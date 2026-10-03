@@ -680,7 +680,7 @@ the remaining prefix. No checkpoint means legacy prefix verification.
 New runs record replay driver 5, which adds AM opening-print settlement. Verification
 of drivers 1–4 keeps their manual AM behavior and original journal bytes. Driver 5
 changes the start input for every new run and adds settlement transactions when an
-AM position is held into an expiry opening print. Resuming requires the current driver (6, below);
+AM position is held into an expiry opening print. Resuming requires the current driver (7, below);
 older runs remain readable and verifiable. The scenario generator revision is 4; older recorded revisions regenerate as before.
 A stopped run verifies through its recorded prefix; it need not have reached EOF.
 So does a run a crash cut off, whichever record its journal ends at: each input and
@@ -705,7 +705,7 @@ including replay clock advances, and are retained as order changes. Recovery
 preserves their last scheduled step. Their added journal fields are omitted when
 unused, so runs from before walking limits and inside fills still verify on the new build on the same platform.
 
-New runs record driver 6, which also labels automatic playbook entry/exit cancellations
+Driver 6 also labels automatic playbook entry/exit cancellations
 `PLAYBOOK_TIME_STOP`. Drivers 1–5 still verify using their original `USER_CANCEL`
 bytes. Older cancel commands omit the optional `cancel_reason` and default to
 `USER_CANCEL`; existing account journals and saved reports still load. Resuming
@@ -717,6 +717,10 @@ limits and overlap read from the recovered journal and overdue time stops retrie
 on the first fresh market update. Replay copies omit these records. This does not
 change replay driver 6, existing replay/backtest journal bytes, or reducer schema;
 new live automatic commands use the existing journal encoding.
+New runs record driver 7. Removing an underlying override takes effect immediately
+when the common cap is tighter; a looser fallback remains queued. Drivers 1–6 keep
+their earlier redundant override entries and journal bytes during verification.
+Existing journals still recover both active and pending overrides.
 
 Verification currently compares exact hashes on the same build/platform. Math-library
 changes can alter analytic floating-point fields; see the platform qualification in

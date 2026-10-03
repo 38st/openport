@@ -1033,9 +1033,12 @@ json exposure_limits(const ExposureLimits& limits) {
   return {{"dollar_delta", limits.dollar_delta}, {"vega", limits.vega}};
 }
 json limits_json(const Limits& limits) {
+  json overrides = json::object();
+  for (const auto& [symbol, caps] : limits.underlying_overrides) overrides[symbol] = exposure_limits(caps);
   return {{"max_order_contracts", limits.max_order_contracts}, {"price_band_absolute", limits.price_band_absolute.str()},
           {"price_band_relative", limits.price_band_relative}, {"aggregate", exposure_limits(limits.aggregate)},
-          {"per_underlying", exposure_limits(limits.per_underlying)}, {"max_daily_loss", limits.max_daily_loss.str()},
+          {"per_underlying", exposure_limits(limits.per_underlying)}, {"underlying_overrides", overrides},
+          {"max_daily_loss", limits.max_daily_loss.str()},
           {"max_quote_age_seconds", limits.max_quote_age / md::kNanosPerSecond},
           {"max_valuation_age_seconds", limits.max_valuation_age / md::kNanosPerSecond}};
 }
@@ -1296,13 +1299,23 @@ ExposureLimits parse_exposure(const json& j) {
 }
 Limits parse_limits(const json& j) {
   fields(j, {"max_order_contracts", "price_band_absolute", "price_band_relative", "aggregate", "per_underlying",
-             "max_daily_loss", "max_quote_age_seconds", "max_valuation_age_seconds"});
+             "max_daily_loss", "max_quote_age_seconds", "max_valuation_age_seconds"}, {"underlying_overrides"});
   Limits limits;
   limits.max_order_contracts = integer_field(j, "max_order_contracts");
   limits.price_band_absolute = decimal_field(j, "price_band_absolute");
   limits.price_band_relative = number_field(j, "price_band_relative");
   limits.aggregate = parse_exposure(j.at("aggregate"));
   limits.per_underlying = parse_exposure(j.at("per_underlying"));
+  if (j.contains("underlying_overrides")) {
+    const auto& overrides = j.at("underlying_overrides");
+    if (!overrides.is_object()) throw std::invalid_argument("underlying_overrides must be an object");
+    for (const auto& [symbol, caps] : overrides.items()) {
+      if (symbol.empty() || symbol.size() > 16 || !std::all_of(symbol.begin(), symbol.end(), [](char c) {
+            return (c >= 'A' && c <= 'Z') || (c >= '0' && c <= '9') || c == '.';
+          })) throw std::invalid_argument("Override underlying must be 1-16 uppercase letters, digits or dots");
+      limits.underlying_overrides[symbol] = parse_exposure(caps);
+    }
+  }
   limits.max_daily_loss = decimal_field(j, "max_daily_loss");
   auto age = [&](const char* key) {
     const auto seconds = integer_field(j, key);

@@ -381,3 +381,13 @@ def test_replay_verification_receipt_is_authenticated_and_not_account_scoped(stu
     with pytest.raises(ApiError) as caught:
         client.verify_replay("shared")
     assert caught.value.reason_code == "VERIFICATION_RUNNING"
+
+
+def test_underlying_limit_overrides_live_and_replay(stub):
+    client = Client(stub.url, "secret")
+    limits = {"underlying_overrides": {"SPX": {"dollar_delta": 500000, "vega": 5000},
+                                       "QQQ": {"dollar_delta": 2000000, "vega": 20000}}}
+    for target, prefix in [(client, "/api"), (client.for_replay(), "/api/replay")]:
+        target.limits("7", limits)
+        assert urlsplit(stub.requests[-1][1]).path == prefix + "/risk/limits"
+        assert stub.requests[-1][3] == {"expected_revision": "7", "limits": limits}

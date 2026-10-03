@@ -55,6 +55,8 @@ class Desk {
     /// Driver 6 labels automatic time-stop cancellations. Drivers 1–5 retain
     /// USER_CANCEL, including their journal bytes during offline verification.
     bool playbook_cancel_labels = true;
+    /// Driver 7 removes obsolete underlying overrides when the common cap is tighter.
+    bool remove_redundant_overrides = true;
     std::filesystem::path paper_journal;  ///< The main account. Empty only for explicit in-process simulations.
     /// More named accounts, one journal each (<id>.jsonl, named in <id>.name). Empty for none.
     std::filesystem::path paper_accounts;
