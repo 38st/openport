@@ -314,14 +314,14 @@ std::optional<ApiResponse> check_api_write(const ApiRequest& request, const Writ
   path = path.substr(0, path.find('?'));
   // The routes read the account through the same parser, so no spelling of the
   // key or value can address an account other than the one checked here.
-  const auto addressed = query_account(request.target);
+  const auto addressed = query_account(request.target, sandbox);
   if (!addressed) return api_error(400, "INVALID_REQUEST", "Unknown or invalid query parameter");
   const auto& account = *addressed;
   if (!sandbox.empty()) {
     const bool market_read = read && (path == "/ws" || path == "/api/status" || path == "/api/accounts" ||
         path == "/api/plans" || path == "/api/strategy-template" || path.starts_with("/api/underlyings/"));
     const bool account_read = read && (path == "/api/account" || path == "/api/account/equity" ||
-        path == "/api/account/pass-odds" || path == "/api/portfolio" || path == "/api/orders" ||
+        path == "/api/account/pass-odds" || path == "/api/portfolio" || path == "/api/orders" || path.starts_with("/api/orders/") ||
         path == "/api/fills" || path == "/api/settlements" || path == "/api/risk" || path == "/api/risk/profile" || path == "/api/trades" ||
         path == "/api/trades.csv" || path == "/api/fills.csv" || path == "/api/playbooks" || path == "/api/alerts");
     if ((!market_read && account != sandbox) || (read && !market_read && !account_read) ||

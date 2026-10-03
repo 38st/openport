@@ -2776,6 +2776,12 @@ focus at the top of the ticket.
 | `PATCH /api/accounts/{id}`, `DELETE /api/accounts/{id}` | Admin: rename/archive/unarchive or delete a named account; see [accounts](#accounts) |
 | `POST /api/accounts` | `name` and a preset `plan`, or `initial_cash` and `rules`; 201 returns the new account's `id`, `name`, version, plan and equity (see [accounts](#accounts)) |
 
+Sandbox tokens default to their own account on all account reads and writes when
+`account` is omitted. Explicit `?account=` is still checked and cannot select main
+or another sandbox. This default applies only to issued sandbox tokens; named
+`trade:ACCOUNT` tokens keep main as their default. The terminal and Python
+`Client(url, token)` therefore work without specifying the sandbox ID.
+
 Every route in this table except `/api/plans` and `/api/accounts` takes `account=ID`
 in its query for an account other than the main one (see [accounts](#accounts)).
 `/api/replay` and the routes under it serve a replay of a recording or the simulated

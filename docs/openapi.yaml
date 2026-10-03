@@ -6,7 +6,7 @@
     "license": {
       "name": "MIT"
     },
-    "description": "The terminal HTTP contract. All trades are simulated. Generated scenario/demo prices are identified by provider.simulated; recordings retain their provider and delay. Missing analytics are null. Money is exact decimal text. Unknown response fields may be added. symbols() is status.underlyings; series() is summary.expiries; neither has a separate route. JSON syntax is used here (a YAML 1.2 subset), so the web contract test needs no YAML dependency."
+    "description": "The terminal HTTP contract. All trades are simulated. Generated scenario/demo prices are identified by provider.simulated; recordings retain their provider and delay. Missing analytics are null. Money is exact decimal text. Unknown response fields may be added. symbols() is status.underlyings; series() is summary.expiries; neither has a separate route. JSON syntax is used here (a YAML 1.2 subset), so the web contract test needs no YAML dependency. Account routes default to main, except issued sandbox tokens default to their own sandbox. Explicit account query parameters are always scope checked; named trade:ACCOUNT tokens do not change the default."
   },
   "servers": [
     {

@@ -314,7 +314,8 @@ special opening quotation; live providers keep manual imports.
 - [x] F57: HTTP per-underlying limit overrides and terminal editing
 - [x] F57: fill-model startup flag and numeric execution overrides
 - [x] F57: replay tokens reset and configure their isolated accounts
-- [ ] F57 remaining work: sandbox defaults and token reload
+- [x] F57: sandbox tokens default to their own account
+- [ ] F57 remaining work: token reload
 
 - [x] Opening share positions for hedges, covered calls and collars, with share previews and terminal shortcuts
 - [x] A flatten that works until flat: spreads close as one order, large closes split,

@@ -160,7 +160,7 @@ bool sandbox_visible(const AccountStatus& account, const ApiAccess& access) {
 std::optional<ApiResponse> sandbox_visibility(const ApiRequest& request, const MetricsSource& source) {
   if (request.target.find('?') == std::string::npos) return {};
   // Decoded as the routes decode it: %61ccount=sbox-... names the sandbox too.
-  const auto id = query_account(request.target);
+  const auto id = query_account(request.target, request.access.sandbox);
   if (!id) return api_error(400, "INVALID_REQUEST", "Unknown or invalid query parameter");
   for (const auto& account : source.status().accounts)
     if (account.id == *id && !sandbox_visible(account, request.access))
