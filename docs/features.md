@@ -197,7 +197,10 @@ and ETF options deliver shares when exercised early or held into expiry a cent i
 money. A short one that trades below its exercise value at the close, or a call worth
 less over it than a dividend going ex, can be assigned overnight, in part and at
 random as real assignments are; the shares are marked, risked and closed at the
-underlying's price.
+underlying's price. Stock and ETF shares can also be opened, added to and reversed
+for delta hedges, covered calls and collars, with account checks, previews, recovery,
+dividends and trade review. The chain and Positions have a share ticket; strategy
+templates offer explicit share-first, option-second covered calls and collars.
 Dividends are paid on them from a file you give the server (`--dividends FILE`), or
 from Massive's API with a key from any of its stocks plans (`--dividends massive`),
 whichever provider supplies the quotes.
@@ -260,6 +263,7 @@ the simulation's limits.
 
 ## Roadmap
 
+- [x] Opening share positions for hedges, covered calls and collars, with share previews and terminal shortcuts
 - [x] A flatten that works until flat: spreads close as one order, large closes split,
       remainders work on later quotes and exits stay until flat; buying back shorts quoted
       only on the ask, abandoning worthless longs and do-not-exercise instructions

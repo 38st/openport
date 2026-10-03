@@ -10,7 +10,7 @@ import { LimitsEditor } from "../components/LimitsEditor"
 import { MarginBreakdown } from "../components/MarginBreakdown"
 import { FlattenDialog } from "../components/OrderActions"
 import { OrderTicket } from "../components/OrderTicket"
-import { AbandonDialog, CloseSharesDialog, ExerciseDialog, ExerciseInstructionDialog, SettleDialog, SharesTable } from "../components/StockActions"
+import { AbandonDialog, CloseSharesDialog, ExerciseDialog, ExerciseInstructionDialog, SettleDialog, SharesTable, TradeSharesDialog } from "../components/StockActions"
 import { CloseStrategyDialog, Strategies } from "../components/StrategyActions"
 import { RiskPanel } from "../components/RiskPanel"
 import { WhatIfPanel } from "../components/WhatIfPanel"
@@ -198,6 +198,7 @@ function PositionsAccount({ trading }: { trading: TradingStatus }) {
   const [abandoning, setAbandoning] = useState<Position | null>(null)
   const [instructing, setInstructing] = useState<Position | null>(null)
   const [closingShares, setClosingShares] = useState<StockHolding | null>(null)
+  const [tradingShares, setTradingShares] = useState<{ symbol?: string } | null>(null)
   const [picked, setPicked] = useState<Set<string>>(new Set())
   const [together, setTogether] = useState(false)
   const [flatten, setFlatten] = useState<{ underlying: string | null } | null>(null)
@@ -250,10 +251,14 @@ function PositionsAccount({ trading }: { trading: TradingStatus }) {
           selected={trading.enabled && data.positions.length > 1 ? picked : undefined}
           onSelect={(symbol, on) => setPicked((current) => { const next = new Set(current); if (on) next.add(symbol); else next.delete(symbol); return next })} />
       </Panel>
-      {(data.stocks?.length ?? 0) > 0 && <Panel title={`Shares · ${data.stocks!.length}`}>
-        <SharesTable stocks={data.stocks!} onClose={trading.enabled ? setClosingShares : undefined} />
-        <p className="mt-2 text-[11px] text-muted">From exercise and assignment of equity and ETF options, marked and closed at the underlying's price.</p>
-      </Panel>}
+      <Panel title={`Shares · ${data.stocks?.length ?? 0}`} actions={trading.enabled && underlyings.some((u) => deliversShares(u.symbol))
+        ? <button type="button" className="trade-button" onClick={() => setTradingShares({})}>Trade shares</button> : undefined}>
+        {(data.stocks?.length ?? 0) > 0
+          ? <SharesTable stocks={data.stocks!} onClose={trading.enabled ? setClosingShares : undefined}
+            onTrade={trading.enabled ? (stock) => setTradingShares({ symbol: stock.symbol }) : undefined} />
+          : <p className="text-sm text-muted">No shares held. Buy or sell a stock or ETF underlying's shares to hedge delta or write covered calls.</p>}
+        <p className="mt-2 text-[11px] text-muted">Bought or sold here, or delivered by exercise and assignment of equity and ETF options; marked and traded at the underlying's price.</p>
+      </Panel>
       {data.margin && (data.positions.length > 0 || (data.stocks?.length ?? 0) > 0) && <Panel title={`Margin requirement · ${formatMoney(data.buying_power?.requirement ?? data.buying_power?.short_requirement)}`}>
         <MarginBreakdown margin={data.margin} />
         <p className="mt-2 text-[11px] text-muted">{account?.rules.margin === "portfolio"
@@ -278,6 +283,7 @@ function PositionsAccount({ trading }: { trading: TradingStatus }) {
     {abandoning && <AbandonDialog position={abandoning} trading={trading} onClose={() => setAbandoning(null)} />}
     {instructing && <ExerciseInstructionDialog position={instructing} trading={trading} onClose={() => setInstructing(null)} />}
     {closingShares && <CloseSharesDialog stock={closingShares} trading={trading} onClose={() => setClosingShares(null)} />}
+    {tradingShares && <TradeSharesDialog initial={tradingShares.symbol} trading={trading} onClose={() => setTradingShares(null)} />}
     {flatten && data && <FlattenDialog positions={data.positions} stocks={data.stocks ?? []} orders={allOrders ?? []} trading={trading}
       initial={flatten.underlying} onClose={() => setFlatten(null)} />}
     {together && data && <CloseTogether positions={data.positions.filter((p) => picked.has(p.symbol))} trading={trading}

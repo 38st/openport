@@ -3,10 +3,12 @@ import { QueryClient, QueryClientProvider } from "@tanstack/react-query"
 import { act } from "react"
 import { createRoot, type Root } from "react-dom/client"
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
+import { api } from "../api/client"
+import { waitForRender } from "../test/render"
 import { liveState, useLive } from "../api/live"
 import type { Position } from "../api/trading-types"
-import { portfolio, status } from "../test/trading-fixtures"
-import { AbandonDialog, ExerciseInstructionDialog, SettleDialog } from "./StockActions"
+import { account, portfolio, status } from "../test/trading-fixtures"
+import { AbandonDialog, ExerciseInstructionDialog, SettleDialog, TradeSharesDialog, shareEffect } from "./StockActions"
 
 vi.mock("../api/live", async (original) => ({ ...await original<typeof import("../api/live")>(), useLive: vi.fn() }))
 
@@ -24,6 +26,7 @@ beforeEach(() => {
 afterEach(async () => {
   await act(async () => root.unmount())
   host.remove()
+  vi.restoreAllMocks()
   vi.unstubAllGlobals()
 })
 const type = async (input: HTMLInputElement, value: string) => {
@@ -108,5 +111,56 @@ describe("disposing of a worthless position", () => {
     await act(async () => [...host.querySelectorAll("button")].find((b) => b.textContent === "Exercise at expiry")!.click())
     expect(fetcher).toHaveBeenLastCalledWith("/api/positions/instruction", expect.objectContaining({
       body: JSON.stringify({ symbol: call.symbol, do_not_exercise: false }) }))
+  })
+})
+
+
+describe("trading shares", () => {
+  it("names opens, adds, reductions, closes and reversals", () => {
+    expect(shareEffect(0, "buy", 100)).toBe("opens")
+    expect(shareEffect(100, "buy", 50)).toBe("adds to")
+    expect(shareEffect(100, "sell", 40)).toBe("reduces")
+    expect(shareEffect(-100, "buy", 100)).toBe("closes")
+    expect(shareEffect(100, "sell", 150)).toBe("reverses")
+  })
+  it("filters indexes, previews the account and posts a whole-share purchase", async () => {
+    vi.mocked(useLive).mockReturnValue({ ...liveState(status, null, "open"), underlyings: [
+      { ...status.underlyings[0]!, symbol: "SPY", spot: 510 }, status.underlyings[0]!,
+    ] } as ReturnType<typeof useLive>)
+    vi.spyOn(api, "portfolio").mockResolvedValue({ ...portfolio, stocks: [] })
+    vi.spyOn(api, "account").mockResolvedValue(account)
+    const fetcher = vi.fn(async (url: string) => new Response(JSON.stringify(url.includes("/preview") ? {
+      account_version: "17", simulated: true, decision: "ok", reason: null, price: "510.00", cost: "51000.00",
+      current: { buying_power: "100000.00", exposure: { dollar_delta: 0 } },
+      after: { buying_power: "49000.00", exposure: { dollar_delta: 51000 } },
+    } : portfolio), { status: 200 }))
+    vi.stubGlobal("fetch", fetcher)
+    const closed = vi.fn()
+    await act(async () => root.render(<QueryClientProvider client={new QueryClient()}>
+      <TradeSharesDialog trading={status.trading!} onClose={closed} /></QueryClientProvider>))
+    expect([...host.querySelector("select")!.options].map((o) => o.value)).toEqual(["SPY"])
+    await waitForRender(() => expect(host.textContent).toContain("$100,000.00 → $49,000.00"))
+    expect(host.textContent).toContain("Share delta change: +100")
+    const button = [...host.querySelectorAll("button")].find((b) => b.textContent === "Buy 100 SPY")!
+    await act(async () => button.click())
+    expect(fetcher).toHaveBeenCalledWith("/api/stocks/trade", expect.objectContaining({ method: "POST",
+      body: JSON.stringify({ symbol: "SPY", side: "buy", shares: 100 }) }))
+    expect(closed).toHaveBeenCalled()
+  })
+  it("blocks invalid share counts and shows server refusals", async () => {
+    vi.mocked(useLive).mockReturnValue({ ...liveState(status, null, "open"), underlyings: [
+      { ...status.underlyings[0]!, symbol: "SPY", spot: 510 },
+    ] } as ReturnType<typeof useLive>)
+    vi.spyOn(api, "portfolio").mockResolvedValue({ ...portfolio, stocks: [] })
+    vi.spyOn(api, "account").mockResolvedValue(account)
+    vi.stubGlobal("fetch", vi.fn(async () => new Response(JSON.stringify({
+      decision: "SESSION_CLOSED", reason: { code: "SESSION_CLOSED", message: "Stock trades in the regular session" },
+      current: { buying_power: "100000.00" }, after: { buying_power: "100000.00" },
+    }), { status: 200 })))
+    await act(async () => root.render(<QueryClientProvider client={new QueryClient()}>
+      <TradeSharesDialog trading={status.trading!} onClose={() => {}} /></QueryClientProvider>))
+    await waitForRender(() => expect(host.textContent).toContain("SESSION_CLOSED"))
+    await type(host.querySelector("input")!, "1.5")
+    expect([...host.querySelectorAll("button")].find((b) => b.textContent?.startsWith("Buy "))!.disabled).toBe(true)
   })
 })

@@ -1,7 +1,10 @@
 import { useState } from "react"
+import { useQuery } from "@tanstack/react-query"
+import { useWriteToken } from "../lib/write-token"
+import { useAccount, usePortfolio } from "../api/trading"
 import { api } from "../api/client"
 import { useLive } from "../api/live"
-import type { Position, StockHolding, TradingStatus } from "../api/trading-types"
+import type { Position, Side, StockHolding, TradingStatus } from "../api/trading-types"
 import { describeAttribution } from "../lib/attribution"
 import { fixed, isNum } from "../lib/format"
 import { contractLabel } from "../lib/journal"
@@ -9,7 +12,7 @@ import { deliversShares, formatMoney, signedMoney } from "../lib/trading"
 import { Dialog } from "./Dialog"
 import { useWrite } from "./OrderActions"
 import { TradingError, WriteAccess } from "./TradingControls"
-import { Badge, toneOf, toneText } from "./ui"
+import { Badge, Segmented, toneOf, toneText } from "./ui"
 
 const dollars = (value: number) => formatMoney(value.toFixed(2))
 
@@ -40,8 +43,10 @@ export function SettleDialog({ position, trading, onClose }: { position: Positio
   </Dialog>
 }
 
-/** Shares that exercise and assignment delivered, each closable at the underlying's price. */
-export function SharesTable({ stocks, onClose }: { stocks: StockHolding[]; onClose?: (stock: StockHolding) => void }) {
+/** Shares held, bought here or delivered by exercise and assignment, each tradable at the underlying's price. */
+export function SharesTable({ stocks, onClose, onTrade }: {
+  stocks: StockHolding[]; onClose?: (stock: StockHolding) => void; onTrade?: (stock: StockHolding) => void
+}) {
   return <div className="max-w-full overflow-x-auto" tabIndex={0} role="region" aria-label="Shares">
     <table className="w-full text-right text-xs tabular whitespace-nowrap">
       <thead className="text-muted"><tr>{["Stock", "Shares", "Avg price", "Price / age", "Market value", "Unrealized", "Today", ""].map((h, i) =>
@@ -57,11 +62,89 @@ export function SharesTable({ stocks, onClose }: { stocks: StockHolding[]; onClo
           <td className={toneText[toneOf(stock.unrealised)]}>{signedMoney(stock.unrealised)}</td>
           <td className={toneText[toneOf(stock.attribution?.total)]} title={stock.attribution ? describeAttribution(stock.attribution) : undefined}>
             {stock.attribution ? signedMoney(stock.attribution.total.toFixed(2)) : "—"}</td>
-          <td>{onClose && <button type="button" className="trade-button" aria-label={`Close ${stock.symbol} shares`} onClick={() => onClose(stock)}>Close</button>}</td>
+          <td><div className="flex justify-end gap-1">
+            {onTrade && <button type="button" className="trade-button" aria-label={`Trade ${stock.symbol} shares`} onClick={() => onTrade(stock)}>Trade</button>}
+            {onClose && <button type="button" className="trade-button" aria-label={`Close ${stock.symbol} shares`} onClick={() => onClose(stock)}>Close</button>}
+          </div></td>
         </tr>)}
       </tbody>
     </table>
   </div>
+}
+
+/** What a share trade does to the shares held: "opens", "adds to", "reduces", "closes" or "reverses". */
+export function shareEffect(held: number, side: Side, shares: number): "opens" | "adds to" | "reduces" | "closes" | "reverses" {
+  const signed = side === "buy" ? shares : -shares
+  if (held === 0) return "opens"
+  if (Math.sign(held) === Math.sign(signed)) return "adds to"
+  const after = held + signed
+  return after === 0 ? "closes" : Math.sign(after) === Math.sign(held) ? "reduces" : "reverses"
+}
+
+/**
+ * Buy or sell an equity or ETF underlying's shares at its price, without a fee: a delta
+ * hedge, or the shares behind a covered call or a collar. Opening takes the account's
+ * checks; reducing works under the kill switch.
+ */
+export function TradeSharesDialog({ initial, trading, onClose }: { initial?: string; trading: TradingStatus; onClose: () => void }) {
+  const write = useWrite(trading)
+  const { underlyings, accountScope } = useLive()
+  const token = useWriteToken()
+  const stocks = usePortfolio().data?.stocks ?? []
+  const rules = useAccount().data?.rules
+  const symbols = [...new Set([...underlyings.map((u) => u.symbol), ...stocks.map((s) => s.symbol)])].filter(deliversShares).sort()
+  const [symbol, setSymbol] = useState(initial ?? symbols[0] ?? "")
+  const [side, setSide] = useState<Side>("buy")
+  const [shares, setShares] = useState("100")
+  const n = Number(shares)
+  const valid = symbols.includes(symbol) && /^\d+$/.test(shares) && Number.isSafeInteger(n) && n > 0 && n <= 10_000_000
+  const held = stocks.find((s) => s.symbol === symbol)?.shares ?? 0
+  const spot = underlyings.find((u) => u.symbol === symbol)?.spot
+  const effect = valid ? shareEffect(held, side, n) : null
+  const reduces = effect === "reduces" || effect === "closes"
+  const shortSale = side === "sell" && valid && held - n < 0
+  const refused = trading.kill_latched && !reduces ? "Kill switch latched · reduce-only: only trades that reduce shares toward zero are allowed."
+    : rules?.buy_only && shortSale ? `${rules.plan ?? "This plan"} is buy-only: share sales may only close shares you hold.`
+    : rules?.defined_risk && shortSale ? "This plan allows defined risk only, and short shares can lose without limit."
+    : null
+  const preview = useQuery({
+    queryKey: ["trading", accountScope, "stock-preview", trading.account_version, symbol, side, n, token],
+    queryFn: () => api.previewStock(symbol, side, n, trading.write),
+    enabled: valid && trading.enabled && !write.blocked,
+    retry: false,
+  })
+  return <Dialog title="Trade shares" onClose={onClose}>
+    {symbols.length === 0 ? <p className="text-sm text-muted">No stock or ETF underlying is in the feed.</p> : <>
+      <label className="trade-label">Stock or ETF
+        <select className="trade-input" value={symbol} onChange={(e) => setSymbol(e.target.value)}>
+          {symbols.map((s) => <option key={s} value={s}>{s}</option>)}</select></label>
+      <div className="trade-label">Side
+        <Segmented label="Side" value={side} onChange={setSide} options={[{ value: "buy", label: "Buy" }, { value: "sell", label: "Sell" }]} /></div>
+      <label className="trade-label">Shares
+        <input className="trade-input" type="number" min="1" step="1" value={shares} onChange={(e) => setShares(e.target.value)} /></label>
+      <p className="text-sm">{held !== 0 ? `You hold ${held > 0 ? `${held} long` : `${-held} short`}. ` : ""}
+        {effect ? `${side === "buy" ? "Buying" : "Selling"} ${n} ${effect} the position` : "Enter a whole number of shares"}
+        {isNum(spot) && valid ? `, about ${dollars(spot * n)} at ${symbol}'s price of ${fixed(spot, 2)}` : ""}, without a fee.</p>
+      <p className="text-xs text-muted">Shares trade at the underlying's price in the stock market's regular session. Long shares are paid for in
+        full under strategy margin, where unprotected short shares hold 150% of their value. Portfolio margin scans the book. Opening takes the account's checks, including exposure limits.</p>
+      <section aria-label="Share preview" className="rounded-md border border-border p-3 text-xs space-y-1">
+        <p>Simulated share preview</p>
+        {preview.isFetching ? <p>Checking shares…</p> : preview.data ? <>
+          <p>Cash cost (negative receives): {formatMoney(preview.data.cost)}</p>
+          <p>Buying power: {formatMoney(preview.data.current.buying_power)} → {formatMoney(preview.data.after.buying_power)}</p>
+          <p>Dollar delta: {fixed(preview.data.current.exposure?.dollar_delta, 2)} → {fixed(preview.data.after.exposure?.dollar_delta, 2)}</p>
+          <p>Share delta change: {side === "buy" ? "+" : "−"}{valid ? n : "…"}</p>
+          {preview.data.reason && <p role="status" className="text-warn">{preview.data.reason.code}: {preview.data.reason.message}</p>}
+        </> : <p>{preview.error ? "Preview unavailable; submitting still takes server checks." : "Enter shares to preview."}</p>}
+      </section>
+      {refused && <p role="status" className="text-sm text-warn">{refused}</p>}
+      <WriteAccess trading={trading} />
+      <TradingError error={write.error} />
+      <button type="button" className="trade-button" disabled={!valid || !!refused || write.pending || write.blocked}
+        onClick={() => void write.run(() => api.tradeStock(symbol, side, n, trading.write), onClose)}>
+        {write.pending ? "Trading…" : `${side === "buy" ? "Buy" : "Sell"} ${valid ? n : ""} ${symbol}`}</button>
+    </>}
+  </Dialog>
 }
 
 /** Close some or all shares at the underlying's price. */

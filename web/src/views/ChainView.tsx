@@ -15,6 +15,9 @@ import { OrderTicket, type TicketSelection } from "../components/OrderTicket"
 import { PriceChart } from "../components/PriceChart"
 import { StrategyTicket } from "../components/StrategyTicket"
 import { StrategyTemplates } from "../components/StrategyTemplates"
+import { TradeSharesDialog } from "../components/StockActions"
+import { CoveredStrategyDialog } from "../components/CoveredStrategyDialog"
+import { deliversShares } from "../lib/trading"
 import { MAX_LEGS, strategyLabel, toggleLeg, type StrategyLeg, type TemplateSetup } from "../lib/strategy"
 import { Dialog } from "../components/Dialog"
 import { usePortfolio } from "../api/trading"
@@ -55,6 +58,8 @@ export function ChainView({ symbol, expiry, onExpiry }: { symbol: string; expiry
   const [mode, setMode] = useState<"single" | "strategy">("single")
   const [legs, setLegs] = useState<StrategyLeg[]>([])
   const [templatesOpen, setTemplatesOpen] = useState(false)
+  const [sharesOpen, setSharesOpen] = useState(false)
+  const [stockStrategy, setStockStrategy] = useState<"covered-call" | "collar" | null>(null)
   const [template, setTemplate] = useState<TemplateSetup>()
   const editLegs = (next: StrategyLeg[]) => { setLegs(next); setTemplate(undefined) }
   // Narrow screens collect legs in a bar and open the ticket only to review, so the chain stays usable.
@@ -159,6 +164,7 @@ export function ChainView({ symbol, expiry, onExpiry }: { symbol: string; expiry
         actions={
           <>
             <CoverageBadge coverage={coverage} />
+            {live.trading && deliversShares(symbol) && <button type="button" className="trade-button" onClick={() => setSharesOpen(true)}>Trade shares</button>}
             {live.trading && <Segmented label="Ticket mode" value={mode} onChange={(next) => { setMode(next); setTicket(null); editLegs([]); setTemplatesOpen(false); setReviewing(false) }}
               options={[{ value: "single", label: "Single" }, { value: "strategy", label: "Strategy" }]} />}
             {live.trading && mode === "strategy" && <button type="button" className="trade-button" disabled={!data} onClick={() => setTemplatesOpen(true)}>Templates</button>}
@@ -229,8 +235,10 @@ export function ChainView({ symbol, expiry, onExpiry }: { symbol: string; expiry
           onClose={() => setTicket(null)} />
       </div>}
       </div>
+      {live.trading && sharesOpen && <TradeSharesDialog key={`${live.accountScope}/${symbol}`} initial={symbol} trading={live.trading} onClose={() => setSharesOpen(false)} />}
+      {live.trading && stockStrategy && data && <CoveredStrategyDialog key={`${live.accountScope}/${symbol}/${selected}`} kind={stockStrategy} chain={data} trading={live.trading} onClose={() => setStockStrategy(null)} />}
       {live.trading && templatesOpen && data && <StrategyTemplates key={`${symbol}/${selected}`} near={data} expiries={expiries}
-        onClose={() => setTemplatesOpen(false)} onApply={(setup) => { setLegs(setup.legs); setTemplate(setup); setTemplatesOpen(false); setReviewing(true) }} />}
+        onStockStrategy={(kind) => { setTemplatesOpen(false); setStockStrategy(kind) }} onClose={() => setTemplatesOpen(false)} onApply={(setup) => { setLegs(setup.legs); setTemplate(setup); setTemplatesOpen(false); setReviewing(true) }} />}
       {live.trading && untradable && <Dialog title="Paper trading unavailable" onClose={() => setUntradable(null)}><p className="text-sm text-warn">{untradable}</p></Dialog>}
     </div>
   )
