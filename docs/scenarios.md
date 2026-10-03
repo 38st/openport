@@ -102,7 +102,7 @@ or 3 regenerate their original events, including quote sizes and volume; new
 underlyings require revision 3. The JSON `generator` stays at version 1.
 
 Revision 4 prices SPY and QQQ options as American: Black on a cash-dividend-adjusted
-forward plus a 15-step Leisen–Reimer early-exercise premium for ITM puts and calls
+forward plus a 13-step Leisen–Reimer early-exercise premium for ITM puts and calls
 with a payment before expiry, floored at intrinsic value. Index options remain
 European. The small odd tree cancels its European discretisation error against the
 same lattice; it is an approximation, refreshed at every snapshot. ETF forwards use
