@@ -4443,7 +4443,7 @@ TEST_F(PaperEngine, VolumeRuleRoundTripsAndExplainsUnknownVolumeInPreview) {
   };
   ASSERT_EQ(reset(rules).status, 200);
   EXPECT_EQ(read(*engine, "/api/account")["rules"]["max_volume_percent"], 25);
-  const auto before = read(*engine, "/api/orders");
+  const auto before = read(*engine, "/api/orders")["orders"];
   const auto request = order(market, "unknown-volume", "4.20");
   const auto preview = write(*engine, "POST", "/api/orders/preview", request);
   ASSERT_EQ(preview.status, 200) << preview.body;
@@ -4453,7 +4453,7 @@ TEST_F(PaperEngine, VolumeRuleRoundTripsAndExplainsUnknownVolumeInPreview) {
   const auto refused = write(*engine, "POST", "/api/orders", request);
   ASSERT_EQ(refused.status, 422) << refused.body;
   EXPECT_EQ(json::parse(refused.body)["error"]["evidence"], reason["evidence"]);
-  EXPECT_EQ(read(*engine, "/api/orders"), before);
+  EXPECT_EQ(read(*engine, "/api/orders")["orders"], before);
   test::capture_contract("volume-rule", "POST", "/api/orders/preview", preview);
   test::capture_contract("volume-rule", "POST", "/api/orders", refused);
   for (const auto& value : {json(-1), json(101), json(1.5), json(true), json(nullptr)}) {

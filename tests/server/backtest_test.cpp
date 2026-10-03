@@ -815,7 +815,8 @@ TEST(Backtest, VolumeRuleRejectsMissingDataAndGatesRecordedPlaybookEntries) {
   }
   const auto request = parse(present, 10);
   EXPECT_EQ(request.config.rules.max_volume_percent, 10);
-  const auto report = server::run_backtest(request, storage.directory / "volume-report");
+  const std::atomic_bool cancel{false};
+  const auto report = server::run_backtest(request, storage.directory / "volume-report", cancel);
   EXPECT_TRUE(report.at("days")[0].at("fills").empty());
   EXPECT_NE(report.at("days")[0].at("entry_reasons").dump().find("volume"), std::string::npos);
 }

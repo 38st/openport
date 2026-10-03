@@ -204,6 +204,34 @@ TEST(Desk, CounterPositionsGatePreviewsChangesChainsAndIgnoresArchivedAccounts) 
   desk.stop();
 }
 
+TEST(Desk, CounterPositionShareGateUsesRecoveredPricesBeforeFeedArrives) {
+  test::RecordingFile file;
+  test::ScriptedMarket market;
+  market.contract = *md::parse_osi("SPY261022C00500000");
+  server::Desk::Options options;
+  options.paper_journal = file.directory / "main.jsonl";
+  options.paper_accounts = file.directory / "accounts";
+  options.paper.rules.no_counter_positions = true;
+  std::filesystem::create_directory(options.paper_accounts);
+  for (const auto& path : {options.paper_journal, options.paper_accounts / "other.jsonl"}) {
+    trading::TradingSession session(options.paper, market.time, trading::FileJournal::create(path.string()));
+    market.seed(session);
+    ASSERT_TRUE(session.trade_stock("SPY", 10, market.time,
+        trading::StockPrice{"SPY", market.time, Money::parse("500")}).decision.ok());
+  }
+  server::Desk desk("test", {}, {{"SPY"}}, options);
+  desk.start_trading();
+  ASSERT_EQ(desk.accounts().size(), 2U);
+  server::TradingCommand stock;
+  stock.kind = server::TradingCommand::Kind::TradeStock; stock.symbol = "SPY"; stock.quantity = -11;
+  const auto refused = command(desk, stock, market.time, market.time);
+  EXPECT_EQ(refused.decision.code, trading::Reason::COUNTER_POSITION) << refused.decision.message;
+  ASSERT_TRUE(refused.decision.evidence);
+  EXPECT_EQ(refused.decision.evidence->order_dollar_delta, -5500);
+  EXPECT_EQ(refused.decision.evidence->other_account, "other");
+  desk.stop();
+}
+
 TEST(Desk, CounterPositionsIncludeShareEntriesAndAllowShareReductions) {
   test::RecordingFile file;
   test::ScriptedMarket market;

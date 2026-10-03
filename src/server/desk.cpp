@@ -1800,8 +1800,13 @@ void Desk::apply_command(PendingCommand& pending, md::Timestamp market_time, md:
           const bool valid_size = c.quantity != 0 && c.quantity >= -10'000'000 && c.quantity <= 10'000'000;
           const bool reduces = valid_size && held != 0 && (held > 0) != (c.quantity > 0) &&
               (held > 0 ? -c.quantity <= held : c.quantity <= -held);
-          if (gate.ok() && valid_size && !reduces && c.stock_price)
-            gate = counter_position_gate(*account, {{c.symbol, static_cast<double>(c.quantity) * c.stock_price->price.dollars()}}, market_time_);
+          if (gate.ok() && valid_size && !reduces && session.config().rules.no_counter_positions) {
+            // Just after recovery the session can have a fresh saved price before
+            // ChainBook receives one. Use that same price, never skip the gate.
+            const auto price = c.stock_price ? std::optional(c.stock_price->price)
+                : session.preview_trade_stock(c.symbol, c.quantity, market_time_).price;
+            if (price) gate = counter_position_gate(*account, {{c.symbol, static_cast<double>(c.quantity) * price->dollars()}}, market_time_);
+          }
           if (c.kind == TradingCommand::Kind::PreviewStock)
             reply.stock_preview = session.preview_trade_stock(c.symbol, c.quantity, market_time_, c.stock_price, gate);
           else if (!gate.ok()) result.decision = gate;

@@ -39,3 +39,22 @@ def test_new_reason_codes_and_microscalp_pair():
     for pair in [{"microscalp_seconds": 30}, {"microscalp_percent": 25}]:
         with pytest.raises(jsonschema.ValidationError):
             validator.validate({**base, **pair})
+
+
+@pytest.mark.parametrize("code,evidence", [
+    ("HEDGING", {"underlying": "SPY", "order_dollar_delta": -500, "held_dollar_delta": 1000}),
+    ("COUNTER_POSITION", {"underlying": "SPY", "order_dollar_delta": -500,
+                          "held_dollar_delta": 1000, "other_account": "second"}),
+    ("MAX_VOLUME_SHARE", {"contract": "SPY   261022C00500000", "contracts": 2,
+                         "volume": None, "percent": 10}),
+])
+def test_direction_and_volume_evidence_wire_contract(code, evidence):
+    from openport.types import RuleEvidence
+    assert get_type_hints(RuleEvidence)["volume"] == int | None
+    contract = Contract("", None, SPEC)
+    decision = {"code": code, "message": "Opening refused", "actual": None,
+                "limit": None, "scope": "SPY", "evidence": evidence}
+    for schema, value in [("Decision", decision), ("Error", {"error": decision})]:
+        validator = jsonschema.Draft202012Validator(
+            {"$ref": f"urn:openport#/components/schemas/{schema}"}, registry=contract.registry)
+        validator.validate(value)
