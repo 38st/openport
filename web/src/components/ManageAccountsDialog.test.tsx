@@ -18,6 +18,7 @@ const switchAccount = vi.fn()
 const accounts = [
   { id: "main", name: "Main", trading, equity: "100000.00" },
   { id: "swing", name: "Swing", trading: { ...trading, plan: "End-of-day 50K", plan_id: "eod-50k" }, equity: "50000.00" },
+  { id: "sandbox-trial", name: "Sandbox trial", trading, equity: "100000.00" },
   { id: "old", name: "Old", archived: true, trading, equity: "50000.00" },
 ]
 beforeEach(() => {
@@ -50,6 +51,7 @@ it("renames a fixed id, freezes and resumes accounts, and confirms deletion", as
   expect(host.textContent).toContain("eod-50k")
   expect(host.querySelector('[aria-label="Archived accounts"]')?.textContent).toContain("Old")
   expect(host.textContent).not.toContain("Delete Main")
+  expect(host.textContent).toContain("Delete Sandbox trial")
   await click("Rename Swing")
   const input = host.querySelector("input")!
   await act(async () => {

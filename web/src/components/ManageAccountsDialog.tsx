@@ -38,7 +38,7 @@ export function ManageAccountsDialog({ trading, onClose }: { trading: TradingSta
     {[false, true].map((archived) => <section key={String(archived)} className="space-y-2" aria-label={archived ? "Archived accounts" : "Active accounts"}>
       <h3 className="text-xs font-medium text-muted">{archived ? "Archived accounts" : "Active accounts"}</h3>
       {(list.data?.accounts ?? []).filter((item) => Boolean(item.archived) === archived).map((item) => {
-        const protectedAccount = item.id === "main" || !!item.sandbox_idle_seconds || item.id.startsWith("sandbox-")
+        const protectedAccount = item.id === "main" || !!item.sandbox_idle_seconds
         return <div key={item.id} className="space-y-2 rounded-md border border-border p-3">
           <p className="text-sm">{item.name} <span className="text-xs text-muted">· {item.id}</span></p>
           {item.trading.plan && <p className="text-xs text-muted">{item.trading.plan}{item.trading.plan_id ? ` · ${item.trading.plan_id}` : " · custom"}</p>}

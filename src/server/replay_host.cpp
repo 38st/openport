@@ -862,6 +862,7 @@ void ReplayHost::resume(const std::string& id, int speed, bool paused, const Api
     const auto first = json::parse(recovery.records.front().payload);
     // Every option the run's start recorded comes from the run, not from this server's flags.
     engine.paper = first.at("state").at("config").get<trading::SessionConfig>();
+    if (!session->windows.empty()) engine.replay_end = session->windows.back().last;
     engine.initial_actor = first.value("actor", std::string("system"));
     engine.initial_playbooks = start.contains("playbooks") && !start.at("playbooks").is_null() ? start.at("playbooks").dump() : "";
     engine.analytics = start.at("analytics").get<analytics::AnalyticsOptions>();
@@ -1064,6 +1065,9 @@ void ReplayHost::control(const ApiRequest& request, const ApiCompletion& complet
       }
       engine.paper.rules = plan->rules;
       engine.paper.initial_cash = plan->initial_cash;
+      // Scenario windows already give the last batch. Reusing one must not scan
+      // its full recording merely to explain the next-trading-day risk rule.
+      if (!session->windows.empty()) engine.replay_end = session->windows.back().last;
       if (settings) {
         engine.paper.limits = settings->config.limits;
         engine.paper.guardrails = settings->config.guardrails;

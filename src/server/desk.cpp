@@ -564,6 +564,11 @@ void Desk::start_trading() {
     try {
       const auto file = options_.paper_journal.empty() ? std::filesystem::path{} : options_.paper_journal.parent_path() / (options_.replay ? options_.paper_journal.stem().string() + ".playbooks.json" : "playbooks.json");
       playbooks_ = std::make_shared<Playbooks>(file, options_.initial_playbooks.empty() ? nlohmann::json(nullptr) : nlohmann::json::parse(options_.initial_playbooks));
+      if (!options_.paper_accounts.empty()) {
+        const auto modes = playbooks_->catalogue().at("modes");
+        for (const auto& [id, bindings] : modes.items())
+          if (std::filesystem::exists(options_.paper_accounts / "deleted" / id)) playbooks_->remove_account(id);
+      }
     } catch (const std::exception& error) {
       fail_trading(accounts_.front(), std::string("PLAYBOOK_STORAGE: ") + error.what());
     }
@@ -691,7 +696,7 @@ void Desk::manage_account(const TradingCommand& c, TradingReply& reply) {
     reply.error_code = std::move(code);
     reply.decision.message = std::move(message);
   };
-  if (id == kMainAccount || options_.replay || sandbox_ids_.contains(id) || id.starts_with("sandbox-")) {
+  if (id == kMainAccount || options_.replay || sandbox_ids_.contains(id)) {
     refuse("ACCOUNT_PROTECTED", "Only named live accounts can be renamed, archived or deleted");
     return;
   }
@@ -718,8 +723,8 @@ void Desk::manage_account(const TradingCommand& c, TradingReply& reply) {
       playbook_publications_.erase(id);
       if (removal_sink_) removal_sink_(id);
       publish_trading();
-      retain_deleted_files(options_.paper_accounts, id);
       if (playbooks_) playbooks_->remove_account(id);
+      retain_deleted_files(options_.paper_accounts, id);
       reply.account_result = nlohmann::json{{"deleted", id}}.dump();
     } else {
       if (!c.name.empty()) {

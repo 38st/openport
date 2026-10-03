@@ -85,6 +85,29 @@ TEST(Playbooks, LivePracticeCannotEnableAutoAndBindingsAreAccountSpecific) {
   EXPECT_EQ(store.publication("main", true).at("modes").at("morning"), "auto");
   EXPECT_TRUE(store.publication("practice", false).at("modes").empty());
 }
+TEST(Playbooks, StartupFinishesRemovingBindingsOfADeletedAccount) {
+  test::RecordingFile file;
+  const auto path = file.directory / "playbooks.json";
+  {
+    server::Playbooks store(path);
+    store.change({{"action", "create"}, {"definition", definition()}}, "main", false);
+    const json mode{{"action", "mode"}, {"id", "morning"}, {"mode", "stage"}};
+    store.change(mode, "deleted", false);
+    store.change(mode, "main", false);
+  }
+  server::Desk::Options options;
+  options.paper_journal = file.directory / "paper.jsonl";
+  options.paper_accounts = file.directory / "accounts";
+  std::filesystem::create_directories(options.paper_accounts / "deleted/deleted");
+  server::Desk desk("test", {}, {{"SPX"}}, options);
+  desk.start_trading();
+  server::Playbooks recovered(path);
+  EXPECT_FALSE(recovered.enabled("deleted"));
+  EXPECT_TRUE(recovered.enabled("main"));
+  EXPECT_EQ(recovered.catalogue().at("definitions").size(), 1U);
+  desk.stop();
+}
+
 TEST(Playbooks, ConditionsFailClosedAndWindowsUseNewYorkWeekdays) {
   auto setup = definition();
   const auto time = md::new_york_to_utc({2026, 9, 22}, 10, 0);

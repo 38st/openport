@@ -207,6 +207,7 @@ TEST(Desk, AccountLifecycleSurvivesRestartAndReservesDeletedIds) {
   test::RecordingFile file;
   test::ScriptedMarket market;
   server::Desk::Options options;
+  options.analytics.fallback_rate = 0;
   options.paper_journal = file.directory / "paper.jsonl";
   options.paper_accounts = file.directory / "accounts";
   server::TradingCommand create;
@@ -253,8 +254,11 @@ TEST(Desk, AccountLifecycleSurvivesRestartAndReservesDeletedIds) {
     order.account = "evaluation";
     order.order = market.market("working");
     order.order.type = trading::OrderType::Limit;
-    order.order.limit_price = Money::from_double(.1);
-    ASSERT_TRUE(command(desk, order, market.time, market.time).decision.ok());
+    order.order.tif = trading::TimeInForce::Day;
+    order.order.limit_price = Money::from_double(4);
+    const auto working = command(desk, order, market.time, market.time);
+    ASSERT_TRUE(working.decision.ok()) << working.decision.message;
+    ASSERT_EQ(working.view->snapshot->open_orders.size(), 1U);
     server::TradingCommand remove;
     remove.kind = server::TradingCommand::Kind::DeleteAccount;
     remove.account = "evaluation";
@@ -274,6 +278,11 @@ TEST(Desk, AccountLifecycleSurvivesRestartAndReservesDeletedIds) {
   EXPECT_EQ(desk.accounts().size(), 1U);
   EXPECT_TRUE(std::filesystem::exists(options.paper_accounts / "deleted/evaluation-2/evaluation-2.jsonl"));
   EXPECT_EQ(command(desk, create, market.time, market.time).account, "evaluation-3");
+  create.name = "Sandbox trial";  // A display name does not make this a visitor sandbox.
+  EXPECT_EQ(command(desk, create, market.time, market.time).account, "sandbox-trial");
+  change.account = "sandbox-trial";
+  change.archived = true;
+  EXPECT_TRUE(command(desk, change, market.time, market.time).error_code.empty());
   desk.stop();
 }
 

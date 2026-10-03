@@ -417,7 +417,14 @@ void Playbooks::remove_account(const std::string& account) {
   std::erase_if(suppressed_, [&](const auto& item) { return item.first.starts_with(account + ":"); });
   auto next = catalogue_;
   next["modes"].erase(account);
-  save(next);
+  try { save(next); }
+  catch (...) {
+    // Deletion has already committed its tombstone; no transient owner remains
+    // even if the catalogue's disk update must be retried at startup.
+    catalogue_ = std::move(next);
+    ++revision_;
+    throw;
+  }
 }
 
 trading::OrderRequest Playbooks::take(const std::string& account, const std::string& staged) {
