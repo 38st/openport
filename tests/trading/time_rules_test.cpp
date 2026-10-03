@@ -218,11 +218,15 @@ TEST(TimeRules, RulesAndActivityRecoverAndTheRecoveredDeadlineStillFails) {
   ScriptedMarket f;
   auto rules = plan(); rules.time_limit_days = 10; rules.inactivity_days = 2;
   rules.underlyings = {"SPX"}; rules.trading_start = 9 * 60 + 30; rules.trading_end = 16 * 60;
+  rules.max_contracts_held = 5; rules.require_stop_loss = true;
+  rules.max_drawdown = m("1000"); rules.max_trade_risk = m("123.456789"); rules.max_trade_risk_percent = 25;
   JournalFile file;
   std::string snapshot;
   {
     TradingSession s(config(rules), f.time, FileJournal::create(file.path)); f.seed(s);
-    ASSERT_TRUE(s.submit(f.market("own"), f.time).decision.ok());
+    auto entry = f.market("own");
+    entry.bracket = Bracket{ExitSpec{Trigger{TriggerSource::Option, TriggerDirection::AtOrBelow, m("3.50")}, {}}, {}};
+    ASSERT_TRUE(s.submit(entry, f.time).decision.ok());
     snapshot = s.snapshot_json();
   }
   const auto recovery = FileJournal::read(file.path);
