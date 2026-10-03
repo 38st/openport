@@ -484,6 +484,72 @@ TEST(TradingOrders, AFlattenSplitsAPositionLargerThanTheOrderLimit) {
   EXPECT_TRUE(s.snapshot()->positions.empty());
 }
 
+TEST(TradingOrders, LimitFlattenClosesCoveredPairsOvernightWithLatency) {
+  // Five bull put spreads; the short put's ask then shows 2 contracts at a time.
+  // Custom rules without buying power or defined risk would allow a naked short.
+  for (const auto latency : {std::int64_t{0}, std::int64_t{1000}}) {
+    ScriptedMarket f;
+    f.contract = *md::parse_osi("SPXW261022P05000000");
+    auto lower = beside(f, "SPXW261022P04990000");
+    AccountRules rules;
+    rules.fill_latency_ms = latency;
+    TradingSession s(roomy(rules), f.time);
+    seed(s, f, "4.00", "4.20");
+    seed(s, lower, "3.00", "3.20");
+    const auto next = [&](Quantity short_ask_size) {
+      f.next(); lower.next();
+      s.on_quotes({f.quote("4.00", "4.20", short_ask_size), lower.quote("3.00", "3.20")}, {f.valuation(), lower.valuation()}, f.time);
+      // Every short is covered at every step.
+      EXPECT_LE(-held(s, f.symbol()), held(s, lower.symbol()));
+    };
+    ASSERT_TRUE(s.submit(f.market("short", 5, Side::Sell), f.time).decision.ok());
+    ASSERT_TRUE(s.submit(lower.market("long", 5), f.time).decision.ok());
+    if (latency) next(10);
+    ASSERT_EQ(held(s, f.symbol()), -5);
+    ASSERT_EQ(held(s, lower.symbol()), 5);
+    f.time = md::new_york_to_utc({2026, 9, 22}, 21, 0); lower.time = f.time;
+    next(2);
+    const auto result = s.close_positions(std::nullopt, f.time, {}, {true, 2});
+    ASSERT_TRUE(result.decision.ok());
+    const auto close = s.snapshot()->recent_orders.back().id;
+    ASSERT_EQ(order(s, close).request.legs.size(), 2u) << "one order for the spread";
+    EXPECT_EQ(order(s, close).request.quantity, 5);
+    // Without latency two spreads close at once; the rest is worked on later quotes.
+    const Quantity first = latency ? 0 : 2;
+    EXPECT_EQ(held(s, f.symbol()), -5 + first);
+    EXPECT_EQ(held(s, lower.symbol()), 5 - first);
+    ASSERT_EQ(result.residuals.size(), 2u);
+    for (const auto& residual : result.residuals) {
+      EXPECT_EQ(residual.working, 5 - first) << residual.symbol;
+      EXPECT_TRUE(residual.reason.ok()) << residual.reason.message;
+    }
+    next(2);
+    next(2);
+    if (latency) next(2);
+    EXPECT_EQ(order(s, close).status, OrderStatus::Filled);
+    EXPECT_TRUE(s.snapshot()->positions.empty()) << "one flatten gets flat";
+  }
+}
+
+TEST(TradingOrders, LimitFlattenSplitsLargePositions) {
+  ScriptedMarket f;
+  auto config = roomy();
+  config.limits.max_order_contracts = 4;
+  TradingSession s(config, f.time);
+  f.seed(s, "4.00", "4.20", 20);
+  for (const auto* id : {"a", "b", "c"}) ASSERT_TRUE(s.submit(f.market(id, id == std::string("c") ? 2 : 4), f.time).decision.ok());
+  ASSERT_EQ(held(s, f.symbol()), 10);
+  const auto before = s.snapshot()->recent_orders.size();
+  ASSERT_TRUE(s.close_positions(std::nullopt, f.time, {}, {true, 2}).decision.ok());
+  const auto& orders = s.snapshot()->recent_orders;
+  ASSERT_EQ(orders.size(), before + 3);
+  EXPECT_EQ(orders[before].request.quantity, 4);
+  EXPECT_EQ(orders[before + 1].request.quantity, 4);
+  EXPECT_EQ(orders[before + 2].request.quantity, 2);
+  for (auto i = before; i < orders.size(); ++i) EXPECT_EQ(orders[i].status, OrderStatus::Filled) << orders[i].reason.message;
+  EXPECT_TRUE(s.snapshot()->positions.empty());
+}
+
 TEST(TradingOrders, AFlattenKeepsTheExitsOfWhatItHasNotClosedYet) {
   ScriptedMarket f;
   TradingSession s(roomy(), f.time);

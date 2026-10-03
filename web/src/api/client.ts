@@ -4,7 +4,7 @@ import type { StrategyTemplate, TemplateResult } from "../lib/strategy"
 import type { Volatility, VolatilitySeries } from "./types"
 import type { NotificationChannel, NotificationStatus } from "./types"
 import type { CandleInterval, Candles, Chain, ExposureMatrix, ReplayListing, ReplayState, Status, Summary, Surface } from "./types"
-import type { Account, AccountsResponse, CancelAllResponse, ClosePositionsResponse, CreateAccountRequest, CreateAccountResponse, DayNote, EquityHistory, FillsResponse, FlattenPreview, GroupResponse, Guardrails, KillResponse, Limits, Money, NewOrder, OrderChange, OrderPreview, OrderResponse, OrdersResponse, PlansResponse, Portfolio, ResetRequest, Risk, SettlementResponse, SubmitOrderResponse, TradeNote, TradeNoteResponse, TradesResponse, WhatIfResponse, WriteMode } from "./trading-types"
+import type { Account, AccountsResponse, CancelAllResponse, ClosePositionsResponse, CreateAccountRequest, CreateAccountResponse, DayNote, EquityHistory, FillsResponse, FlattenPreview, FlattenPricing, GroupResponse, Guardrails, KillResponse, Limits, Money, NewOrder, OrderChange, OrderPreview, OrderResponse, OrdersResponse, PlansResponse, Portfolio, ResetRequest, Risk, SettlementResponse, SubmitOrderResponse, TradeNote, TradeNoteResponse, TradesResponse, WhatIfResponse, WriteMode } from "./trading-types"
 import { activeAccount, MAIN_ACCOUNT } from "../lib/active-account"
 import { dataSource } from "../lib/data-source"
 import { isSandboxToken, writeToken } from "../lib/write-token"
@@ -145,8 +145,8 @@ export const api = {
   cancelOrder: (id: string, mode: WriteMode) => write<OrderResponse>(scoped(`/api/orders/${encodeURIComponent(id)}`), "DELETE", mode),
   modifyOrder: (id: string, change: OrderChange, mode: WriteMode) => write<SubmitOrderResponse>(scoped(`/api/orders/${encodeURIComponent(id)}`), "PUT", mode, change),
   cancelAllOrders: (underlying: string | null, mode: WriteMode) => write<CancelAllResponse>(scoped("/api/orders/cancel"), "POST", mode, underlying ? { underlying } : {}),
-  previewFlatten: (underlying: string | null, mode: WriteMode) => write<FlattenPreview>(scoped("/api/positions/close/preview"), "POST", mode, underlying ? { underlying } : {}),
-  closePositions: (underlying: string | null, mode: WriteMode) => write<ClosePositionsResponse>(scoped("/api/positions/close"), "POST", mode, underlying ? { underlying } : {}),
+  previewFlatten: (underlying: string | null, mode: WriteMode, pricing?: FlattenPricing) => write<FlattenPreview>(scoped("/api/positions/close/preview"), "POST", mode, { ...(underlying ? { underlying } : {}), ...pricing }),
+  closePositions: (underlying: string | null, mode: WriteMode, pricing?: FlattenPricing) => write<ClosePositionsResponse>(scoped("/api/positions/close"), "POST", mode, { ...(underlying ? { underlying } : {}), ...pricing }),
   journalCsvUrl: (kind: "trades" | "fills", from = "", to = "", attempt: "current" | "all" = "all") => {
     const query = new URLSearchParams()
     if (from) query.set("from", from)

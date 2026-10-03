@@ -109,3 +109,15 @@ it("authenticates CSV downloads and preserves structured permission errors", asy
   await expect(downloadCsv("/api/fills.csv?account=practice", "fills.csv")).rejects.toMatchObject({ code: "SCOPE_REQUIRED" })
   expect(fetcher).toHaveBeenCalledWith("/api/fills.csv?account=practice", { headers: { Accept: "application/json", Authorization: "Bearer agent-token" } })
 })
+
+it("sends extended TIF deadlines and limit flatten pricing unchanged", async () => {
+  const fetcher = vi.fn<typeof fetch>(async () => new Response("{}", { status: 200 }))
+  vi.stubGlobal("fetch", fetcher)
+  const request = { client_order_id: "gtd", symbol: order.symbol!, side: "buy", type: "limit", quantity: 1, limit_price: "4.10", time_in_force: "gtd", good_till: "2026-09-23T14:15:00Z" } as const
+  await api.submitOrder(request, "open")
+  expect(fetcher).toHaveBeenLastCalledWith("/api/orders", expect.objectContaining({ body: JSON.stringify(request) }))
+  for (const send of [api.closePositions, api.previewFlatten]) {
+    await send("SPX", "open", { type: "limit", limit_ticks: 2 })
+    expect(JSON.parse(fetcher.mock.calls.at(-1)![1]!.body as string)).toEqual({ underlying: "SPX", type: "limit", limit_ticks: 2 })
+  }
+})

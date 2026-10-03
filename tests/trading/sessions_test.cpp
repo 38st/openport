@@ -410,5 +410,152 @@ TEST(TradingSessions, GtcCancelsForBuyingPowerOnALaterDayAndForResetOrFailure) {
   }
 }
 
+TEST(TradingSessions, ExtendedStopsTriggerOnTheOvernightGapAtTheTouch) {
+  for (const auto root : {"SPXW", "SPX", "XSP", "VIX", "RUT"}) {
+    ScriptedMarket f;
+    f.contract = *md::parse_osi(std::string(root) + "261022C05000000");
+    auto config = roomy();
+    config.rules.slippage_ticks = 2;
+    config.rules.impact_ticks = 2;
+    TradingSession s(config, f.time);
+    f.seed(s);
+    ASSERT_TRUE(s.submit(f.market("held", 2), f.time).decision.ok());
+    auto stop = f.market("overnight stop", 2, Side::Sell);
+    stop.tif = TimeInForce::GtcExto;
+    stop.trigger = Trigger{TriggerSource::Option, TriggerDirection::AtOrBelow, m("3.50")};
+    ASSERT_TRUE(s.submit(stop, f.time).decision.ok());
+    EXPECT_EQ(order(s, 2).status, OrderStatus::Armed);
+    f.time = at(kTuesday, 21, 0); ++f.observation;
+    s.on_quotes({f.quote("2.00", "2.20", 1)}, {f.valuation()}, f.time);
+    EXPECT_EQ(order(s, 2).triggered_at, f.time);
+    EXPECT_EQ(order(s, 2).filled_quantity, 1);
+    EXPECT_EQ(order(s, 2).reason.code, Reason::IOC_REMAINDER);
+    EXPECT_EQ(s.snapshot()->recent_fills.back().price, m("2.00"));
+  }
+}
+
+TEST(TradingSessions, ExtendedBracketsRearmAndStopLimitsKeepTheirPrice) {
+  for (const bool limited : {false, true}) {
+    ScriptedMarket f;
+    TradingSession s(roomy(), f.time); f.seed(s);
+    auto entry = f.limit("entry", 2, "4.20", Side::Buy, TimeInForce::Exto);
+    entry.bracket = Bracket{ExitSpec{Trigger{TriggerSource::Option, TriggerDirection::AtOrBelow, m("3.50")},
+        limited ? std::optional(m("3.40")) : std::nullopt}, ExitSpec{{}, m("5.00")}};
+    ASSERT_TRUE(s.submit(entry, f.time).decision.ok());
+    EXPECT_EQ(order(s, 2).request.tif, TimeInForce::GtcExto);
+    EXPECT_EQ(order(s, 3).request.tif, TimeInForce::GtcExto);
+    f.time = at(kTuesday, 21, 0); ++f.observation;
+    s.on_quotes({f.quote("2.00", "2.20", 1)}, {f.valuation()}, f.time);
+    EXPECT_EQ(order(s, 2).triggered_at, f.time);
+    if (limited) {
+      EXPECT_EQ(order(s, 2).status, OrderStatus::Working);
+      EXPECT_EQ(order(s, 2).filled_quantity, 0);
+      tick(s, f, f.time + md::kNanosPerSecond, "3.40", "3.60");
+    } else {
+      EXPECT_EQ(order(s, 2).status, OrderStatus::Armed);
+      EXPECT_EQ(order(s, 2).filled_quantity, 1);
+      tick(s, f, f.time + md::kNanosPerSecond, "2.00", "2.20");
+    }
+    EXPECT_EQ(order(s, 2).status, OrderStatus::Filled);
+    EXPECT_EQ(order(s, 3).reason.code, Reason::OCO_FILLED);
+    EXPECT_TRUE(s.snapshot()->positions.empty());
+  }
+}
+
+TEST(TradingSessions, ExtoEndsWithCurbAndGtdEndsAtItsTimestamp) {
+  ScriptedMarket f;
+  f.time = at(kTuesday, 21, 0);
+  TradingSession s(roomy(), f.time); f.seed(s);
+  ASSERT_TRUE(s.submit(f.limit("exto", 1, "4.10", Side::Buy, TimeInForce::Exto), f.time).decision.ok());
+  auto gtd = f.limit("gtd", 1, "4.10", Side::Buy, TimeInForce::Gtd);
+  gtd.good_till = at(kWednesday, 16, 45);
+  ASSERT_TRUE(s.submit(gtd, f.time).decision.ok());
+  EXPECT_EQ(order(s, 1).day_end, at(kWednesday, 17, 0));
+  s.on_quotes({}, {}, at(kWednesday, 16, 15));
+  EXPECT_TRUE(order(s, 1).open());
+  s.on_quotes({}, {}, *gtd.good_till - 1);
+  EXPECT_TRUE(order(s, 2).open());
+  s.on_quotes({}, {}, *gtd.good_till);
+  EXPECT_EQ(order(s, 2).reason.code, Reason::GTD_END);
+  s.on_quotes({}, {}, at(kWednesday, 17, 0));
+  EXPECT_EQ(order(s, 1).reason.code, Reason::DAY_END);
+}
+
+TEST(TradingSessions, NewTimeInForceValidationAndRegularOnlyGtd) {
+  ScriptedMarket f;
+  TradingSession s(roomy(), f.time); f.seed(s);
+  auto request = f.limit("missing", 1, "4.10", Side::Buy, TimeInForce::Gtd);
+  EXPECT_EQ(s.submit(request, f.time).decision.code, Reason::INVALID_ORDER);
+  request.client_order_id = "past"; request.good_till = f.time;
+  EXPECT_EQ(s.submit(request, f.time).decision.code, Reason::INVALID_ORDER);
+  request.client_order_id = "distant"; request.good_till = f.time + 367LL * 24 * 60 * 60 * md::kNanosPerSecond;
+  EXPECT_EQ(s.submit(request, f.time).decision.code, Reason::INVALID_ORDER);
+  request.client_order_id = "unneeded"; request.tif = TimeInForce::Day;
+  EXPECT_EQ(s.submit(request, f.time).decision.code, Reason::INVALID_ORDER);
+  request.client_order_id = "gtd"; request.tif = TimeInForce::Gtd; request.good_till = at(kWednesday, 12, 0);
+  ASSERT_TRUE(s.submit(request, f.time).decision.ok());
+  tick(s, f, at(kTuesday, 21, 0), "3.90", "4.00");
+  EXPECT_TRUE(order(s, 5).open());
+  EXPECT_EQ(s.submit(f.market("plain market"), f.time).decision.code, Reason::LIMIT_ONLY);
+  tick(s, f, at(kWednesday, 9, 30), "3.90", "4.00");
+  EXPECT_EQ(order(s, 5).status, OrderStatus::Filled);
+}
+
+TEST(TradingSessions, LimitFlattenWorksAcrossCurbAndOvernightQuotesAndManualRepricing) {
+  for (const auto hour : {16, 21}) {
+    ScriptedMarket f;
+    TradingSession s(roomy(), f.time); f.seed(s);
+    ASSERT_TRUE(s.submit(f.market("held", 3), f.time).decision.ok());
+    f.time = at(kTuesday, hour, 30); ++f.observation;
+    s.on_quotes({f.quote("4.00", "4.20", 1)}, {f.valuation()}, f.time);
+    EXPECT_EQ(s.close_positions({}, f.time).decision.code, Reason::LIMIT_ONLY);
+    const auto preview = s.preview_close_positions({}, f.time, {}, {}, {}, {true, 1});
+    ASSERT_TRUE(preview.decision.ok());
+    const auto result = s.close_positions({}, f.time, {}, {true, 1});
+    ASSERT_TRUE(result.decision.ok());
+    ASSERT_EQ(result.residuals.size(), 1);
+    EXPECT_EQ(result.residuals.front().working, 2);
+    EXPECT_TRUE(order(s, 2).reduce_only);
+    EXPECT_EQ(order(s, 2).request.type, OrderType::Limit);
+    EXPECT_EQ(order(s, 2).request.tif, TimeInForce::Exto);
+    EXPECT_EQ(order(s, 2).request.limit_price, m("3.90"));
+    f.next();
+    s.on_quotes({f.quote("3.00", "3.20", 1)}, {f.valuation()}, f.time);
+    EXPECT_EQ(order(s, 2).filled_quantity, 2);
+    EXPECT_EQ(order(s, 2).request.limit_price, m("2.90"));
+    EXPECT_EQ(s.modify(2, {4, {}, {}}, f.time).decision.code, Reason::INVALID_ORDER);
+    ASSERT_TRUE(s.modify(2, {{}, m("3.50"), {}}, f.time).decision.ok());
+    EXPECT_FALSE(order(s, 2).limit_ticks);
+    tick(s, f, f.time + md::kNanosPerSecond, "3.10", "3.30");
+    EXPECT_EQ(order(s, 2).filled_quantity, 2);
+    tick(s, f, f.time + md::kNanosPerSecond, "3.50", "3.70");
+    EXPECT_EQ(order(s, 2).status, OrderStatus::Filled);
+    EXPECT_TRUE(s.snapshot()->positions.empty());
+  }
+}
+
+TEST(TradingSessions, ExtoHonorsEarlyAndHolidayClosesAndDoesNotTradeBetweenSessions) {
+  for (const bool holiday : {false, true}) {
+    ScriptedMarket f;
+    f.contract = *md::parse_osi("SPXW261218C05000000");
+    const md::Date date = holiday ? md::Date{2026, 11, 26} : md::Date{2026, 11, 27};
+    f.time = at(date, holiday ? 9 : 10, 0);
+    TradingSession s(roomy(), f.time); f.seed(s);
+    ASSERT_TRUE(s.submit(f.limit("exto", 1, "4.10", Side::Buy, TimeInForce::Exto), f.time).decision.ok());
+    const auto end = at(date, holiday ? 11 : 13, holiday ? 30 : 15);
+    EXPECT_EQ(order(s, 1).day_end, end);
+    s.on_quotes({}, {}, end);
+    EXPECT_EQ(order(s, 1).reason.code, Reason::DAY_END);
+  }
+  ScriptedMarket f;
+  TradingSession s(roomy(), f.time); f.seed(s);
+  ASSERT_TRUE(s.submit(f.limit("carry", 1, "4.10", Side::Buy, TimeInForce::GtcExto), f.time).decision.ok());
+  tick(s, f, at(kTuesday, 18, 0), "3.90", "4.10");
+  EXPECT_TRUE(order(s, 1).open());
+  EXPECT_EQ(s.snapshot()->waiting.at(1).code, "SESSION_CLOSED");
+  tick(s, f, at(kTuesday, 21, 0), "3.90", "4.10");
+  EXPECT_EQ(order(s, 1).status, OrderStatus::Filled);
+}
+
 }  // namespace
 }  // namespace openport::trading

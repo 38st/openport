@@ -47,6 +47,7 @@ inline void to_json(Json& j, const OrderRequest& r) {
            {"legs", r.legs}, {"tags", r.tags}, {"note", r.note}, {"exits_only", r.exits_only}};
   // Only an order naming a trade records it, so every other order keeps its bytes.
   if (!r.group.empty()) j["group"] = r.group;
+  if (r.good_till) j["good_till"] = *r.good_till;
 }
 inline void from_json(const Json& j, OrderRequest& r) {
   j.at("client_order_id").get_to(r.client_order_id); j.at("symbol").get_to(r.symbol); j.at("side").get_to(r.side);
@@ -55,6 +56,7 @@ inline void from_json(const Json& j, OrderRequest& r) {
   added_field(j, "trigger", r.trigger); added_field(j, "bracket", r.bracket); added_field(j, "legs", r.legs);
   added_field(j, "tags", r.tags); added_field(j, "note", r.note); added_field(j, "exits_only", r.exits_only);
   added_field(j, "group", r.group);
+  added_field(j, "good_till", r.good_till);
 }
 inline void to_json(Json& j, const OrderChangeRecord& c) {
   j = Json{{"time", c.time}, {"actor", c.actor}, {"previous_quantity", c.previous_quantity}};
@@ -85,6 +87,7 @@ inline void to_json(Json& j, const Order& o) {
   if (o.ended_at != 0) j["ended_at"] = o.ended_at;
   if (!o.changes.empty()) j["changes"] = o.changes;
   if (o.reduce_only) j["reduce_only"] = true;
+  if (o.limit_ticks) j["limit_ticks"] = *o.limit_ticks;
 }
 inline void from_json(const Json& j, Order& o) {
   j.at("id").get_to(o.id); j.at("request").get_to(o.request); j.at("status").get_to(o.status);
@@ -95,6 +98,7 @@ inline void from_json(const Json& j, Order& o) {
   added_field(j, "triggered_at", o.triggered_at); added_field(j, "actor", o.actor);
   added_field(j, "submitted", o.submitted); added_field(j, "reduce_only", o.reduce_only);
   added_field(j, "ended_at", o.ended_at); added_field(j, "changes", o.changes);
+  added_field(j, "limit_ticks", o.limit_ticks);
 }
 NLOHMANN_DEFINE_TYPE_NON_INTRUSIVE(FillContext, spot, spot_source, iv, delta, years, equity, floor_room, buying_power)
 NLOHMANN_DEFINE_TYPE_NON_INTRUSIVE(Excursion, pnl, time, spot)

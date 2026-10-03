@@ -169,6 +169,7 @@ struct TradingCommand {
   std::vector<std::string> candidate_names = {};
   /// ExerciseInstruction: instruct that `symbol` is not exercised at expiry, or withdraw it.
   bool do_not_exercise = false;
+  trading::FlattenPricing close_pricing;
 };
 
 /// Previews and dry runs: answered from a private copy of the account, never recorded.

@@ -23,6 +23,19 @@ def test_tool_schemas_name_accounts_and_typed_orders(stub):
     schema = tools["place_order"].input_schema
     assert schema["$defs"]["Order"]["properties"]["quantity"]["type"] == "integer"
     assert "limit" in schema["$defs"]["Order"]["properties"]["type"]["enum"]
+    assert {"exto", "gtc_exto", "gtd"} <= set(schema["$defs"]["Order"]["properties"]["time_in_force"]["enum"])
+
+
+def test_extended_orders_and_limit_flatten_reach_replay(stub):
+    server = create_server(Client(stub.url, "secret"))
+    order = {"quantity": 1, "type": "limit", "time_in_force": "gtd", "good_till": "2026-09-23T14:00:00Z",
+             "symbol": "SPXW  261022P05000000", "side": "buy", "limit_price": "0.05"}
+    call(server, "place_order", account="main", replay=True, order=order)
+    assert stub.requests[-1][1] == "/api/replay/orders?account=main"
+    assert stub.requests[-1][3]["good_till"] == order["good_till"]
+    call(server, "flatten", account="main", replay=True, type="limit", limit_ticks=2)
+    assert stub.requests[-1][1] == "/api/replay/positions/close?account=main"
+    assert stub.requests[-1][3] == {"type": "limit", "limit_ticks": 2}
 
 
 def test_results_have_market_time_delay_simulation_and_agent_tag(stub):

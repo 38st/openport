@@ -260,3 +260,21 @@ def test_position_disposal_bodies_and_scope(stub, replay):
         assert method == "POST"
         assert urlsplit(target).path == prefix + "/positions/instruction"
         assert body == {"symbol": symbol, "do_not_exercise": instructed}
+
+
+def test_extended_orders_and_limit_flatten(stub):
+    for client in (Client(stub.url), Client(stub.url).for_replay()):
+        for tif in ("exto", "gtc_exto", "gtd"):
+            terms = {"type": "limit", "limit_price": "4.10", "time_in_force": tif, "quantity": 1}
+            if tif == "gtd":
+                terms["good_till"] = "2026-09-23T14:15:00Z"
+            client.place_order(**terms)
+            assert all(stub.requests[-1][3][key] == value for key, value in terms.items())
+        for method in (client.flatten, client.preview_flatten):
+            method("SPX", type="limit", limit_ticks=2)
+            assert stub.requests[-1][3] == {"underlying": "SPX", "type": "limit", "limit_ticks": 2}
+            for ticks in (-1, 11, True, 1.5):
+                with pytest.raises(ValueError):
+                    method(type="limit", limit_ticks=ticks)
+            with pytest.raises(ValueError):
+                method(type="market", limit_ticks=0)

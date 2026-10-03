@@ -1227,10 +1227,10 @@ void Desk::apply_command(PendingCommand& pending, md::Timestamp market_time, md:
             for (const auto& p : before->positions) symbols.insert(p.position.contract.osi_symbol());
             std::map<std::string, double> vols;
             const auto market = preview_market(symbols, vols);
-            reply.flatten = session.preview_close_positions(scope, market_time_, rejections, vols, market);
+            reply.flatten = session.preview_close_positions(scope, market_time_, rejections, vols, market, c.close_pricing);
             break;
           }
-          result = session.close_positions(scope, market_time_, rejections);
+          result = session.close_positions(scope, market_time_, rejections, c.close_pricing);
           reply.kept_stocks = result.kept_stocks;
           reply.residuals = result.residuals;
           break;

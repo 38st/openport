@@ -490,6 +490,8 @@ TEST(TradingJournalSchema, GtcAndOrderMetadataSurviveRecoveryAndOldRequestsGetDe
   EXPECT_TRUE(request.tags.empty());
   EXPECT_TRUE(request.note.empty());
   EXPECT_FALSE(request.exits_only);
+  EXPECT_FALSE(request.good_till);
+  EXPECT_FALSE(old.snapshot()->recent_orders[0].limit_ticks);
 }
 
 }  // namespace
@@ -603,6 +605,50 @@ TEST(TradingJournalSchema, ExerciseInstructionsAreSparseAndEveryPrefixRecovers) 
   EXPECT_EQ(TradingSession::recover(FileJournal::read(path)).snapshot_json(), s.snapshot_json());
   const auto payload = Json::parse(FileJournal::read(path).records.back().payload);
   EXPECT_NE(payload.dump().find("do_not_exercise"), std::string::npos) << "the delta removes the last instruction";
+}
+
+TEST(JournalSchema, ExtendedOrdersAndGtdRecoverWithSparseFields) {
+  TemporaryDirectory directory;
+  test::ScriptedMarket f;
+  const auto path = directory.file("extended.jsonl");
+  const auto until = md::new_york_to_utc({2026, 9, 23}, 10, 15);
+  TradingSession s({}, f.time, FileJournal::create(path));
+  f.seed(s);
+  auto gtd = f.limit("gtd", 1, "4.10", Side::Buy, TimeInForce::Gtd);
+  gtd.good_till = until;
+  ASSERT_TRUE(s.submit(gtd, f.time).decision.ok());
+  ASSERT_TRUE(s.submit(f.limit("gtc_exto", 1, "4.10", Side::Buy, TimeInForce::GtcExto), f.time).decision.ok());
+  auto state = Json::parse(s.snapshot_json());
+  EXPECT_TRUE(state["recent_orders"][0]["request"].contains("good_till"));
+  EXPECT_FALSE(state["recent_orders"][1]["request"].contains("good_till"));
+  EXPECT_FALSE(state["recent_orders"][1].contains("limit_ticks"));
+  auto recovered = TradingSession::recover(FileJournal::read(path));
+  EXPECT_EQ(recovered.snapshot_json(), s.snapshot_json());
+  f.time = md::new_york_to_utc({2026, 9, 22}, 21, 0); ++f.observation;
+  for (auto* session : {&s, &recovered}) session->on_quotes({f.quote("3.90", "4.10")}, {f.valuation()}, f.time);
+  EXPECT_EQ(recovered.snapshot_json(), s.snapshot_json());
+  EXPECT_EQ(recovered.snapshot()->recent_orders[1].status, OrderStatus::Filled);
+  for (auto* session : {&s, &recovered}) session->on_quotes({}, {}, until);
+  EXPECT_EQ(recovered.snapshot_json(), s.snapshot_json());
+  EXPECT_EQ(recovered.snapshot()->recent_orders[0].reason.code, Reason::GTD_END);
+}
+
+TEST(JournalSchema, LimitFlattenRecoversItsAutomaticRepricing) {
+  TemporaryDirectory directory;
+  test::ScriptedMarket f;
+  const auto path = directory.file("limit-close.jsonl");
+  TradingSession s({}, f.time, FileJournal::create(path));
+  f.seed(s);
+  ASSERT_TRUE(s.submit(f.market("held", 3), f.time).decision.ok());
+  f.time = md::new_york_to_utc({2026, 9, 22}, 21, 0); ++f.observation;
+  s.on_quotes({f.quote("4.00", "4.20", 1)}, {f.valuation()}, f.time);
+  ASSERT_TRUE(s.close_positions({}, f.time, {}, {true, 2}).decision.ok());
+  auto recovered = TradingSession::recover(FileJournal::read(path));
+  EXPECT_EQ(recovered.snapshot_json(), s.snapshot_json());
+  f.next();
+  for (auto* session : {&s, &recovered}) session->on_quotes({f.quote("3.00", "3.20", 2)}, {f.valuation()}, f.time);
+  EXPECT_EQ(recovered.snapshot_json(), s.snapshot_json());
+  EXPECT_TRUE(recovered.snapshot()->positions.empty());
 }
 
 }  // namespace

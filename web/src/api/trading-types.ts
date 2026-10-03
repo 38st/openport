@@ -397,9 +397,11 @@ export type ExitSpec = { trigger: Trigger; limit_price?: Money } | { limit_price
 export interface Bracket { stop_loss?: ExitSpec; take_profit?: ExitSpec }
 /** One leg of a multi-leg order: `ratio` contracts per unit. */
 export interface OrderLeg { symbol: string; side: Side; ratio: number }
-type Pricing = { type: "limit"; limit_price: Money; time_in_force: "day" | "gtc" | "ioc" }
-  | { type: "market"; time_in_force: "ioc"; limit_price?: never }
-export type NewOrder = { tags?: string[]; note?: string } & ({
+export type TimeInForce = "day" | "gtc" | "ioc" | "exto" | "gtc_exto" | "gtd"
+type Pricing = { type: "limit"; limit_price: Money; time_in_force: TimeInForce }
+  | { type: "market"; time_in_force: "ioc" | "exto" | "gtc_exto" | "gtd"; limit_price?: never }
+export type FlattenPricing = { type?: "market" | "limit"; limit_ticks?: number }
+export type NewOrder = { tags?: string[]; note?: string; good_till?: string } & ({
   client_order_id: string
   symbol: string
   side: Side
@@ -425,7 +427,7 @@ export type NewOrder = { tags?: string[]; note?: string } & ({
 }) & Pricing
 /** What keeps an open order from filling now. */
 export interface OrderWait {
-  code: "TRIGGER" | "REGULAR_SESSION" | "INVALID_QUOTE" | "STALE_QUOTE" | "FILL_LATENCY" | "NEWER_QUOTE" | "LIMIT" | "DISPLAYED_SIZE" | "STALE_DATA"
+  code: "SESSION_CLOSED" | "TRIGGER" | "REGULAR_SESSION" | "INVALID_QUOTE" | "STALE_QUOTE" | "FILL_LATENCY" | "NEWER_QUOTE" | "LIMIT" | "DISPLAYED_SIZE" | "STALE_DATA"
   message: string
 }
 /** A change asked of a resting order: the terms requested (null where kept), those before it, and its outcome. */
@@ -457,7 +459,9 @@ export interface Order {
   /** A multi-leg order's legs; its prices are net per unit, negative for a credit. */
   legs?: OrderLeg[] | null
   type: "limit" | "market"
-  time_in_force: "day" | "gtc" | "ioc"
+  time_in_force: TimeInForce
+  good_till?: string | null
+  limit_ticks?: number | null
   quantity: number
   filled_quantity: number
   remaining_quantity: number
