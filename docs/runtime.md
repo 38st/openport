@@ -644,6 +644,11 @@ paper account. It verifies the journal chain, opens the original recording or
 regenerates the scenario, repeats its boundaries and commands, and checks every
 transaction hash, final equity and head hash. Exit 0 means a match. Exit 1 names the
 first differing transaction, or reports a damaged journal or missing/changed input.
+Exit 2 is a command-line usage/startup error. Every verification report starts with
+the run id/file, scenario or recording and date, scenario seed/revision, and plan.
+When the sidecar has a final checkpoint, the report prints its head/count and checks
+that the journal agrees; a cleanly shortened journal fails instead of verifying only
+the remaining prefix. No checkpoint means legacy prefix verification.
 New runs record replay driver 5, which adds AM opening-print settlement. Verification
 of drivers 1–4 keeps their manual AM behavior and original journal bytes. Driver 5
 changes the start input for every new run and adds settlement transactions when an

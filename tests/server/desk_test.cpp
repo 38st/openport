@@ -1255,6 +1255,12 @@ TEST(ReproducibleRun, ScenarioDayHasIdenticalBytesAcrossSpeedsFastForwardAndVeri
   md::set_scheduled_days(calendar);
   EXPECT_TRUE(verified.matched) << verified.message;
   EXPECT_EQ(verified.equity, equity);
+  EXPECT_TRUE(verified.message.starts_with("Run run-0 (run-0.jsonl)"));
+  EXPECT_NE(verified.message.find("scenario " + scenario.id), std::string::npos);
+  EXPECT_NE(verified.message.find("seed 81723"), std::string::npos);
+  EXPECT_NE(verified.message.find("revision " + std::to_string(providers::kScenarioRevision)), std::string::npos);
+  EXPECT_NE(verified.message.find("plan "), std::string::npos);
+  EXPECT_EQ(verified.run.at("inputs").at(0).count("file"), 0U);
   const auto altered = file.directory / "altered.jsonl";
   std::uint64_t changed_at = 0;
   {
@@ -1268,10 +1274,25 @@ TEST(ReproducibleRun, ScenarioDayHasIdenticalBytesAcrossSpeedsFastForwardAndVeri
   ASSERT_NE(changed_at, 0U);
   const auto mismatch = server::verify_run(altered);
   EXPECT_FALSE(mismatch.matched);
+  EXPECT_TRUE(mismatch.message.starts_with("Run altered (altered.jsonl)"));
+  EXPECT_NE(mismatch.message.find("scenario " + scenario.id), std::string::npos);
   EXPECT_NE(mismatch.message.find("First differing transaction " + std::to_string(changed_at)), std::string::npos) << mismatch.message;
   // The CLI takes the same path without starting a feed, HTTP or user directories.
   const auto cli = std::string(OPENPORT_APPS_DIR) + "/openportd --verify-run " + journal.string() + " > " + (file.directory / "verify.txt").string() + " 2>&1";
   EXPECT_EQ(std::system(cli.c_str()), 0);
+  EXPECT_TRUE(read_file(file.directory / "verify.txt").starts_with("Run run-0 (run-0.jsonl)"));
+  const auto recovered = trading::FileJournal::read(journal.string());
+  const auto sidecar = std::filesystem::path(journal).replace_extension(".json");
+  { std::ofstream out(sidecar); out << json{{"plan", "practice"}, {"journal", {{"head", recovered.head},
+      {"transactions", recovered.records.size()}, {"bytes", std::filesystem::file_size(journal)}}}}; }
+  const auto checkpoint = server::verify_run(journal);
+  EXPECT_TRUE(checkpoint.matched) << checkpoint.message;
+  EXPECT_NE(checkpoint.message.find("recorded final " + std::to_string(recovered.records.size())), std::string::npos);
+  { std::ofstream out(journal); out << golden.substr(0, golden.rfind('\n', golden.size() - 2) + 1); }
+  const auto truncated = server::verify_run(journal);
+  EXPECT_FALSE(truncated.matched);
+  EXPECT_TRUE(truncated.message.starts_with("Run run-0"));
+  EXPECT_NE(truncated.message.find("Journal disagrees with recorded final"), std::string::npos);
   auto tampered = golden;
   const auto hash = tampered.find("\"hash\":\"");
   ASSERT_NE(hash, std::string::npos);

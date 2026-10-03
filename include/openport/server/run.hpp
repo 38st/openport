@@ -23,6 +23,8 @@ namespace openport::server {
                                                                  std::shared_ptr<trading::Journal> file);
 
 struct RunVerification {
+  nlohmann::json run;  ///< Shareable identity and inputs; contains no absolute paths.
+  md::Timestamp time = 0;  ///< Final recorded market time.
   bool matched = false;
   std::uint64_t transactions = 0;
   std::string head;

@@ -31,7 +31,7 @@ std::string hash_text(std::string_view text) {
 }
 std::string hash_file(const std::filesystem::path& file) {
   std::ifstream input(file, std::ios::binary);
-  if (!input) throw std::runtime_error("Missing input: " + file.string());
+  if (!input) throw std::runtime_error("Missing input: " + file.filename().string());
   const std::unique_ptr<EVP_MD_CTX, decltype(&EVP_MD_CTX_free)> context(EVP_MD_CTX_new(), EVP_MD_CTX_free);
   if (!context || EVP_DigestInit_ex(context.get(), EVP_sha256(), nullptr) != 1)
     throw std::runtime_error("SHA-256 failed");
@@ -41,11 +41,64 @@ std::string hash_file(const std::filesystem::path& file) {
     if (EVP_DigestUpdate(context.get(), buffer.data(), static_cast<std::size_t>(input.gcount())) != 1)
       throw std::runtime_error("SHA-256 failed");
   }
-  if (!input.eof()) throw std::runtime_error("Cannot read input: " + file.string());
+  if (!input.eof()) throw std::runtime_error("Cannot read input: " + file.filename().string());
   unsigned char bytes[EVP_MAX_MD_SIZE];
   unsigned size = 0;
   if (EVP_DigestFinal_ex(context.get(), bytes, &size) != 1) throw std::runtime_error("SHA-256 failed");
   return hex_digest(bytes, size);
+}
+json shareable_input(json input) {
+  input.erase("file");
+  if (input.contains("date")) input["date"] = md::format_date(input.at("date").get<md::Date>());
+  else if (input.contains("started"))
+    input["date"] = md::format_date(md::new_york_time(input.at("started").get<md::Timestamp>()).date);
+  if (input.contains("seed")) input["seed"] = std::to_string(input.at("seed").get<std::uint64_t>());
+  if (input.value("kind", "") == "scenario" && !input.contains("revision")) input["revision"] = 1;
+  return input;
+}
+json describe_run(const std::filesystem::path& journal) {
+  json run{{"id", journal.stem().string()}, {"file", journal.filename().string()},
+           {"inputs", json::array()}, {"plan", "unknown"}};
+  std::ifstream metadata(std::filesystem::path(journal).replace_extension(".json"));
+  if (metadata) {
+    const auto saved = json::parse(metadata, nullptr, false);
+    if (saved.is_object()) {
+      run["plan"] = saved.value("plan", "unknown");
+      if (saved.contains("journal")) run["recorded_journal"] = saved.at("journal");
+    }
+  }
+  // The initial state and start input are the first two records. Read them even
+  // when a later record is damaged, so failure output still identifies the run.
+  std::ifstream file(journal);
+  std::string line;
+  for (int index = 0; index < 2 && std::getline(file, line); ++index) {
+    const auto record = json::parse(line, nullptr, false);
+    if (!record.is_object() || !record.contains("payload")) continue;
+    const auto& payload = record.at("payload");
+    if (index == 0 && run.at("plan") == "unknown" && payload.contains("state"))
+      run["plan"] = payload.at("state").at("config").at("rules").value("plan", "unknown");
+    if (record.value("type", "") != "run_input") continue;
+    for (const auto& event : payload.at("events")) {
+      if (event.at("type") == "run_input" && event.at("payload").at("kind") == "start")
+        run["inputs"].push_back(shareable_input(event.at("payload").at("input")));
+    }
+  }
+  return run;
+}
+std::string run_label(const json& run) {
+  std::string text = "Run " + run.at("id").get<std::string>() + " (" + run.at("file").get<std::string>() + ")";
+  for (const auto& input : run.at("inputs")) {
+    if (input.at("kind") == "scenario")
+      text += "; scenario " + input.at("id").get<std::string>() + "; date " + input.at("date").get<std::string>() +
+          "; seed " + input.at("seed").get<std::string>() + "; revision " + input.at("revision").dump();
+    else text += "; recording " + input.at("name").get<std::string>() + "; date " + input.at("date").get<std::string>();
+  }
+  text += "; plan " + run.at("plan").get<std::string>();
+  if (run.contains("recorded_journal")) {
+    const auto& final = run.at("recorded_journal");
+    text += "; recorded final " + final.at("transactions").dump() + " transactions; head " + final.at("head").get<std::string>();
+  }
+  return text + "\n";
 }
 struct CalendarScope {
   std::vector<md::ScheduledDay> saved = md::scheduled_days();
@@ -188,9 +241,24 @@ RunIdentity run_identity(std::string_view input, std::string id) {
 }
 RunVerification verify_run(const std::filesystem::path& journal) {
   RunVerification result;
+  result.run = {{"id", journal.stem().string()}, {"file", journal.filename().string()},
+                {"inputs", json::array()}, {"plan", "unknown"}};
+  std::string label = run_label(result.run);
   try {
+    result.run = describe_run(journal);
+    label = run_label(result.run);
     const auto expected = trading::FileJournal::read(journal.string());
-    if (expected.truncated_final_line) throw std::runtime_error("Journal has a torn final line");
+    if (expected.truncated_final_line)
+      throw std::runtime_error("Journal has a torn final line; --repair-journals would cut " + std::to_string(expected.bytes_cut) + " bytes");
+    if (result.run.contains("recorded_journal")) {
+      const auto& final = result.run.at("recorded_journal");
+      if (final.at("transactions") != expected.records.size() || final.at("head") != expected.head ||
+          final.at("bytes") != std::filesystem::file_size(journal))
+        throw std::runtime_error("Journal disagrees with recorded final: expected " + final.at("transactions").dump() +
+            " transactions, found " + std::to_string(expected.records.size()) + "; expected head " +
+            final.at("head").get<std::string>() + ", found " + expected.head);
+      label += "Journal agrees with recorded final head/count/bytes.\n";
+    }
     std::vector<json> inputs;
     for (const auto& record : expected.records) {
       if (record.type != "run_input") continue;
@@ -200,6 +268,10 @@ RunVerification verify_run(const std::filesystem::path& journal) {
     }
     if (inputs.empty() || inputs.front().at("kind") != "start")
       throw std::runtime_error("Journal has no reproducible-run metadata (older journals still load as accounts)");
+    result.run["inputs"] = json::array();
+    for (const auto& operation : inputs)
+      if (operation.at("kind") == "start" || operation.at("kind") == "source")
+        result.run["inputs"].push_back(shareable_input(operation.at("input")));
     const auto& start = inputs.front();
     const auto& input = start.at("input");
     const CalendarScope calendar;
@@ -213,7 +285,7 @@ RunVerification verify_run(const std::filesystem::path& journal) {
         file = identity.at("file").get<std::string>();
         if (hash_file(file) != identity.at("sha256").get<std::string>() ||
             std::filesystem::file_size(file) != identity.at("size").get<std::uintmax_t>())
-          throw std::runtime_error("Recording input changed: " + file.string());
+          throw std::runtime_error("Recording input changed: " + file.filename().string());
       } else if (identity.at("kind") == "scenario") {
         providers::Scenario scenario;
         if (identity.at("builtin").get<bool>()) {
@@ -227,7 +299,7 @@ RunVerification verify_run(const std::filesystem::path& journal) {
           if (!found) throw std::runtime_error("Missing built-in scenario: " + identity.at("id").get<std::string>());
         } else {
           file = identity.at("file").get<std::string>();
-          if (!std::filesystem::is_regular_file(file)) throw std::runtime_error("Missing scenario input: " + file.string());
+          if (!std::filesystem::is_regular_file(file)) throw std::runtime_error("Missing scenario input: " + file.filename().string());
           scenario = providers::read_scenario(file);
         }
         if (hash_text(scenario.source) != identity.at("sha256").get<std::string>())
@@ -245,6 +317,7 @@ RunVerification verify_run(const std::filesystem::path& journal) {
       return next_reader;
     };
     const auto restored = trading::TradingSession::recover(expected);
+    result.time = restored.snapshot()->time;
     auto reader = open_input(input);
     const md::Subscription subscription{start.at("symbols").get<std::vector<std::string>>(), 0, 0};
     // Driver 2 batches each market instant whole, driver 3 also rolls the day over on the
@@ -317,7 +390,9 @@ RunVerification verify_run(const std::filesystem::path& journal) {
     result.message = "Verified " + std::to_string(result.transactions) + " transactions; equity " +
         std::to_string(result.equity.micros()) + " micro-dollars; head " + result.head +
         (result.cut ? "; the journal ends part way through its last operation, as a crash leaves it" : "");
-  } catch (const std::exception& error) { result.message = error.what(); }
+  } catch (const std::filesystem::filesystem_error& error) { result.message = error.code().message(); }
+  catch (const std::exception& error) { result.message = error.what(); }
+  result.message = label + result.message;
   return result;
 }
 }  // namespace openport::server
