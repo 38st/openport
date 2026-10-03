@@ -1485,7 +1485,7 @@ sessions are before_open (empty defaults to it) or after_close; other kinds leav
 session empty. News may leave symbol empty; other kinds require an uppercase
 underlying. Labels have at most 64 characters; at most 256 entries. The read-scope route
 `GET /api/calendar/events` serves this sorted/deduplicated catalogue for import.
-This option is separate from `--events`, the market-data event log.
+This option is separate from `--events`, the volatility API’s session-move labels.
 
 Only the account's saved rules.events decide F17/F59 outcomes. Create/reset journal
 news_before_minutes, news_after_minutes, news_action, hold_restrictions and

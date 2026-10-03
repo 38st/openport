@@ -121,7 +121,10 @@ json scope_json(const std::string& scope) {
 json evidence_value(const Decision& d, bool limit) {
   const auto value = limit ? d.limit : d.actual;
   if (!value) return nullptr;
-  if (d.code == Reason::NEWS_BLACKOUT) return md::format_timestamp(static_cast<Timestamp>(*value));
+  if (d.code == Reason::NEWS_BLACKOUT) {
+    const auto maximum = std::numeric_limits<Timestamp>::max();
+    return md::format_timestamp(*value >= static_cast<double>(maximum) ? maximum : static_cast<Timestamp>(*value));
+  }
   if (d.code == Reason::HOLD_RESTRICTED && limit) return clock_text(static_cast<std::int64_t>(*value));
   return number(*value);
 }

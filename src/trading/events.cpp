@@ -140,7 +140,7 @@ std::vector<EventWindow> event_windows(const AccountRules& r, Timestamp from, Ti
       holding("weekend", "", "Weekend", day);
     }
   }
-  std::sort(out.begin(), out.end(), [](const auto& a, const auto& b) { return std::tie(a.start, a.key) < std::tie(b.start, b.key); });
+  std::sort(out.begin(), out.end(), [](const auto& a, const auto& b) { return std::tie(a.start, a.key, a.label) < std::tie(b.start, b.key, b.label); });
   out.erase(std::unique(out.begin(), out.end(), [](const auto& a, const auto& b) { return a.key == b.key; }), out.end());
   return out;
 }
