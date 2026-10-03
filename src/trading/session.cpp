@@ -1029,7 +1029,8 @@ Money exit_equity_of(const State& s, const TradingSnapshot& out) {
     if (p.awaiting_settlement || !p.market_value) continue;
     const auto size = magnitude(position.quantity);
     const auto closing = market_premium(s, symbol, position.quantity > 0 ? Side::Sell : Side::Buy, size);
-    value = value - *p.market_value + (position.quantity > 0 ? closing : -closing) - s.config.fee_per_contract * size;
+    const auto fees = fees_for(s, symbol, size, size, {});
+    value = value - *p.market_value + (position.quantity > 0 ? closing : -closing) - fees.total();
   }
   return value;
 }

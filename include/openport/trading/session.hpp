@@ -123,8 +123,9 @@ struct TradingSnapshot {
   std::vector<Alert> alerts;  ///< The account's alerts, oldest first.
   /// Equity if every position closed now with a market order at the displayed
   /// quotes (bids for longs, asks for shorts) and the account's slippage and
-  /// impact, after fees: a long nobody bids for counts as nothing, a short without
-  /// an ask at its mark, an expired position at its mark and shares at their price.
+  /// impact, after fees using the account's fee schedule when it has one. A long
+  /// nobody bids for counts as nothing, a short without an ask at its mark, an
+  /// expired position at its mark and shares at their price.
   /// Derived from the books, so snapshot_json leaves it out.
   Money exit_equity;
 };
