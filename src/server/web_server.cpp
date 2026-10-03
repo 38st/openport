@@ -337,8 +337,11 @@ std::optional<ApiResponse> check_api_write(const ApiRequest& request, const Writ
       path.starts_with("/playbooks/staged/") || path == "/alerts" || path.starts_with("/alerts/") ||
       path == "/trades/group" || path == "/trades/ungroup" ||
       ((path.starts_with("/trades/") || path.starts_with("/days/")) && path.ends_with("/note"));
+  const bool history_control = replay && path.starts_with("/history/") &&
+      ((request.method == "POST" && path.ends_with("/verify")) ||
+       (request.method == "DELETE" && path.substr(9).find('/') == std::string_view::npos));
   const bool permitted = (create_sandbox && sandbox.empty()) || has("admin") || (read ? has("read") || !policy.require_token :
-      ((path == "/replay" || path == "/backtests" || path.starts_with("/backtests/")) ? has("replay") :
+      ((path == "/replay" || history_control || path == "/backtests" || path.starts_with("/backtests/")) ? has("replay") :
        trade && (replay ? has("replay") : has("trade:*") || has("trade:" + account))));
   if (!permitted) return api_error(403, "SCOPE_REQUIRED", "Token does not permit this operation");
   if (access) *access = {has("admin") && !request.authorization.empty(), sandbox};

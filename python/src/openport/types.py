@@ -174,6 +174,19 @@ class ReplayListing(TypedDict):
     replay: JSON | None
 
 
+class RunVerification(TypedDict, total=False):
+    status: str
+    message: str
+    progress: float
+    transactions: int
+    equity: str | None
+    head: str | None
+    build: str
+    time: str | None
+    finished_at: str
+    run: JSON
+
+
 class ReplayResult(TypedDict):
     replay: JSON | None
 

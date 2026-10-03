@@ -372,12 +372,46 @@ export interface ReplayRecording {
 }
 /** A simulated day the demo market plays, in these symbols. */
 export interface ReplayDemo { goal?: string; session?: "regular" | "overnight"; date?: string; seed?: string; generator?: number; id?: string; title?: string; description?: string; provider: string; symbols: string[]; started: string; sessions?: ReplaySession[]; end?: string }
+export interface RunInput {
+  kind: "scenario" | "recording"
+  version: number
+  sha256: string
+  date: string
+  started: number
+  id?: string
+  name?: string
+  size?: number
+  builtin?: boolean
+  generator?: number
+  revision?: number
+  seed?: string
+}
+export interface VerificationRun {
+  id: string
+  file: string
+  inputs: RunInput[]
+  plan: string
+  recorded_journal?: RunJournal
+}
+export interface RunVerification {
+  status: "idle" | "running" | "passed" | "failed"
+  message: string
+  progress?: number
+  transactions?: number
+  equity?: string | null
+  head?: string | null
+  build?: string
+  time?: string | null
+  finished_at?: string
+  run?: VerificationRun
+}
 export interface RunJournal {
   transactions: number
   head: string
   bytes: number
 }
 export interface ReplayHistory extends ReplayState {
+  verification?: RunVerification
   journal?: RunJournal
   journal_found?: RunJournal
   torn?: boolean

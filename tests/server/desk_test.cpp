@@ -1387,7 +1387,7 @@ TEST(ScenarioReplay, CircuitBreakersMeasureTheFallFromTheScenariosPreviousClose)
   }
 }
 
-server::ApiResponse replay_call(server::ReplayHost& host, std::string method, std::string target, json body = {}) {
+server::ApiResponse replay_call(server::ReplayHost& host, std::string method, std::string target, json body = json::object()) {
   std::promise<server::ApiResponse> done;
   auto result = done.get_future();
   server::ApiRequest request{std::move(method), std::move(target), body.dump()};
@@ -1499,6 +1499,114 @@ TEST(ReplayRun, HistoryFlagsTornAndCleanlyTruncatedJournalsAndCachesSummaries) {
     EXPECT_TRUE(json::parse(account.body).at("mismatch"));
     EXPECT_EQ(json::parse(account.body).value("torn", false), torn);
   }
+}
+
+TEST(ReplayRun, BackgroundVerificationIsExclusivePersistsAndInvalidatesWithoutMovingPlayback) {
+  test::RecordingFile file;
+  write_stream(file.path, true);
+  server::Engine::Options engine;
+  engine.paper_journal = file.directory / "main.jsonl";
+  std::promise<void> entered, release;
+  const auto entered_future = entered.get_future();
+  const auto released = release.get_future().share();
+  std::atomic<bool> hold{true};
+  server::ReplayHost::Options options{file.directory, engine, false};
+  options.verification_progress = [&](std::uint64_t, std::uint64_t) {
+    if (hold.exchange(false)) { entered.set_value(); released.wait(); }
+  };
+  std::string id, route;
+  json receipt;
+  {
+    server::ReplayHost host(options);
+    const auto started = replay_call(host, "POST", "/api/replay", {{"file", "session.oprec"}, {"speed", 0}, {"paused", true}});
+    ASSERT_EQ(started.status, 201) << started.body;
+    id = json::parse(started.body).at("replay").at("id").get<std::string>();
+    route = "/api/replay/history/" + id + "/verify";
+    EXPECT_EQ(replay_call(host, "POST", route).status, 409);
+    ASSERT_EQ(replay_call(host, "PUT", "/api/replay", {{"paused", false}}).status, 200);
+    ASSERT_TRUE(test::recording_eventually([&] { return json::parse(host.tick()).at("replay").at("finished").get<bool>(); }));
+    EXPECT_EQ(json::parse(replay_call(host, "GET", route).body).at("status"), "idle");
+    EXPECT_EQ(replay_call(host, "GET", route + "?format=receipt").status, 409);
+    const auto accepted = replay_call(host, "POST", route);
+    const auto waiting = entered_future.wait_for(5min);
+    if (waiting != std::future_status::ready) { release.set_value(); }
+    ASSERT_EQ(waiting, std::future_status::ready);
+    EXPECT_EQ(accepted.status, 202) << accepted.body;
+    EXPECT_EQ(json::parse(accepted.body).at("status"), "running");
+    const auto refused = replay_call(host, "POST", route);
+    EXPECT_EQ(refused.status, 409);
+    EXPECT_EQ(json::parse(refused.body).at("error").at("code"), "VERIFICATION_RUNNING");
+    EXPECT_EQ(replay_call(host, "DELETE", "/api/replay/history/" + id).status, 409);
+    EXPECT_EQ(json::parse(replay_call(host, "GET", "/api/replay/history").body).at("history").at(0).at("verification").at("status"), "running");
+    const auto other = replay_call(host, "POST", "/api/replay", {{"file", "session.oprec"}, {"speed", 0}, {"paused", true}});
+    EXPECT_EQ(other.status, 201) << other.body;
+    EXPECT_TRUE(test::recording_eventually([&] { return !json::parse(host.tick()).at("replay").at("fast_forwarding").get<bool>(); }));
+    const auto before = json::parse(host.tick()).at("replay");
+    release.set_value();
+    ASSERT_TRUE(test::recording_eventually([&] { return json::parse(replay_call(host, "GET", route).body).at("status") != "running"; }));
+    const auto result = json::parse(replay_call(host, "GET", route).body);
+    EXPECT_EQ(result.at("status"), "passed") << result;
+    EXPECT_EQ(json::parse(host.tick()).at("replay"), before);
+    const auto download = replay_call(host, "GET", route + "?format=receipt");
+    EXPECT_EQ(download.status, 200);
+    EXPECT_FALSE(download.download.empty());
+    receipt = json::parse(download.body);
+    EXPECT_EQ(receipt.at("run").at("id"), id);
+    EXPECT_EQ(receipt.at("run").at("inputs").at(0).at("kind"), "recording");
+    EXPECT_TRUE(receipt.at("run").at("inputs").at(0).contains("sha256"));
+    EXPECT_EQ(receipt.dump().find(file.directory.string()), std::string::npos);
+    EXPECT_FALSE(receipt.at("build").get<std::string>().empty());
+    EXPECT_TRUE(receipt.at("equity").is_string());
+    EXPECT_TRUE(receipt.at("finished_at").is_string());
+  }
+  server::ReplayHost restarted({file.directory, engine, false});
+  EXPECT_EQ(json::parse(replay_call(restarted, "GET", route).body), receipt);
+  const auto path = file.directory / "replays" / (id + ".jsonl");
+  const auto modified = std::filesystem::last_write_time(path);
+  std::filesystem::last_write_time(path, modified + 1s);
+  EXPECT_EQ(json::parse(replay_call(restarted, "GET", route).body).at("status"), "idle");
+  EXPECT_EQ(replay_call(restarted, "GET", route + "?format=receipt").status, 409);
+  std::filesystem::last_write_time(path, modified);
+  { std::ofstream out(path, std::ios::app); out << '{'; }
+  EXPECT_EQ(json::parse(replay_call(restarted, "GET", route).body).at("status"), "idle");
+  ASSERT_EQ(replay_call(restarted, "POST", route).status, 202);
+  ASSERT_TRUE(test::recording_eventually([&] { return json::parse(replay_call(restarted, "GET", route).body).at("status") != "running"; }));
+  const auto failed = json::parse(replay_call(restarted, "GET", route).body);
+  EXPECT_EQ(failed.at("status"), "failed");
+  EXPECT_NE(failed.at("message").get<std::string>().find("torn final line"), std::string::npos);
+  engine.write_mode = "disabled";
+  server::ReplayHost readonly({file.directory, engine, false});
+  EXPECT_EQ(replay_call(readonly, "POST", route).status, 403);
+  EXPECT_EQ(json::parse(replay_call(readonly, "GET", route).body), failed);
+}
+
+TEST(ReplayRun, StopCancelsAndJoinsBackgroundVerification) {
+  test::RecordingFile file;
+  write_stream(file.path, true);
+  server::Engine::Options engine;
+  engine.paper_journal = file.directory / "main.jsonl";
+  std::promise<void> entered, release;
+  const auto ready = entered.get_future();
+  const auto released = release.get_future().share();
+  server::ReplayHost::Options options{file.directory, engine, false};
+  options.verification_progress = [&](std::uint64_t, std::uint64_t) { entered.set_value(); released.wait(); };
+  server::ReplayHost host(options);
+  const auto started = replay_call(host, "POST", "/api/replay", {{"file", "session.oprec"}, {"speed", 0}});
+  ASSERT_EQ(started.status, 201);
+  const auto id = json::parse(started.body).at("replay").at("id").get<std::string>();
+  const auto route = "/api/replay/history/" + id + "/verify";
+  ASSERT_TRUE(test::recording_eventually([&] { return json::parse(host.tick()).at("replay").at("finished").get<bool>(); }));
+  ASSERT_EQ(replay_call(host, "POST", route).status, 202);
+  const auto waiting = ready.wait_for(5min);
+  if (waiting != std::future_status::ready) { release.set_value(); }
+  ASSERT_EQ(waiting, std::future_status::ready);
+  auto stopping = std::async(std::launch::async, [&] { host.stop(); });
+  EXPECT_EQ(stopping.wait_for(20ms), std::future_status::timeout);
+  release.set_value();
+  stopping.get();
+  const auto status = json::parse(replay_call(host, "GET", route).body);
+  EXPECT_EQ(status.at("status"), "failed");
+  EXPECT_NE(status.at("message").get<std::string>().find("cancelled"), std::string::npos);
 }
 
 TEST(ReplayRun, HistoryWaitsForTheStoppingJournalsFinalSync) {

@@ -1,4 +1,4 @@
-import type { RunJournal } from "./types"
+import type { RunJournal, RunVerification } from "./types"
 import type { Num, PriceRange } from "./types"
 
 /** Exact decimal dollars, including request bodies. Responses keep 2–6 decimals; round only for display. */
@@ -268,6 +268,7 @@ export interface RiskWarning {
   limit: number | null
 }
 export interface Account {
+  verification?: RunVerification
   journal?: RunJournal
   journal_found?: RunJournal
   torn?: boolean

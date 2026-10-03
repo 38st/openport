@@ -3015,8 +3015,8 @@
       },
       "delete": {
         "summary": "DELETE /api/replay/history/{run_id}",
-        "description": "Requires admin. Removes the journal and its sidecars, even when the journal no longer verifies. An unknown id returns 404 NOT_FOUND; a running run, including one another openportd writes, 409 REPLAY_RUNNING.",
-        "x-scope": "admin",
+        "description": "Requires replay or admin. Removes the journal and its sidecars, even when the journal no longer verifies. An unknown id returns 404 NOT_FOUND; a running run, including one another openportd writes, 409 REPLAY_RUNNING. A verification in progress returns 409 VERIFICATION_RUNNING.",
+        "x-scope": "replay",
         "responses": {
           "200": {
             "description": "Success",
@@ -4435,6 +4435,74 @@
                 }
               }
             }
+          },
+          "default": {
+            "$ref": "#/components/responses/Error"
+          }
+        },
+        "x-scope": "read"
+      }
+    },
+    "/api/replay/history/{run_id}/verify": {
+      "parameters": [
+        {
+          "name": "run_id",
+          "in": "path",
+          "required": true,
+          "schema": {
+            "type": "string"
+          }
+        }
+      ],
+      "get": {
+        "summary": "Read saved run verification or download its JSON receipt",
+        "x-scope": "read",
+        "parameters": [
+          {
+            "name": "format",
+            "in": "query",
+            "schema": {
+              "type": "string",
+              "enum": [
+                "receipt"
+              ]
+            }
+          }
+        ],
+        "description": "Returns idle, running, passed or failed. Changed journal size or modification time invalidates the result. format=receipt downloads a terminal result, or returns 409 VERIFICATION_UNAVAILABLE. No absolute paths are exposed.",
+        "responses": {
+          "200": {
+            "description": "Verification state; terminal results are also the receipt",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/RunVerification"
+                }
+              }
+            }
+          },
+          "default": {
+            "$ref": "#/components/responses/Error"
+          }
+        }
+      },
+      "post": {
+        "summary": "Verify a finished run in the background",
+        "x-scope": "replay",
+        "description": "Requires replay or admin scope and enabled writes. Uses an isolated calendar and no provider connection. Returns 202 running, 409 VERIFICATION_RUNNING when another verification runs, 409 REPLAY_RUNNING for active playback, or 403 WRITE_DISABLED. A stopped or interrupted saved run verifies its recorded prefix. The latest result persists in the metadata sidecar.",
+        "responses": {
+          "202": {
+            "description": "Verification state; terminal results are also the receipt",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/RunVerification"
+                }
+              }
+            }
+          },
+          "default": {
+            "$ref": "#/components/responses/Error"
           }
         }
       }
@@ -6681,6 +6749,9 @@
           },
           "integrity_message": {
             "type": "string"
+          },
+          "verification": {
+            "$ref": "#/components/schemas/RunVerification"
           }
         },
         "required": [
@@ -9593,6 +9664,9 @@
           },
           "integrity_message": {
             "type": "string"
+          },
+          "verification": {
+            "$ref": "#/components/schemas/RunVerification"
           }
         },
         "required": [
@@ -19041,6 +19115,169 @@
           "transactions",
           "head",
           "bytes"
+        ]
+      },
+      "RunInput": {
+        "type": "object",
+        "properties": {
+          "kind": {
+            "anyOf": [
+              {
+                "type": "string",
+                "const": "scenario"
+              },
+              {
+                "type": "string",
+                "const": "recording"
+              }
+            ]
+          },
+          "version": {
+            "type": "integer"
+          },
+          "sha256": {
+            "type": "string"
+          },
+          "date": {
+            "type": "string"
+          },
+          "started": {
+            "type": "integer"
+          },
+          "id": {
+            "type": "string"
+          },
+          "name": {
+            "type": "string"
+          },
+          "size": {
+            "type": "integer"
+          },
+          "builtin": {
+            "type": "boolean"
+          },
+          "generator": {
+            "type": "integer"
+          },
+          "revision": {
+            "type": "integer"
+          },
+          "seed": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "kind",
+          "version",
+          "sha256",
+          "date",
+          "started"
+        ]
+      },
+      "VerificationRun": {
+        "type": "object",
+        "properties": {
+          "id": {
+            "type": "string"
+          },
+          "file": {
+            "type": "string"
+          },
+          "inputs": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/RunInput"
+            }
+          },
+          "plan": {
+            "type": "string"
+          },
+          "recorded_journal": {
+            "$ref": "#/components/schemas/RunJournal"
+          }
+        },
+        "required": [
+          "id",
+          "file",
+          "inputs",
+          "plan"
+        ]
+      },
+      "RunVerification": {
+        "type": "object",
+        "properties": {
+          "status": {
+            "anyOf": [
+              {
+                "type": "string",
+                "const": "idle"
+              },
+              {
+                "type": "string",
+                "const": "running"
+              },
+              {
+                "type": "string",
+                "const": "passed"
+              },
+              {
+                "type": "string",
+                "const": "failed"
+              }
+            ]
+          },
+          "message": {
+            "type": "string"
+          },
+          "progress": {
+            "type": "number"
+          },
+          "transactions": {
+            "type": "integer"
+          },
+          "equity": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "head": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "build": {
+            "type": "string"
+          },
+          "time": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "finished_at": {
+            "type": "string"
+          },
+          "run": {
+            "$ref": "#/components/schemas/VerificationRun"
+          }
+        },
+        "required": [
+          "status",
+          "message"
         ]
       }
     }

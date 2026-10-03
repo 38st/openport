@@ -9,7 +9,7 @@ from urllib.parse import quote, urlencode, urlsplit
 from urllib.request import Request, build_opener, HTTPRedirectHandler
 
 from .types import (JSON, Account, Chain, Fills, OrderResult, Orders, Portfolio,
-                    ReplayListing, ReplayResult, Status, Summary, Surface, Trades, Settlements,
+                    ReplayListing, ReplayResult, RunVerification, Status, Summary, Surface, Trades, Settlements,
                     Exposure, Volatility, Candles, Risk, OrderPreview, SubmitResult,
                     Plans, Accounts, EquityHistory, CancelAllResult, FlattenResult,
                     WhatIfResult, FlattenPreview, StockPreview, RiskProfile, Probability)
@@ -356,6 +356,15 @@ class Client:
 
     def stop_replay(self) -> ReplayResult:
         return self._request("DELETE", "/replay", control=True)
+
+    def verify_replay(self, run_id: str) -> RunVerification:
+        """Start background verification of a finished run (replay write scope)."""
+        return self._request("POST", "/replay/history/" + quote(run_id, safe="") + "/verify", {}, control=True)
+
+    def replay_verification(self, run_id: str, *, receipt: bool = False) -> RunVerification:
+        """Read verification state, or its shareable final receipt."""
+        return self._request("GET", "/replay/history/" + quote(run_id, safe="") + "/verify",
+                             params={"format": "receipt"} if receipt else None, control=True)
 
     def delete_replay(self, run_id: str) -> JSON:
         return self._request("DELETE", "/replay/history/" + quote(run_id, safe=""), control=True)

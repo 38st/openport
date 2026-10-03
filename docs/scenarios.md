@@ -357,6 +357,15 @@ and simulated/recording labels. The account switcher also lists them. Their rout
 are `/api/replay/history/ID/account`, `/account/equity`, `/portfolio`, `/trades` and
 `/fills`; they do not become live accounts. The equity history is read from the
 `ID.jsonl.equity.csv` beside the journal and never rewritten.
+The terminal offers **Verify** on finished runs. POST
+`/api/replay/history/ID/verify` starts a background verification; GET reads its
+`idle/running/passed/failed` state and GET `?format=receipt` downloads the result.
+History includes the latest `verification`, persisted across restarts and invalidated
+if the journal's size or modification time changes. A second verification returns
+409 `VERIFICATION_RUNNING`; an active replay cannot be verified. Verification uses
+replay write scope, reads use read scope, and disabled writes refuse starts.
+See [run verification](runtime.md#verifying-a-run) for receipt fields and limits.
+
 History listings and account reads compare the saved final journal head/count/bytes
 with the current journal. `torn` and `bytes_cut` identify an incomplete final line;
 `truncated`/`mismatch` and `integrity_message` identify missing or changed records.

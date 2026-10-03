@@ -45,6 +45,7 @@ class ReplayHost {
     std::filesystem::path scenario_dir = {};   ///< User additions and overrides.
     /// Immutable live account publications, including main and archived accounts.
     std::function<std::shared_ptr<const TradingView>(std::string_view)> settings_source = {};
+    std::function<void(std::uint64_t, std::uint64_t)> verification_progress = {};  ///< Optional worker progress observer.
   };
 
   explicit ReplayHost(Options options);
@@ -97,6 +98,7 @@ class ReplayHost {
   std::deque<Job> jobs_;  // jobs_mutex_
   bool closing_ = false;  // jobs_mutex_
   std::thread worker_;
+  std::jthread verifier_;  // launches under control_mutex_; never uses the live engine
 };
 
 }  // namespace openport::server
