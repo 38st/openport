@@ -156,7 +156,7 @@ TEST_F(PaperEngine, InsideFillRulesAndWalkingOrdersRoundTrip) {
   for (const auto& value : {json(-1), json(101), json(1.5)}) {
     rules["inside_fill_percent"] = value;
     const auto bad = write(*engine, "POST", "/api/account/reset", {{"reason", "bad"}, {"initial_cash", "100000.00"}, {"rules", rules}});
-    expect_error(bad, value.is_number_integer() ? 422 : 400, value.is_number_integer() ? "INVALID_RULES" : "INVALID_REQUEST");
+    expect_error(bad, 400, value.is_number_integer() ? "INVALID_RULES" : "INVALID_REQUEST");
   }
   const auto created = write(*engine, "POST", "/api/accounts", {{"name", "Inside"}, {"plan", "practice"}, {"fill_model", "midpoint"}});
   ASSERT_EQ(created.status, 201) << created.body;
