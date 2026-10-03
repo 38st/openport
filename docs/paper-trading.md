@@ -1290,10 +1290,16 @@ shorten it. A later stop restarts it, and a longer cooldown setting extends one 
 working under all four reasons. The kill-switch reset cannot bypass an active guardrail.
 
 Cooldown starts after any trader's triggered closing stop fills: a standalone stop or
-stop-limit with an option or underlying trigger, a trailing stop, the stop side of an
-OCO pair, or a bracket stop-loss. It does not require a realised loss; `cooldown_loss`
-adds other closing fills whose realised loss before fees strictly exceeds the threshold.
-Profit-target limits alone do not start a cooldown.
+stop-limit with an option, underlying or combo trigger, a trailing stop, the stop side
+of an OCO pair, or a bracket stop-loss. A standalone price trigger must watch an adverse
+move: an option price falling for a closing sell or rising for a closing buy. Underlying
+triggers use the held option's direction: long calls and short puts lose when the
+underlying falls; long puts and short calls lose when it rises. Underlying triggers on
+combos use the legs' net delta; combo-price triggers use the signed closing debit, where
+a rise is adverse. Trailing stops and bracket stop-losses always count as stops.
+It does not require a realised loss; `cooldown_loss` adds other closing fills whose
+realised loss before fees strictly exceeds the threshold. Profit-taking triggered
+closes and take-profit exits do not start a cooldown unless that loss threshold is met.
 
 Guardrails are tighten-only within the day on every account, including practice.
 Enabling a rule, raising a soft floor, lowering a trade/profit/loss threshold or

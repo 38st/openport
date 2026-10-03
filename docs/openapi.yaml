@@ -14625,7 +14625,7 @@
           },
           "cooldown_minutes": {
             "type": "number",
-            "description": "Market minutes of cooldown after a triggered closing stop fills, including standalone, trailing, OCO and bracket stops. Profit targets alone do not start it."
+            "description": "Market minutes of cooldown after a triggered closing stop fills. Standalone option and combo price triggers must move adversely for the closing side; underlying triggers follow the held option's call/put direction or the held combo's net delta. Trailing stops and bracket stop-losses always count. Profit-taking triggers and take-profit exits do not start it unless cooldown_loss is exceeded."
           },
           "profit_lock": {
             "$ref": "#/components/schemas/Money"
@@ -22233,7 +22233,7 @@
           },
           "cooldown_minutes": {
             "type": "number",
-            "description": "Market minutes of cooldown after a triggered closing stop fills, including standalone, trailing, OCO and bracket stops. Profit targets alone do not start it."
+            "description": "Market minutes of cooldown after a triggered closing stop fills. Standalone option and combo price triggers must move adversely for the closing side; underlying triggers follow the held option's call/put direction or the held combo's net delta. Trailing stops and bracket stop-losses always count. Profit-taking triggers and take-profit exits do not start it unless cooldown_loss is exceeded."
           },
           "profit_lock": {
             "$ref": "#/components/schemas/Money"

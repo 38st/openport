@@ -1020,6 +1020,7 @@ export interface Guardrails {
   /** An order counts once, however many partial fills it takes. */
   max_opening_trades: number
   cooldown_loss: Money
+  /** Market minutes after an adverse-direction closing trigger, trailing stop or bracket stop-loss fills. */
   cooldown_minutes: number
   profit_lock: Money
 }

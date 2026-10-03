@@ -784,14 +784,21 @@ cannot contain underlying overrides, so dropping redundant entries changes none
 of their journal bytes. New runs still record driver 6, and interrupted driver-6
 runs remain resumable. Existing journals recover both active and pending overrides.
 
-F34 guardrail fixes retain the replay driver and recover existing journals, including
-stored 100-percent floors. Recorded inputs can produce different bytes when an
-account resets with opening-trade progress or a discipline latch, a standalone closing stop starts cooldown,
-an opening order fills in parts (its first opening counts once), or a buy-only put
-exercise would sell shares short. Partial opening orders record an optional counted
-flag, and a partial order reaching the trade limit records its completion exemption;
-both fields are omitted at their defaults. Exact re-verification of affected inputs
-requires the original build.
+The guardrail changes of this build retain the replay driver and recover existing
+journals, including stored 100-percent floors. Recorded inputs can produce different
+bytes when an account resets with opening-trade progress or a discipline latch, a
+standalone closing stop starts cooldown, an opening order fills in parts (its first
+opening counts once), or a buy-only put exercise would sell shares short. Partial
+opening orders record an optional counted flag, and a partial order reaching the
+trade limit records its completion exemption; both fields are omitted at their defaults.
+Exact re-verification of affected inputs requires the original build.
+
+Standalone price-triggered closes start cooldowns only when their trigger direction
+is adverse to the position being closed, including the held option's call/put direction
+for underlying triggers. Trailing stops and bracket stop-losses still count. Recorded
+profit-taking triggers may therefore produce different journal bytes from builds that
+treated every price-triggered close as a stop. Journal recovery and the replay driver
+are unchanged; exact re-verification of these inputs requires the original build.
 
 Verification currently compares exact hashes on the same build/platform. Math-library
 changes can alter analytic floating-point fields; see the platform qualification in
