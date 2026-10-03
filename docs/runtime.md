@@ -1106,3 +1106,12 @@ channel can delay others on the single worker, but cannot block trading. Shutdow
 cancels active I/O; system DNS resolution can still wait for the OS. No live provider
 send was exercised in the offline test environment. Native SMTP is not included;
 use a generic webhook connected to a webhook-to-email service for email alerts.
+
+## Paper fee schedules
+
+`--paper-fee` remains the flat per-contract default for new accounts. Create/reset
+can override it per attempt with `fee_model: "itemized"` or custom `rules.fees`;
+`fee_model: "flat"` selects the server’s flat fee again. Recovery uses the recorded
+schedule and preserves commission caps across partial fills and restarts. New
+journal fields are optional; accounts without a schedule keep their existing
+journal bytes. See [fees](paper-trading.md#fees) for amounts and API examples.

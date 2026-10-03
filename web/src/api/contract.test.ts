@@ -4,7 +4,7 @@ import tradingTypes from "./trading-types.ts?raw"
 import { describe, expect, it } from "vitest"
 
 // openapi.yaml uses JSON syntax, a YAML subset; no YAML dependency is needed.
-interface Schema { $ref?: string; type?: string; const?: string; anyOf?: Schema[]; items?: Schema; properties?: Record<string, Schema>; required?: string[] }
+interface Schema { $ref?: string; type?: string; const?: string; anyOf?: Schema[]; items?: Schema; properties?: Record<string, Schema>; required?: string[]; additionalProperties?: Schema | boolean }
 const spec = JSON.parse(specText) as { components: { schemas: Record<string, Schema> } }
 const source = [marketTypes, tradingTypes].join("\n")
   .replace(/\/\*[\s\S]*?\*\/|\/\/[^\n]*/g, "")
@@ -13,6 +13,7 @@ function wireType(schema: Schema): string {
   if (schema.$ref) return schema.$ref.split("/").at(-1)!
   if (schema.anyOf) return normalize(schema.anyOf.map(wireType).join(" | "))
   if (schema.items) return `${wireType(schema.items)}[]`
+  if (schema.type === "object" && typeof schema.additionalProperties === "object") return `Record<string, ${wireType(schema.additionalProperties)}>`
   if (schema.const !== undefined) return JSON.stringify(schema.const)
   return schema.type!
 }
@@ -30,7 +31,7 @@ describe("checked API core types", () => {
     expect(normalize(`${exits} | null`)).toBe(wireType(spec.components.schemas.Trade!.properties!.closed_by!))
   })
   it.each(["Candle", "OptionQuote", "ChainRow", "Fill", "OrdersResponse", "EquitySample", "NotificationChannel", "NotificationStatus",
-    "MarginLeg", "MarginPart", "MarginScan", "MarginUnderlying"])("%s matches OpenAPI fields, types and nullability", (name) => {
+    "MarginLeg", "MarginPart", "MarginScan", "MarginUnderlying", "FillFees", "FeeSchedule"])("%s matches OpenAPI fields, types and nullability", (name) => {
     const body = new RegExp(`export interface ${name} \\{([^}]+)\\}`).exec(source)?.[1]
     expect(body).toBeDefined()
     const fields = [...body!.matchAll(/(\w+)(\?)?\s*:\s*([^;\n}]+)/g)]

@@ -177,7 +177,9 @@ and impact up to 10 ticks per block. With impact, limits wait when the full pric
 or net exceeds them. This is simulated depth. Neither model knows queue position,
 hidden liquidity, or whether the market would have traded at all; a delayed feed
 still gives hindsight. Resting limits fill when a later quote crosses them, and every fill
-pays a per-contract fee. Positions are marked at the mid, and risk limits on dollar
+pays the flat per-contract fee or an itemized schedule with open/close rates,
+per-leg commission caps, clearing, regulatory, index and per-contract exercise/assignment
+fees. Positions are marked at the mid, and risk limits on dollar
 delta, vega, order size, price bands and daily loss are checked before and at every
 fill. A book the market has pushed over its delta or vega limit can still be closed or
 hedged: only orders that would add to the excess are refused. Every product trades in its regular session (09:30 to 16:15 ET for index
@@ -345,3 +347,5 @@ the simulation's limits.
 - [x] Marketable buy limits reserve their expected fill and armed buy stops their level;
       dividends paid in whole cents; an idle account's views as of the feed's time;
       working-order ladders that no longer slow every command
+- [x] F25: realistic itemized fee schedules, with per-leg caps, index fees, exercise
+      and assignment charges, fee previews and fill breakdowns

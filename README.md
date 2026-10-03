@@ -62,6 +62,8 @@ simulated on every page:
 - **Orders and strategies**: DAY/GTC, all-session EXTO/GTC_EXTO protection, timestamp
   GTD and limit flattening overnight and in curb. Up to four legs picked on the chain
   or built from templates, with probability of profit, OCO exits and rolls.
+  Optional [itemized fees](docs/paper-trading.md#fees) include open/close commission,
+  per-leg caps, clearing, regulatory, index and exercise charges.
 - **Journal**: a P&L calendar, reports by tag and hold time, and a review of every
   trade with its context, excursions and R-multiple.
 - **Replay and backtests**: trade any recorded or imported day again at up to 300×,

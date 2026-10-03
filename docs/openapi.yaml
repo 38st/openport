@@ -7751,6 +7751,10 @@
               }
             ]
           },
+          "fees": {
+            "$ref": "#/components/schemas/FeeSchedule",
+            "description": "Absent under the flat fee."
+          },
           "lock_at_start": {
             "type": "boolean",
             "default": false,
@@ -10056,6 +10060,14 @@
               },
               "reason": {
                 "type": "string"
+              },
+              "fee_model": {
+                "type": "string",
+                "enum": [
+                  "flat",
+                  "itemized"
+                ],
+                "description": "Overrides rules.fees for the new attempt. Flat uses the server fee; itemized uses an illustrative schedule: $1 open, $0 close, $10 commission cap per leg per order, $0.10 clearing, $0.02 regulatory, $0.60 on SPX and SPXW, $5 exercise per contract."
               }
             },
             "required": [
@@ -10082,7 +10094,7 @@
                     "$ref": "#/components/schemas/Money"
                   },
                   "rules": {
-                    "$ref": "#/components/schemas/AccountRules"
+                    "$ref": "#/components/schemas/AccountRulesInput"
                   }
                 },
                 "required": [
@@ -10987,6 +10999,17 @@
           },
           "time": {
             "type": "string"
+          },
+          "fees": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/FillFees"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "Null under flat fees; absent on older servers."
           }
         },
         "required": [
@@ -11001,7 +11024,8 @@
           "quote_time",
           "time",
           "actor",
-          "quote"
+          "quote",
+          "fees"
         ]
       },
       "FillQuote": {
@@ -12184,6 +12208,14 @@
                 "minLength": 1,
                 "maxLength": 64,
                 "description": "Display name: 1 to 64 characters (Unicode code points), none of them a control character."
+              },
+              "fee_model": {
+                "type": "string",
+                "enum": [
+                  "flat",
+                  "itemized"
+                ],
+                "description": "Overrides rules.fees for the new attempt. Flat uses the server fee; itemized uses an illustrative schedule: $1 open, $0 close, $10 commission cap per leg per order, $0.10 clearing, $0.02 regulatory, $0.60 on SPX and SPXW, $5 exercise per contract."
               }
             },
             "required": [
@@ -12210,7 +12242,7 @@
                     "$ref": "#/components/schemas/Money"
                   },
                   "rules": {
-                    "$ref": "#/components/schemas/AccountRules"
+                    "$ref": "#/components/schemas/AccountRulesInput"
                   }
                 },
                 "required": [
@@ -13013,6 +13045,28 @@
             "const": true,
             "type": "boolean"
           },
+          "fees": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/FillFees"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "Itemized full remaining size fees; null under flat fees or without a projection."
+          },
+          "fee": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/Money"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "Fees for the full remaining size at the current position and remaining leg cap, including opening and closing contracts. Null without a projection."
+          },
           "warnings": {
             "type": "array",
             "items": {
@@ -13039,7 +13093,9 @@
           "execution",
           "warnings",
           "simulated",
-          "liquidity"
+          "liquidity",
+          "fee",
+          "fees"
         ]
       },
       "PreviewLiquidity": {
@@ -16266,6 +16322,258 @@
           "message"
         ]
       },
+      "FeeSchedule": {
+        "type": "object",
+        "description": "Optional replacement for the flat fee. Commission per opening or closing contract, capped per leg per order across partial fills (leg_cap zero means uncapped). Clearing, regulatory and root-specific index charges apply to every contract. Exercise, assignment and physical delivery cost exercise per contract; cash settlement is free. Every amount is $0 to $1,000.",
+        "properties": {
+          "open": {
+            "$ref": "#/components/schemas/Money"
+          },
+          "close": {
+            "$ref": "#/components/schemas/Money"
+          },
+          "leg_cap": {
+            "$ref": "#/components/schemas/Money"
+          },
+          "clearing": {
+            "$ref": "#/components/schemas/Money"
+          },
+          "regulatory": {
+            "$ref": "#/components/schemas/Money"
+          },
+          "exercise": {
+            "$ref": "#/components/schemas/Money"
+          },
+          "index": {
+            "type": "object",
+            "maxProperties": 16,
+            "propertyNames": {
+              "pattern": "^[A-Z0-9]{1,6}$"
+            },
+            "additionalProperties": {
+              "$ref": "#/components/schemas/Money"
+            },
+            "description": "Per-contract fee by option root, not underlying; SPX and SPXW are separate keys."
+          }
+        },
+        "required": [
+          "open",
+          "close",
+          "leg_cap",
+          "clearing",
+          "regulatory",
+          "index",
+          "exercise"
+        ],
+        "additionalProperties": false
+      },
+      "FeeScheduleInput": {
+        "type": "object",
+        "description": "Optional replacement for the flat fee. Commission per opening or closing contract, capped per leg per order across partial fills (leg_cap zero means uncapped). Clearing, regulatory and root-specific index charges apply to every contract. Exercise, assignment and physical delivery cost exercise per contract; cash settlement is free. Every amount is $0 to $1,000. Omitted amounts default to zero and an omitted index defaults to an empty map.",
+        "properties": {
+          "open": {
+            "$ref": "#/components/schemas/Money"
+          },
+          "close": {
+            "$ref": "#/components/schemas/Money"
+          },
+          "leg_cap": {
+            "$ref": "#/components/schemas/Money"
+          },
+          "clearing": {
+            "$ref": "#/components/schemas/Money"
+          },
+          "regulatory": {
+            "$ref": "#/components/schemas/Money"
+          },
+          "exercise": {
+            "$ref": "#/components/schemas/Money"
+          },
+          "index": {
+            "type": "object",
+            "maxProperties": 16,
+            "propertyNames": {
+              "pattern": "^[A-Z0-9]{1,6}$"
+            },
+            "additionalProperties": {
+              "$ref": "#/components/schemas/Money"
+            },
+            "description": "Per-contract fee by option root, not underlying; SPX and SPXW are separate keys."
+          }
+        },
+        "additionalProperties": false
+      },
+      "FillFees": {
+        "type": "object",
+        "description": "Itemized charges that sum exactly to fee.",
+        "properties": {
+          "commission": {
+            "$ref": "#/components/schemas/Money"
+          },
+          "clearing": {
+            "$ref": "#/components/schemas/Money"
+          },
+          "regulatory": {
+            "$ref": "#/components/schemas/Money"
+          },
+          "index": {
+            "$ref": "#/components/schemas/Money"
+          }
+        },
+        "required": [
+          "commission",
+          "clearing",
+          "regulatory",
+          "index"
+        ],
+        "additionalProperties": false
+      },
+      "AccountRulesInput": {
+        "type": "object",
+        "properties": {
+          "plan": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "phase": {
+            "anyOf": [
+              {
+                "const": "evaluation",
+                "type": "string"
+              },
+              {
+                "const": "funded",
+                "type": "string"
+              }
+            ]
+          },
+          "profit_target": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/Money"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "max_drawdown": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/Money"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "drawdown_mode": {
+            "anyOf": [
+              {
+                "const": "intraday",
+                "type": "string"
+              },
+              {
+                "const": "end_of_day",
+                "type": "string"
+              }
+            ]
+          },
+          "lock_balance": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/Money"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "buy_only": {
+            "type": "boolean"
+          },
+          "defined_risk": {
+            "type": "boolean"
+          },
+          "fill_latency_ms": {
+            "type": "integer",
+            "minimum": 0,
+            "maximum": 60000,
+            "default": 0,
+            "description": "Wait for a valid quote at or after acceptance (trigger time for stops) plus this market-time delay."
+          },
+          "impact_ticks": {
+            "type": "integer",
+            "minimum": 0,
+            "maximum": 10,
+            "default": 0,
+            "description": "Simulated adverse ticks per extra displayed-size block; zero retains displayed-size caps."
+          },
+          "slippage_ticks": {
+            "type": "integer",
+            "minimum": 0,
+            "maximum": 10,
+            "default": 0,
+            "description": "Adverse ticks per option fill."
+          },
+          "margin": {
+            "anyOf": [
+              {
+                "const": "strategy",
+                "type": "string"
+              },
+              {
+                "const": "portfolio",
+                "type": "string"
+              }
+            ]
+          },
+          "buying_power": {
+            "type": "boolean"
+          },
+          "expiry_cutoff_seconds": {
+            "type": "integer",
+            "minimum": 0,
+            "maximum": 86399
+          },
+          "payouts": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/PayoutRules"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "fees": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/FeeScheduleInput"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "Omit or set null for the flat fee."
+          }
+        },
+        "required": [
+          "profit_target",
+          "max_drawdown",
+          "drawdown_mode",
+          "buy_only",
+          "buying_power",
+          "expiry_cutoff_seconds"
+        ],
+        "additionalProperties": false
+      },
       "Lifetime": {
         "type": "object",
         "description": "Every round trip in a holding this attempt, the open one included.",
@@ -16575,7 +16883,6 @@
         "required": [
           "account_version",
           "groups"
-
         ]
       },
       "FlattenRequest": {

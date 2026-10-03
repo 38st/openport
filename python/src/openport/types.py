@@ -60,6 +60,23 @@ class Order(TypedDict):
     status: str
 
 
+class FeeSchedule(TypedDict):
+    open: str
+    close: str
+    leg_cap: str
+    clearing: str
+    regulatory: str
+    index: dict[str, str]
+    exercise: str
+
+
+class FillFees(TypedDict):
+    commission: str
+    clearing: str
+    regulatory: str
+    index: str
+
+
 class Fill(TypedDict):
     id: str
     order_id: str
@@ -68,6 +85,7 @@ class Fill(TypedDict):
     quantity: int
     price: str
     fee: str
+    fees: FillFees | None
     time: str
     quote: JSON | None
 
@@ -101,10 +119,29 @@ class Portfolio(TypedDict):
     positions: list[JSON]
 
 
+class AccountRules(TypedDict, total=False):
+    plan: str | None
+    phase: str
+    profit_target: str | None
+    max_drawdown: str | None
+    drawdown_mode: str
+    lock_balance: str | None
+    buy_only: bool
+    defined_risk: bool
+    slippage_ticks: int
+    fill_latency_ms: int
+    impact_ticks: int
+    margin: str
+    buying_power: bool
+    expiry_cutoff_seconds: int
+    payouts: JSON | None
+    fees: FeeSchedule
+
+
 class Account(TypedDict):
     account_version: str
     time: str
-    rules: JSON
+    rules: AccountRules
     evaluation: JSON
 
 
@@ -171,6 +208,8 @@ class OrderPreview(TypedDict):
     execution: JSON
     liquidity: list[JSON]
     warnings: list[JSON]
+    fee: str | None
+    fees: FillFees | None
     simulated: bool
 
 
