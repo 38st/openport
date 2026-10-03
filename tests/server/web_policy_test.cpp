@@ -8,6 +8,7 @@
 #include <boost/beast/http.hpp>
 #include <boost/beast/websocket.hpp>
 #include <fstream>
+#include <nlohmann/json.hpp>
 #include <condition_variable>
 #include <future>
 #include <thread>
@@ -428,6 +429,103 @@ TEST(WebPolicy, NamedTokenFilesAreStrictAndDiagnosticsHideSecrets) {
       EXPECT_EQ(std::string(error.what()).find("secret"), std::string::npos);
     }
   }
+}
+
+TEST_F(StaticFiles, TokenReloadKeepsGoodCredentialsAndAtomicallyRevokesRemovedOnes) {
+  const auto path = parent / "tokens";
+  const auto write = [&](std::string_view text) { std::ofstream(path) << text; };
+  write("owner admin owner-secret\nscript read,trade:main script-secret\n");
+  const auto file = std::make_shared<server::TokenFile>(path, "legacy-secret");
+  server::WritePolicy policy{"0.0.0.0", "legacy-secret", {}, {}, true, {}, {}, file};
+  const auto check = [&](const char* secret) {
+    server::ApiRequest request{"POST", "/api/orders"};
+    request.content_type = "application/json";
+    request.authorization = std::string("Bearer ") + secret;
+    return server::check_api_write(request, policy);
+  };
+  EXPECT_FALSE(check("script-secret"));
+  const auto initial = file->snapshot();
+  write("owner admin owner-secret\nscript invalid leaked-secret\n");
+  const auto bad = file->reload();
+  EXPECT_EQ(bad.status, 400);
+  EXPECT_NE(bad.body.find("line 2"), std::string::npos);
+  EXPECT_EQ(bad.body.find("leaked-secret"), std::string::npos);
+  EXPECT_EQ(file->snapshot(), initial);
+  EXPECT_FALSE(check("script-secret"));
+  fs::remove(path);
+  EXPECT_EQ(file->reload().status, 400);
+  EXPECT_FALSE(check("script-secret"));
+  write("owner admin owner-secret\n");
+  EXPECT_TRUE(check("script-secret"));  // stat detects replacement before this request
+  EXPECT_FALSE(check("owner-secret"));
+  EXPECT_FALSE(file->valid(initial->tokens.back()));
+  EXPECT_EQ(file->reload().body.find("owner-secret"), std::string::npos);
+  write("collision admin legacy-secret\n");
+  EXPECT_EQ(file->reload().status, 400);
+  EXPECT_FALSE(check("owner-secret"));
+  write("# revoke every named token\n");
+  EXPECT_EQ(file->reload().status, 200);
+  EXPECT_TRUE(check("owner-secret"));
+  EXPECT_FALSE(check("legacy-secret"));
+  EXPECT_EQ(server::write_mode(policy), "token");
+  EXPECT_TRUE(file->snapshot()->tokens.empty());
+  write("new read replacement-secret\n");
+  EXPECT_EQ(file->snapshot()->tokens.front().name, "new");
+}
+
+TEST_F(StaticFiles, TokenReloadRouteChecksAdminAndRevokesExistingWebSockets) {
+  const auto path = parent / "tokens";
+  std::ofstream(path) << "owner admin owner-secret\nreader read reader-secret\n";
+  const auto file = std::make_shared<server::TokenFile>(path);
+  server::WebServer web("127.0.0.1", 0, {}, [](const auto&) { return server::ApiResponse{200, "{}"}; },
+      {}, "legacy-secret", {}, {}, true, {}, {}, file);
+  web.start(2);
+  asio::io_context io;
+  const tcp::endpoint endpoint(asio::ip::make_address("127.0.0.1"), web.port());
+  const auto call = [&](http::verb method, const std::string& target, const std::string& secret, std::string body = "{}") {
+    tcp::socket socket(io); socket.connect(endpoint);
+    http::request<http::string_body> request{method, target, 11};
+    request.set(http::field::host, "localhost");
+    request.set(http::field::authorization, "Bearer " + secret);
+    request.set(http::field::content_type, "application/json");
+    request.body() = std::move(body); request.prepare_payload();
+    http::write(socket, request);
+    beast::flat_buffer buffer; http::response<http::string_body> response;
+    http::read(socket, buffer, response);
+    return response;
+  };
+  EXPECT_EQ(call(http::verb::post, "/api/tokens/reload", "reader-secret").result_int(), 403U);
+  EXPECT_EQ(call(http::verb::post, "/api/tokens/reload", "owner-secret", R"({"bad":1})").result_int(), 400U);
+  const auto good = call(http::verb::post, "/api/tokens/reload", "owner-secret");
+  EXPECT_EQ(good.result_int(), 200U);
+  EXPECT_EQ(nlohmann::json::parse(good.body())["names"], (nlohmann::json{"owner", "reader"}));
+  EXPECT_EQ(good.body().find("secret"), std::string::npos);
+  const auto status = nlohmann::json::parse(call(http::verb::get, "/api/status", "owner-secret").body());
+  EXPECT_EQ(status["tokens"]["count"], 2);
+  EXPECT_FALSE(status["tokens"].contains("names"));
+  websocket::stream<tcp::socket> ws(io);
+  ws.next_layer().connect(endpoint);
+  ws.set_option(websocket::stream_base::decorator([](websocket::request_type& req) {
+    req.set(http::field::authorization, "Bearer reader-secret");
+  }));
+  ws.handshake("localhost", "/ws");
+  // A ping proves the server's accept handler has registered the socket in the hub.
+  ws.ping({});
+  web.broadcast("before");
+  beast::flat_buffer received;
+  ws.read(received);
+  EXPECT_EQ(beast::buffers_to_string(received.data()), "before");
+  std::ofstream(path) << "owner admin owner-secret\n";
+  EXPECT_EQ(call(http::verb::post, "/api/tokens/reload", "owner-secret").result_int(), 200U);
+  EXPECT_EQ(call(http::verb::get, "/api/status", "reader-secret").result_int(), 403U);
+  web.broadcast("must-not-arrive");
+  received.consume(received.size());
+  beast::error_code error;
+  ws.read(received, error);
+  EXPECT_TRUE(error);
+  EXPECT_EQ(received.size(), 0U);
+  EXPECT_EQ(call(http::verb::get, "/api/status", "legacy-secret").result_int(), 200U);
+  web.stop();
 }
 
 TEST(WebPolicy, NamedTokensEnforceEveryRouteFamilyAndAccount) {

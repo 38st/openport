@@ -2903,15 +2903,31 @@ when no credential can write (a non-loopback bind without tokens). A token sent 
 Named tokens come from `--token-file FILE`, one `NAME SCOPES SECRET` per line.
 Scopes are comma-separated. Blank lines are ignored and `#` starts a comment.
 Malformed lines, duplicate names, secrets or scopes, unknown scopes and reserved
-actor names fail startup. Diagnostics name the line, never its secret. The file is
-read only at startup; protect it and restart the server to rotate credentials.
+actor names fail startup. Diagnostics name the line, never its secret. The file reloads
+when its mtime/size changes (checked on authenticated requests and once per second),
+on `SIGHUP`, or with admin `POST /api/tokens/reload` and `{}`. The admin reply is
+`{names: [...], count, loaded_at}` and never includes secrets. Without a configured
+file the route returns 409 `TOKENS_UNCONFIGURED`. Invalid or unreadable replacements
+return 400 `TOKEN_FILE_INVALID` on explicit reload and log a safe diagnostic;
+the complete previous set remains active. A malformed line names only its line
+number. Replace the file atomically to avoid exposing intermediate contents.
+An empty file revokes every named token. Startup still requires a nonempty valid
+file. `--require-token` and write policy never become open because of a reload.
+
+Removing a token revokes its next authenticated request after the changed file is
+observed. Public reads remain public without `--require-token`. Existing sockets
+using removed tokens, changed secrets, names or scopes close before their next
+queued tick; an already in-flight message or accepted command may finish. Legacy
+write tokens and issued sandbox tokens are unaffected. A forced reload handles a
+replacement with unchanged mtime/size. Status reports `tokens: {loaded_at, count}`
+for the last successful load, without names. Protect the file as a credential.
 
 | Scope | Permission |
 | --- | --- |
 | `read` | Every API GET, CSV export and WebSocket ticks |
 | `trade:ACCOUNT` / `trade:*` | Orders and previews, cancels, flatten, exercise, stock closure, notes and sending or dismissing playbook stages on the named account / all live accounts |
 | `replay` | Start, control and stop replays; trade, reset, set limits/guardrails and operate the kill switch on their isolated accounts |
-| `admin` | Everything, including limits, guardrails, kill switch, resets, payouts, settlements, account creation/rename/archive/delete, playbook definitions and modes, and replay history deletion |
+| `admin` | Everything, including limits, guardrails, kill switch, resets, payouts, settlements, account creation/rename/archive/delete, playbook definitions and modes, replay history deletion and token reload |
 
 `POST /api/replay/account/reset`, `PUT /api/replay/risk/limits`,
 `PUT /api/replay/risk/guardrails` and `POST /api/replay/risk/kill` accept `replay`

@@ -97,6 +97,8 @@ class Stub:
         path = path.replace("/api/replay/history/run-1", "/api").replace("/api/replay", "/api")
         if path == "/api":
             path = "/api/account"
+        if path == "/api/tokens/reload":
+            return 200, {"names": ["operator"], "count": 1, "loaded_at": TIME}
         if path == "/api/status":
             return 200, self.status
         if "/underlyings/" in path:
@@ -138,7 +140,7 @@ class Stub:
         if path.endswith(".csv"):
             return 200, "account,account_version,provider,prices,new_york_date,id,order_id,actor,symbol\n"
         name = {"account": "Account", "portfolio": "Portfolio", "orders": "OrdersResponse", "fills": "FillsResponse",
-                "risk": "Risk", "profile": "RiskProfile", "trades": "TradesResponse", "plans": "PlansResponse", "accounts": "AccountsResponse",
+                "risk": "Risk", "limits": "Risk", "guardrails": "Risk", "profile": "RiskProfile", "trades": "TradesResponse", "plans": "PlansResponse", "accounts": "AccountsResponse",
                 "equity": "EquityHistory", "close": "ClosePositionsResponse", "cancel": "CancelAllResponse",
                 "alerts": "AlertsResponse"}.get(path.rsplit("/", 1)[-1])
         if name:

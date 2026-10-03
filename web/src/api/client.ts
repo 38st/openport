@@ -2,7 +2,7 @@ import type { BacktestListing, BacktestState, BacktestStart } from "./backtest-t
 import type { Playbook, PlaybooksResponse, PassOdds } from "./playbook-types"
 import type { StrategyTemplate, TemplateResult } from "../lib/strategy"
 import type { Volatility, VolatilitySeries } from "./types"
-import type { NotificationChannel, NotificationStatus } from "./types"
+import type { NotificationChannel, NotificationStatus, TokenReloadResponse } from "./types"
 import type { CandleInterval, Candles, Chain, ExposureMatrix, Probability, ReplayListing, ReplayState, Status, Summary, Surface, RunVerification } from "./types"
 import type { Account, AccountsResponse, UpdateAccountRequest, UpdateAccountResponse, DeleteAccountResponse, AlertDeleted, AlertRequest, AlertResponse, AlertsResponse, CancelAllResponse, ClosePositionsResponse, CreateAccountRequest, CreateAccountResponse, DayNote, EquityHistory, FillsResponse, FlattenPreview, FlattenPricing, GroupResponse, Guardrails, KillResponse, Limits, Money, NewOrder, OrderChange, OrderPreview, OrderResponse, OrdersResponse, PlansResponse, Portfolio, ResetRequest, Risk, RiskProfile, RiskProfileQuery, SettlementsResponse, SettlementResponse, Side, StockPreview, SubmitOrderResponse, TradeNote, TradeNoteResponse, TradesResponse, WhatIfResponse, WriteMode } from "./trading-types"
 import { activeAccount, MAIN_ACCOUNT } from "../lib/active-account"
@@ -191,6 +191,7 @@ export const api = {
     write<StockPreview>(scoped("/api/stocks/trade/preview"), "POST", mode, { symbol, side, shares }),
   closeStock: (symbol: string, shares: number | null, mode: WriteMode) =>
     write<Portfolio>(scoped("/api/stocks/close"), "POST", mode, shares == null ? { symbol } : { symbol, shares }),
+  reloadTokens: (mode: WriteMode) => write<TokenReloadResponse>("/api/tokens/reload", "POST", mode, {}),
   updateLimits: (expected_revision: string, limits: Limits, mode: WriteMode) => write<Risk>(scoped("/api/risk/limits"), "PUT", mode, { expected_revision, limits }),
   setKill: (action: "trip" | "reset", reason: string, mode: WriteMode) => write<KillResponse>(scoped("/api/risk/kill"), "POST", mode, { action, reason }),
   settle: (symbol: string, value: Money, mode: WriteMode) => write<SettlementResponse>(scoped("/api/settlements"), "POST", mode, { symbol, value }),

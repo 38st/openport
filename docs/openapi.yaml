@@ -4506,6 +4506,38 @@
           }
         }
       }
+    },
+    "/api/tokens/reload": {
+      "post": {
+        "summary": "Reload named tokens",
+        "description": "Admin; force a complete --token-file reload. Returns only names/count/loaded_at. Empty files revoke all named tokens. 409 TOKENS_UNCONFIGURED without a file; 400 TOKEN_FILE_INVALID retains the previous set (line diagnostics never include secrets). Automatic reload checks mtime/size on authenticated requests and once per second; SIGHUP forces reload. Revoked or changed file-token WebSockets close before their next queued tick; an in-flight write can finish. Legacy and sandbox tokens are unaffected.",
+        "x-scope": "admin",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "additionalProperties": false
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Success",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/TokenReloadResponse"
+                }
+              }
+            }
+          },
+          "default": {
+            "$ref": "#/components/responses/Error"
+          }
+        }
+      }
     }
   },
   "components": {
@@ -4513,7 +4545,7 @@
       "BearerToken": {
         "type": "http",
         "scheme": "bearer",
-        "description": "Legacy write token is admin. Named --token-file tokens grant read, trade:ACCOUNT, trade:*, replay or admin. --require-token requires read authorization for GET and WebSocket. Without it GET is public and ignores a token that matches nothing; loopback writes without a configured legacy token remain open unless --sandboxes is set. Writes always check the token they carry. Browser WebSocket credentials use a subprotocol; HTTP uses Authorization: Bearer SECRET."
+        "description": "Legacy write token is admin. Named --token-file tokens grant read, trade:ACCOUNT, trade:*, replay or admin. --require-token requires read authorization for GET and WebSocket. Without it GET is public and ignores a token that matches nothing; loopback writes without a configured legacy token remain open unless --sandboxes is set. Writes always check the token they carry. Browser WebSocket credentials use a subprotocol; HTTP uses Authorization: Bearer SECRET. Named tokens reload automatically on file mtime/size changes, on SIGHUP, or via POST /api/tokens/reload (admin). Invalid reloads keep the last good set. Replay scope also permits reset, limits, guardrails and kill on isolated replay mirrors."
       }
     },
     "parameters": {
@@ -5307,6 +5339,10 @@
               }
             },
             "description": "Present when visitor sandboxes are offered."
+          },
+          "tokens": {
+            "$ref": "#/components/schemas/TokenStatus",
+            "description": "Last successful named-token load, when --token-file is configured. No credentials or names."
           }
         },
         "required": [
@@ -8238,7 +8274,8 @@
             "type": "boolean"
           },
           "write": {
-            "$ref": "#/components/schemas/WriteMode"
+            "$ref": "#/components/schemas/WriteMode",
+            "description": "Write policy for this account; see WriteMode. This describes credential requirements, not the supplied token’s scopes."
           },
           "fee_per_contract": {
             "$ref": "#/components/schemas/Money"
@@ -19414,6 +19451,47 @@
         },
         "required": [
           "windows"
+        ]
+      },
+      "TokenStatus": {
+        "type": "object",
+        "properties": {
+          "loaded_at": {
+            "type": "string",
+            "format": "date-time"
+          },
+          "count": {
+            "type": "integer",
+            "minimum": 0
+          }
+        },
+        "required": [
+          "loaded_at",
+          "count"
+        ]
+      },
+      "TokenReloadResponse": {
+        "type": "object",
+        "properties": {
+          "loaded_at": {
+            "type": "string",
+            "format": "date-time"
+          },
+          "count": {
+            "type": "integer",
+            "minimum": 0
+          },
+          "names": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          }
+        },
+        "required": [
+          "loaded_at",
+          "count",
+          "names"
         ]
       }
     }

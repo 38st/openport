@@ -178,8 +178,21 @@ and fills. Older journal entries show `unknown`.
 Use `--token-file FILE` to give each script its own token. For example, a line
 `research read,trade:practice,replay SECRET` permits reads, trading the practice
 account and replay controls. Add `--require-token` to protect reads and loopback
-writes as well. See [Python setup and examples](../python/README.md).
+writes as well. Named credentials reload on file mtime/size changes, `SIGHUP`, or
+admin `POST /api/tokens/reload` (`{}`), which returns `names`, `count`, `loaded_at`
+and never secrets. Malformed replacements keep the last good set; an empty
+replacement revokes all named tokens. Revoked/changed file-token sockets close
+before their next queued tick; accepted commands and in-flight messages may
+finish. Legacy and sandbox tokens are unaffected. Status includes optional
+`tokens: {loaded_at, count}`. Python wraps reload with `Client.reload_tokens()`.
+See [Python setup and examples](../python/README.md).
 
 Replay starts also accept `copy_settings_from` (live account ID, including `main`).
 Replay risk replies expose `pending_requires_reset` when queued settings need an
 account reset because no later trading day occurs in the run.
+
+Status `trading.write` describes the server's write policy: `open` accepts writes
+without credentials (loopback with no legacy token, `--require-token` or sandboxes;
+named tokens alone leave it open), `token` requires a credential with the route's
+scope, and `disabled` means no credential can write on that non-loopback bind.
+A supplied token is always checked, even in `open` mode.

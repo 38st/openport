@@ -58,8 +58,12 @@ namespace {
 using namespace openport;
 
 std::atomic<bool> g_stop{false};
+std::atomic<bool> g_reload_tokens{false};
 
-void on_signal(int) { g_stop = true; }
+void on_signal(int signal) {
+  if (signal == SIGHUP) g_reload_tokens = true;
+  else g_stop = true;
+}
 
 struct Settings {
   md::ProviderConfig provider{"cboe", "", {}};
@@ -95,6 +99,7 @@ struct Settings {
   std::filesystem::path write_token_file;
   std::filesystem::path notify_config;
   std::vector<server::NamedToken> tokens;
+  std::filesystem::path token_file;
   bool require_token = false;
   server::Sandboxes::Options sandboxes;
   std::string client_ip_header;
@@ -428,6 +433,7 @@ int run(int argc, char** argv) {
       if (value.empty()) return usage("--notify-config requires a nonempty path");
       settings.notify_config = value;
     } else if (arg == "--token-file") {
+      settings.token_file = value;
       std::ifstream input(value);
       if (!input) return usage("Cannot read token file");
       settings.tokens = server::parse_token_file(std::string(std::istreambuf_iterator<char>(input), {}));
@@ -689,13 +695,14 @@ int run(int argc, char** argv) {
         options);
     dividends->start();
   }
+  const auto token_file = settings.token_file.empty() ? nullptr : std::make_shared<server::TokenFile>(settings.token_file, settings.write_token);
   server::WebServer web(
       settings.address, settings.port, settings.web_root,
       [&engine, &replays, &backtests](const server::ApiRequest& request, server::ApiCompletion complete) {
         if (backtests.handle(request, engine, complete)) return;
         if (replays.handle(request, complete)) return;
         server::handle_api_async(request, engine, std::move(complete));
-      }, settings.allowed_origins, settings.write_token, settings.allowed_hosts, settings.tokens, settings.require_token, engine_options.sandboxes, settings.client_ip_header);
+      }, settings.allowed_origins, settings.write_token, settings.allowed_hosts, settings.tokens, settings.require_token, engine_options.sandboxes, settings.client_ip_header, token_file);
   web.start(settings.threads);
 
   std::string symbols;
@@ -712,6 +719,7 @@ int run(int argc, char** argv) {
   }
   std::fflush(stdout);
 
+  std::signal(SIGHUP, on_signal);
   std::signal(SIGINT, on_signal);
   std::signal(SIGTERM, on_signal);
   std::string recording_error;
@@ -726,6 +734,8 @@ int run(int argc, char** argv) {
   };
   while (!g_stop) {
     std::this_thread::sleep_for(std::chrono::seconds(1));
+    if (token_file && g_reload_tokens.exchange(false)) (void)token_file->reload();
+    if (token_file) (void)token_file->snapshot();
     web.broadcast(server::tick_message(engine, {true, {}}));
     if (auto tick = replays.tick(); !tick.empty()) web.broadcast(tick);
     report(engine.recording_error(), recording_error);
@@ -815,6 +825,7 @@ int backtest_cli(int argc, char** argv) {
   const auto request = server::parse_backtest(body, read(catalogue),
       providers::load_scenarios(args.contains("--scenario-dir") ? std::filesystem::path(args.at("--scenario-dir")) : std::filesystem::path{}), base, false);
   const auto output = std::filesystem::absolute(args.at("--out"));
+  std::signal(SIGHUP, on_signal);
   std::signal(SIGINT, on_signal);
   std::signal(SIGTERM, on_signal);
   const auto report = server::run_backtest(request, output.string() + ".d", g_stop);
