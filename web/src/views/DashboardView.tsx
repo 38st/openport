@@ -7,7 +7,7 @@ import { LineChart, type Reference, type Series } from "../charts/LineChart"
 import { IntradayEquity } from "../components/IntradayEquity"
 import { BreachPanel } from "../components/BreachPanel"
 import { RiskWarnings } from "../components/RiskWarnings"
-import { PassOddsCard, StagedOrders } from "../components/Playbooks"
+import { AutoPlaybookIndicator, PassOddsCard, StagedOrders } from "../components/Playbooks"
 import { ResetDialog, planFacts } from "../components/ResetDialog"
 import { evaluationBadge } from "../components/Sidebar"
 import { TradingError } from "../components/TradingControls"
@@ -136,6 +136,7 @@ function Dashboard({ trading }: { trading: TradingStatus }) {
       )}
       {!e.marked && <p role="status" className="text-xs text-warn">Some positions have no mark yet; rules wait for fully marked equity.</p>}
       <RiskWarnings warnings={data.warnings} />
+      <AutoPlaybookIndicator />
       <StagedOrders />
 
       <IntradayEquity account={data} />
