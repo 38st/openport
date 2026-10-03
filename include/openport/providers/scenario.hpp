@@ -89,7 +89,8 @@ struct ScenarioWindow {
 /// Revision 2 also lists every series an earlier date listed until its last trade, at
 /// least as wide as then, and opens with each underlying's previous close. The contracts
 /// both list keep their identifiers, quotes and sizes. Revision 3 adds XSP, NDX/NDXP,
-/// RUT/RUTW and VIX/VIXW, their ticks and sessions. Runs record the revision; one
+/// RUT/RUTW and VIX/VIXW, their ticks and sessions, and stops AM quotes at their last
+/// regular close. Runs record the revision; one
 /// recorded without it regenerates revision 1.
 inline constexpr int kScenarioRevision = 3;
 /// The option contracts a scenario lists on `date`, in the order it defines them.

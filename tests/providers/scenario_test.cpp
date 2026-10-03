@@ -206,6 +206,7 @@ TEST(Scenarios, NewIndicesCarryClosesAndContractsAcrossSessionsWithEtfDividends)
   std::map<md::InstrumentId, md::OptionContract> initial, contracts;
   std::array<std::set<std::string>, 4> quoted;
   std::set<md::InstrumentId> carried;
+  std::map<md::InstrumentId, double> asks;
   std::map<std::string, double> closes, references, opening;
   while (const auto event = reader.next()) {
     std::size_t session = 0;
@@ -222,9 +223,17 @@ TEST(Scenarios, NewIndicesCarryClosesAndContractsAcrossSessionsWithEtfDividends)
       EXPECT_EQ(c->date, windows[0].date);
       references[c->symbol] = c->price;
     }
-    if (const auto* q = std::get_if<md::OptionQuote>(&event->event); q && q->ask > 0) {
-      quoted[session].insert(contracts.at(q->id).underlying);
-      if (session == 3) carried.insert(q->id);
+    if (const auto* q = std::get_if<md::OptionQuote>(&event->event)) {
+      asks[q->id] = q->ask;
+      if (q->ask > 0) quoted[session].insert(contracts.at(q->id).underlying);
+    }
+    if (const auto* snapshot = std::get_if<md::SnapshotComplete>(&event->event);
+        snapshot && snapshot->ts == windows[3].first) {
+      // Unchanged quotes need not repeat; the book must still hold every live series.
+      for (const auto& [id, contract] : initial) {
+        if (contract.underlying == snapshot->underlying && contract.last_trade_time() > snapshot->ts && asks[id] > 0)
+          carried.insert(id);
+      }
     }
   }
   const std::set<std::string> all(scenario.symbols.begin(), scenario.symbols.end());

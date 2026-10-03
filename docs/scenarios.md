@@ -101,6 +101,15 @@ product tick rules, sessions and VIX term structure. Runs recorded at revision 1
 or 2 regenerate their original events, including quote sizes and volume; new
 underlyings require revision 3. The JSON `generator` stays at version 1.
 
+AM series trade through the business day before settlement, stopping at its
+regular option close (16:15 ET, 13:15 on early closes). Revision 3 retires their
+quotes there, so the following curb and overnight sessions cannot quote them.
+They are absent from the settlement date's chain: SPX, NDX and RUT monthlies
+settle at the open while same-date SPXW, NDXP and RUTW PM series still trade to
+16:00. XSP is always PM, including its third-Friday expiry. VIX and VIXW are
+both AM: their usual last trading day is Tuesday before Wednesday settlement,
+with the business-day adjustment applied before choosing the last trade.
+
 The five original scenarios keep their original prices, sizes and relative order
 of existing events for the same date and seed. Their old segment moves have been
 converted to cumulative waypoints. Tests pin fingerprints of the old events.
@@ -177,8 +186,8 @@ or charges the dividend on shares held into that date, in place of any dividend 
 server knows for the same symbol and date. The recording polls at its slowest
 session's interval, a minute when it has an overnight session.
 
-Multi-session scenarios are generated at revision 2 and later. Single-session
-scenarios produce the same recordings as before, byte for byte. The real-time demo
+Multi-session scenarios are generated at revision 2 and later. Earlier revisions
+produce the same recording events as before, byte for byte. The real-time demo
 feed (`--provider demo`) already carries its account from day to day and plays
 single sessions only, so it skips these scenarios; so do playbook backtests, whose
 days are single sessions.
