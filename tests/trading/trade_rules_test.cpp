@@ -167,9 +167,14 @@ TEST(TradeRules, MinimumHoldAllowsBracketsOcoFlattenAndDailyLossLiquidation) {
   EXPECT_TRUE(s.snapshot()->positions.empty());
   EXPECT_EQ(s.snapshot()->evaluation.closed_trades, 1);
   ASSERT_TRUE(s.submit(f.market("oco-entry"), f.time).decision.ok());
-  auto oco = f.limit("oco-close", 1, "5.00", Side::Sell);
-  oco.oco = {f.limit("sibling", 1, "5.10", Side::Sell)};
-  EXPECT_TRUE(s.submit(oco, f.time).decision.ok());
+  auto oco = f.limit("oco-close", 1, "4.50", Side::Sell);
+  oco.oco = {f.limit("sibling", 1, "4.60", Side::Sell)};
+  const auto pair = s.submit(oco, f.time);
+  ASSERT_TRUE(pair.decision.ok()) << to_string(pair.decision.code) << ": " << pair.decision.message;
+  f.next(); f.seed(s, "4.50", "4.70");
+  EXPECT_TRUE(s.snapshot()->positions.empty());
+  EXPECT_EQ(s.snapshot()->evaluation.closed_trades, 2);
+  ASSERT_TRUE(s.submit(f.market("flatten-entry"), f.time).decision.ok());
   EXPECT_TRUE(s.close_positions({}, f.time).decision.ok());
   rules.daily_loss_limit = m("15");
   TradingSession t(config(rules), f.time);

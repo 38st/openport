@@ -4729,10 +4729,6 @@ TEST_F(PaperEngine, HoldingRulesRoundTripAndRefuseWithEvidence) {
   EXPECT_EQ(account["rules"]["min_hold_seconds"], 60);
   EXPECT_EQ(account["rules"]["microscalp_seconds"], 30);
   EXPECT_EQ(account["rules"]["microscalp_percent"], 25);
-  const auto created = write(*engine, "POST", "/api/accounts", {{"name", "Holding rules account"}, {"initial_cash", "100000"}, {"rules", rules}});
-  ASSERT_EQ(created.status, 201) << created.body;
-  const auto id = json::parse(created.body)["account"]["id"].get<std::string>();
-  EXPECT_EQ(read(*engine, "/api/account?account=" + id)["rules"]["microscalp_seconds"], 30);
   EXPECT_EQ(account["evaluation"]["short_profit"], "0.00");
   ASSERT_EQ(write(*engine, "POST", "/api/orders", order(market, "open-held", "4.20")).status, 201);
   auto close = order(market, "young-close", "4.00"); close["side"] = "sell";
@@ -4744,7 +4740,7 @@ TEST_F(PaperEngine, HoldingRulesRoundTripAndRefuseWithEvidence) {
   EXPECT_EQ(p["reason"]["limit"], 60);
   const auto refused = write(*engine, "POST", "/api/orders", close);
   expect_error(refused, 422, "MIN_HOLD");
-  EXPECT_EQ(json::parse(refused.body)["error"]["scope"], market.symbol());
+  EXPECT_EQ(json::parse(refused.body)["error"]["scope"], market.contract.underlying);
   for (const auto* key : {"min_hold_seconds", "microscalp_seconds", "microscalp_percent", "min_trades", "trade_consistency_percent"}) {
     auto invalid = rules; invalid[key] = nullptr;
     expect_error(reset(invalid), 400, "INVALID_REQUEST");
@@ -4757,4 +4753,29 @@ TEST_F(PaperEngine, HoldingRulesRoundTripAndRefuseWithEvidence) {
   expect_error(reset(rules), 400, "INVALID_RULES");
   rules["microscalp_seconds"] = 30; rules["min_hold_seconds"] = 1.5;
   expect_error(reset(rules), 400, "INVALID_REQUEST");
+}
+
+TEST(PaperAccounts, CreationAcceptsTradeAndHoldingObjectives) {
+  const auto directory = paper_path().parent_path();
+  auto options = paper_options();
+  options.paper_journal = directory / "paper.jsonl";
+  options.paper_accounts = directory / "accounts";
+  {
+    PaperProvider provider;
+    server::Engine engine(provider, {{"SPX"}}, options);
+    engine.start();
+    ASSERT_TRUE(wait_for([&] { return engine.trading_view() != nullptr; }));
+    json rules{{"profit_target", "100"}, {"max_drawdown", nullptr}, {"drawdown_mode", "intraday"},
+               {"buy_only", false}, {"buying_power", true}, {"expiry_cutoff_seconds", 0},
+               {"trade_consistency_percent", 40}, {"min_trades", 10}, {"min_hold_seconds", 60},
+               {"microscalp_seconds", 30}, {"microscalp_percent", 25}};
+    const auto created = write(engine, "POST", "/api/accounts", {{"name", "Holding rules"}, {"initial_cash", "100000"}, {"rules", rules}});
+    ASSERT_EQ(created.status, 201) << created.body;
+    const auto id = json::parse(created.body)["account"]["id"].get<std::string>();
+    const auto wire = read(engine, "/api/account?account=" + id)["rules"];
+    for (const auto* key : {"trade_consistency_percent", "min_trades", "min_hold_seconds", "microscalp_seconds", "microscalp_percent"})
+      EXPECT_EQ(wire[key], rules[key]);
+    engine.stop();
+  }
+  std::filesystem::remove_all(directory);
 }

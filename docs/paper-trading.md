@@ -2871,7 +2871,7 @@ opening orders and cancels working openings outside the plan window.
 | `INVALID_QUOTE`, `STALE_QUOTE`, `MISSING_VALUATION` | No executable book, stale/incomplete marks, missing/stale/invalid Greeks |
 | `STOP_REQUIRED` | Entry has no protective bracket stop, or cancellation would remove a required stop from an open position |
 | `TRADE_CONSISTENCY` | Best profitable closed whole trade must fit the attempt-profit percentage limit |
-| `MIN_HOLD` | User reduction is too young; `actual` and `limit` are seconds, `scope` is the option/share symbol |
+| `MIN_HOLD` | User reduction is too young; `actual` and `limit` are seconds, `scope` is the underlying in HTTP responses (the reducer identifies the option/share symbol) |
 | `MICROSCALPING` | Positive net profit from short round trips exceeds its allowed share of attempt profit; pass waits |
 | `MIN_TRADES` | Pass waits for the required count of closed whole option trades |
 | `MAX_TRADE_RISK` | Entry risk exceeds its plan cap; `actual` and `limit` are dollars, `scope` is `trade`; actual is null for unbounded or unknown risk |
