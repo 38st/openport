@@ -88,7 +88,7 @@ function StrategyBody({ legs, onLegs, expiries, underlying, spot, trading, initi
   const roots = legs.map((l) => l.symbol.slice(0, 6).trim())
   const tick = comboTickCents(roots)
   const quote = netQuote(legs)
-  const [units, setUnits] = useState(String(initialUnits ?? 1))
+  const [enteredUnits, setUnits] = useState(String(initialUnits ?? 1))
   const status = underlyings.find((u) => u.symbol === underlying)
   // Overnight and curb take net limits. Extended TIFs keep their exits active there.
   const extended = extendedSession(status)
@@ -126,6 +126,13 @@ function StrategyBody({ legs, onLegs, expiries, underlying, spot, trading, initi
     setError(undefined)
   }
 
+  // A roll closes its first half of legs; neither it nor a close may exceed what is held.
+  const closingLegs = closing ? legs : roll ? legs.slice(0, legs.length / 2) : []
+  const maxUnits = closing || roll ? Math.min(initialUnits ?? Infinity, ...(positions ? closingLegs.map((leg) => {
+    const held = positions.find((p) => p.symbol === leg.symbol)?.quantity ?? 0
+    return held !== 0 && (held > 0) !== (leg.side === "buy") ? Math.floor(Math.abs(held) / leg.ratio) : 0
+  }) : [])) : undefined
+  const units = maxUnits != null && Number(enteredUnits) > maxUnits ? String(maxUnits) : enteredUnits
   const q = Number(units)
   const validUnits = /^\d+$/.test(units) && Number.isSafeInteger(q) && q > 0
   const typed = Number(amount)
@@ -254,16 +261,16 @@ function StrategyBody({ legs, onLegs, expiries, underlying, spot, trading, initi
         <tbody>{legs.map((leg, i) => (
           <tr key={leg.symbol} className="border-t border-border/40">
             <td className="px-2 py-1.5"><button type="button" className={`rounded px-1.5 py-0.5 text-[11px] font-medium ${leg.side === "buy" ? "bg-bullish/15 text-bullish" : "bg-bearish/15 text-bearish"}`}
-              aria-label={`${leg.side === "buy" ? "Buy" : "Sell"} ${leg.strike} ${leg.type}: switch side`} onClick={() => setLeg(i, { side: leg.side === "buy" ? "sell" : "buy" })}>
+              disabled={closing || roll} aria-label={`${leg.side === "buy" ? "Buy" : "Sell"} ${leg.strike} ${leg.type}: switch side`} onClick={() => setLeg(i, { side: leg.side === "buy" ? "sell" : "buy" })}>
               {leg.side === "buy" ? "BUY" : "SELL"}</button></td>
             <td className="px-2 py-1.5"><span className="inline-flex items-center gap-1">
-              <button type="button" className="px-1 text-muted hover:text-foreground" aria-label={`Fewer ${leg.strike} ${leg.type} per unit`} disabled={leg.ratio <= 1} onClick={() => setLeg(i, { ratio: leg.ratio - 1 })}>−</button>
+              <button type="button" className="px-1 text-muted hover:text-foreground" aria-label={`Fewer ${leg.strike} ${leg.type} per unit`} disabled={closing || roll || leg.ratio <= 1} onClick={() => setLeg(i, { ratio: leg.ratio - 1 })}>−</button>
               {leg.ratio}
-              <button type="button" className="px-1 text-muted hover:text-foreground" aria-label={`More ${leg.strike} ${leg.type} per unit`} disabled={leg.ratio >= MAX_RATIO} onClick={() => setLeg(i, { ratio: leg.ratio + 1 })}>+</button>
+              <button type="button" className="px-1 text-muted hover:text-foreground" aria-label={`More ${leg.strike} ${leg.type} per unit`} disabled={closing || roll || leg.ratio >= MAX_RATIO} onClick={() => setLeg(i, { ratio: leg.ratio + 1 })}>+</button>
             </span></td>
             <td className="px-2 py-1.5">{leg.strike} {leg.type === "call" ? "C" : "P"}{multi && <span className="text-muted"> · {shortDate(leg.expiry.slice(0, 10))}</span>}</td>
             <td className="px-2 py-1.5 text-right">{price(leg.quote?.bid)} × {price(leg.quote?.ask)}</td>
-            <td className="px-1 py-1.5 text-right"><button type="button" className="px-1 text-muted hover:text-danger" aria-label={`Remove ${leg.strike} ${leg.type}`}
+            <td className="px-1 py-1.5 text-right"><button type="button" className="px-1 text-muted hover:text-danger" disabled={closing || roll} aria-label={`Remove ${leg.strike} ${leg.type}`}
               onClick={() => onLegs(legs.filter((_, j) => j !== i))}>×</button></td>
           </tr>
         ))}</tbody>
@@ -288,9 +295,9 @@ function StrategyBody({ legs, onLegs, expiries, underlying, spot, trading, initi
         <fieldset disabled={pending || order != null} className="grid min-w-0 grid-cols-2 gap-3 disabled:opacity-70">
           <legend className="sr-only">Strategy order</legend>
           <div className="trade-label col-span-2">
-            <label className="trade-label">Quantity (units)<input className="trade-input" inputMode="numeric" type="number" min="1" step="1" value={units} onChange={(e) => setUnits(e.target.value)} required /></label>
+            <label className="trade-label">Quantity (units)<input className="trade-input" inputMode="numeric" type="number" min="1" max={maxUnits} step="1" value={units} onChange={(e) => setUnits(e.target.value)} required /></label>
             <div className="flex flex-wrap items-center gap-1.5">
-              {quickSizes.map((size) => <button key={size} type="button" className={`trade-button ${q === size ? "border-accent" : ""}`} aria-label={`Quantity ${size}`} onClick={() => setUnits(String(size))}>{size}</button>)}
+              {quickSizes.filter((size) => maxUnits == null || size <= maxUnits).map((size) => <button key={size} type="button" className={`trade-button ${q === size ? "border-accent" : ""}`} aria-label={`Quantity ${size}`} onClick={() => setUnits(String(size))}>{size}</button>)}
               {validUnits && <span className="text-xs text-muted">{contracts} contracts</span>}
             </div>
           </div>
@@ -338,7 +345,7 @@ function StrategyBody({ legs, onLegs, expiries, underlying, spot, trading, initi
           <dd className="text-right tabular">{move == null ? "—" : `±${move.toFixed(2)}`}</dd>
           </>}
         </dl>
-        <OrderPreviewPanel preview={preview} onSize={(size) => setUnits(String(size))} disabled={pending || order != null}
+        <OrderPreviewPanel sizing={!closing && !roll && !reduces} preview={preview} onSize={(size) => setUnits(String(size))} disabled={pending || order != null}
           onWhatIf={() => draft != null && addWhatIfOrder(whatIfScope, draft, whatIfOrderText(draft))} />
         {!!(rules?.fill_latency_ms || rules?.impact_ticks) && <p className="text-xs text-muted">The preview uses current quotes. It cannot predict the later quote or the full cost of sweeping additional size blocks.</p>}
         {!!rules?.slippage_ticks && <p className="text-xs text-muted">Quoted price estimates exclude slippage; the server preview includes it.</p>}

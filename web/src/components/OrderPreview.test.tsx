@@ -151,3 +151,11 @@ describe("order preview", () => {
     expect(host.querySelector("button")!.disabled).toBe(true)
   })
 })
+
+it("keeps the close preview's risk and fees while hiding every sizing control and suggestion", async () => {
+  await act(async () => root.render(<OrderPreviewPanel sizing={false} preview={{ data: { ...preview, max_units: 37, fee: "1.30" }, error: null, loading: false }} onSize={() => {}} />))
+  expect(host.querySelector("button")).toBeNull()
+  expect(host.textContent).not.toMatch(/Size|Fits|Sizing|units/)
+  expect(host.textContent).toContain("$1.30")
+  expect(host.textContent).toContain("Buying power after")
+})

@@ -53,7 +53,7 @@ function CloseTicket({ position, trading, onClose }: { position: Position; tradi
   return <OrderTicket trading={trading} quote={quote} onClose={onClose} smile={chain.data.strikes} selection={{
     symbol: position.symbol, underlying: position.underlying, expiry: chain.data.expiry, strike: position.strike,
     optionType: position.type, cell: long ? "bid" : "ask", price: String((long ? quote?.bid : quote?.ask) ?? position.mark ?? ""),
-    spot: chain.data.spot, quantity: Math.abs(position.quantity),
+    spot: chain.data.spot, closing: true, quantity: Math.abs(position.quantity),
   }} />
 }
 

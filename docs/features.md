@@ -94,7 +94,8 @@ simulation's limits.
   previews show buying power, maximum loss, what fills at once and the full size's
   fill schedule, and the size that fits buying power apart from the size that uses at
   most half the floor room; Edit order previews a change to a resting order the same way,
-  and Flatten shows its dry run, what it would cancel and close and the account after it.
+  while close and roll tickets start at the held quantity, cap it at the holding and
+  omit opening-size suggestions. Flatten shows its dry run, what it would cancel and close and the account after it.
   Warnings name what the held book is close to: a delta or vega limit (by gamma, too),
   the soft floor, tonight's floor ratchet, delivery of in-the-money ETF options at
   expiry, early assignment and ex-dates. What-if compares candidate adjustments, each

@@ -35,6 +35,8 @@ export interface TicketSelection {
   spot?: number | null
   /** Initial contract count, e.g. the whole position when closing. */
   quantity?: number
+  /** A position close: keep its side and cap the quantity at the holding. */
+  closing?: boolean
 }
 
 function rejected(error: unknown) {
@@ -108,7 +110,7 @@ function TicketBody({ selection, quote, trading, onClose, variant, smile, surfac
   const [tif, setTif] = useState<TimeInForce>("day")
   const [goodTill, setGoodTill] = useState("")
   const good_till = goodTillTimestamp(goodTill)
-  const [quantity,setQuantity] = useState(String(selection.quantity ?? 1))
+  const [enteredQuantity, setQuantity] = useState(String(selection.quantity ?? 1))
   const [limitPrice, setLimitPrice] = useState(() => limitPriceText(selection.price))
   const [fee, setFee] = useState("")
   // Conditional entry and bracket exits.
@@ -155,8 +157,10 @@ function TicketBody({ selection, quote, trading, onClose, variant, smile, surfac
     enabled: order != null && trading.enabled,
   })
   const result = latest.data?.orders.find((item) => item.id === order?.id) ?? order
-  const q = Number(quantity)
   const held = portfolio?.positions.find((p) => p.symbol === selection.symbol)?.quantity ?? 0
+  const maxQuantity = selection.closing ? (portfolio ? ((held > 0) !== (side === "buy") ? Math.abs(held) : 0) : selection.quantity ?? 0) : undefined
+  const quantity = maxQuantity != null && Number(enteredQuantity) > maxQuantity ? String(maxQuantity) : enteredQuantity
+  const q = Number(quantity)
   // Displayed size this account's orders already took on the current quote.
   const taken = portfolio?.liquidity_used?.find((u) => u.symbol === selection.symbol)
   const leftNote = (side: "bid" | "ask") => taken && taken[`${side}_left`] < taken[`${side}_size`] ? ` · ${taken[`${side}_left`]} left` : ""
@@ -327,18 +331,18 @@ function TicketBody({ selection, quote, trading, onClose, variant, smile, surfac
       <fieldset disabled={submitted || pending} className="grid min-w-0 grid-cols-2 gap-3 disabled:opacity-70">
         <legend className="sr-only">Order details</legend>
         <div ref={first} className="trade-label">Side
-          <Segmented label="Side" value={side} onChange={setSide} options={[{ value: "buy", label: "Buy" }, { value: "sell", label: "Sell" }]} />
+          <Segmented label="Side" value={side} onChange={selection.closing ? () => {} : setSide} options={selection.closing ? [{ value: side, label: side === "buy" ? "Buy" : "Sell" }] : [{ value: "buy", label: "Buy" }, { value: "sell", label: "Sell" }]} />
         </div>
         <div className="trade-label">Order type
           <Segmented label="Order type" value={type} onChange={(next) => { setType(next); if (next === "market" && !allSessions && tif !== "gtd") setTif("ioc") }}
             options={!marketAllowed ? [{ value: "limit", label: "Limit" }] : [{ value: "limit", label: "Limit" }, { value: "market", label: "Market" }]} />
         </div>
         <div className="trade-label col-span-2">
-          <label className="trade-label">Quantity<input className="trade-input" inputMode="numeric" type="number" min="1" step="1" value={quantity} onChange={(e) => setQuantity(e.target.value)} required /></label>
+          <label className="trade-label">Quantity<input className="trade-input" inputMode="numeric" type="number" min="1" max={maxQuantity} step="1" value={quantity} onChange={(e) => setQuantity(e.target.value)} required /></label>
           <div className="flex flex-wrap items-center gap-1.5">
             <button type="button" className="trade-button" aria-label="Decrease quantity" onClick={() => stepQuantity(-1)}>−</button>
-            <button type="button" className="trade-button" aria-label="Increase quantity" onClick={() => stepQuantity(1)}>+</button>
-            {quickSizes.map((size) => <button key={size} type="button" className={`trade-button ${q === size ? "border-accent" : ""}`} aria-label={`Quantity ${size}`} onClick={() => setQuantity(String(size))}>{size}</button>)}
+            <button type="button" className="trade-button" aria-label="Increase quantity" disabled={maxQuantity != null && q >= maxQuantity} onClick={() => stepQuantity(1)}>+</button>
+            {quickSizes.filter((size) => maxQuantity == null || size <= maxQuantity).map((size) => <button key={size} type="button" className={`trade-button ${q === size ? "border-accent" : ""}`} aria-label={`Quantity ${size}`} onClick={() => setQuantity(String(size))}>{size}</button>)}
           </div>
         </div>
         <div className="col-span-2"><TimeInForceField value={effectiveTif} onChange={(next) => { setTif(next); if (next === "exto" || next === "gtc_exto") setStopLimitOn(true) }} market={type === "market"}
@@ -430,7 +434,7 @@ function TicketBody({ selection, quote, trading, onClose, variant, smile, surfac
           <dd className="text-right tabular">{odds.pop == null ? "—" : `≈ ${(odds.pop * 100).toFixed(0)}%`}{distribution && <span className="block text-[11px] text-muted">{probabilitySource(distribution, [odds.breakeven])}</span>}</dd>
         </>}
       </dl>
-      <OrderPreviewPanel preview={preview} onSize={(size) => setQuantity(String(size))} disabled={submitted || pending}
+      <OrderPreviewPanel sizing={!selection.closing && !(closes && q <= Math.abs(held))} preview={preview} onSize={(size) => setQuantity(String(size))} disabled={submitted || pending}
         onWhatIf={() => draft != null && addWhatIfOrder(whatIfScope, draft, whatIfOrderText(draft))} />
       {!!(rules?.fill_latency_ms || rules?.impact_ticks) && <p className="text-xs text-muted">The preview uses current quotes. It cannot predict the later quote or the full cost of sweeping additional size blocks.</p>}
       {!!rules?.slippage_ticks && <p className="text-xs text-muted">Quoted price estimates exclude slippage; the server preview includes it.</p>}
