@@ -36,10 +36,10 @@ enum class Reason {
   MAX_CONTRACTS_HELD, STOP_REQUIRED, MAX_TRADE_RISK,
   TIME_LIMIT, INACTIVITY, INSTRUMENT_NOT_ALLOWED, OUTSIDE_PLAN_HOURS,
   FLAT_TIME, OVERNIGHT_HOLD, SCALING_LIMIT, TRADE_CONSISTENCY, MIN_TRADES, MIN_HOLD, MICROSCALPING,
-  HEDGING, COUNTER_POSITION, MAX_VOLUME_SHARE
+  HEDGING, COUNTER_POSITION, MAX_VOLUME_SHARE, NEWS_BLACKOUT, HOLD_RESTRICTED
 };
 /// The last Reason; recorded codes are strings, so new codes append here.
-inline constexpr Reason kLastReason = Reason::MAX_VOLUME_SHARE;
+inline constexpr Reason kLastReason = Reason::HOLD_RESTRICTED;
 [[nodiscard]] std::string_view to_string(Reason reason) noexcept;
 
 class TradingError : public std::runtime_error {
@@ -622,6 +622,16 @@ struct SizeScaling {
   bool operator==(const SizeScaling&) const = default;
 };
 
+/// One immutable plan event. News uses a UTC instant; corporate events use a date.
+struct PlanEvent {
+  std::string kind;
+  std::string time;
+  std::string symbol{};
+  std::string session{};
+  std::string label{};
+  auto operator<=>(const PlanEvent&) const = default;
+};
+
 /// Evaluation-account rules. The defaults describe an unrestricted paper
 /// account: no target, no drawdown floor, any side, no buying-power check.
 struct AccountRules {
@@ -686,9 +696,18 @@ struct AccountRules {
   bool no_overnight = false;  ///< Fail at rollover on positions not awaiting settlement.
   std::vector<ScalingStep> scaling;  ///< Empty disables; each option leg counts, shares do not.
   std::optional<SizeScaling> size_scaling;  ///< Funded only; absent disables.
+  std::vector<PlanEvent> events;
+  std::int64_t news_before_minutes = 0;
+  std::int64_t news_after_minutes = 0;
+  std::string news_action = "block";
+  std::vector<std::string> hold_restrictions;
+  std::int64_t hold_cutoff = 15 * 60 + 45;
+  /// Captured at create/reset when holding rules are on; never consult a live
+  /// exchange schedule to decide these rules after the attempt has started.
+  std::optional<std::vector<md::ScheduledDay>> hold_calendar;
   [[nodiscard]] bool evaluation() const {
     return profit_target > Money{} || max_drawdown > Money{} || daily_loss_limit > Money{} ||
-           time_limit_days > 0 || inactivity_days > 0 || no_overnight;
+           time_limit_days > 0 || inactivity_days > 0 || no_overnight || !hold_restrictions.empty();
   }
   bool operator==(const AccountRules&) const = default;
 };

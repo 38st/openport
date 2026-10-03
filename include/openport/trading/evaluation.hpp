@@ -114,6 +114,9 @@ struct Evaluation {
   bool flat_pending = false;  ///< Retry unfilled mandatory closes, including after rollover.
   std::optional<SizeScalingProgress> size_scaling;
   std::int64_t scaling_limit = 0;  ///< In force this session; zero without scaling.
+  std::vector<std::string> holding_violations;  ///< Boundaries crossed while still holding, decided at rollover.
+  std::vector<std::string> event_actions;  ///< Stable keys of once-only calendar actions.
+  Timestamp event_checked = 0;  ///< Last transaction checked for holding cutoffs.
 };
 
 /// The highest reached step, or the first step below zero profit; zero without scaling.

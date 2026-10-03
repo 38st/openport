@@ -1,5 +1,6 @@
 #include "openport/trading/session.hpp"
 #include "openport/trading/contracts.hpp"
+#include "openport/trading/events.hpp"
 
 #include <algorithm>
 #include <array>
@@ -1509,7 +1510,8 @@ void walk_limits(State& s, Events& events) {
 }
 void decide(State& s, const PlanVerdict& verdict, Money equity, Events& events);
 Decision entry_check(const State& s, const Order& o) {
-  if (s.config.rules.underlyings.empty() && !s.config.rules.trading_start && !s.config.rules.flat_time) return {};
+  if (s.config.rules.underlyings.empty() && !s.config.rules.trading_start && !s.config.rules.flat_time && s.config.rules.events.empty() &&
+      s.config.rules.hold_restrictions.empty()) return {};
   if (o.system || kept_within(o) || closing_only(s, o)) return {};
   for (const auto& symbol : order_symbols(o.request))
     if (const auto c = s.contracts.find(symbol); c != s.contracts.end())
@@ -3017,6 +3019,60 @@ void decide(State& s, const PlanVerdict& verdict, Money equity, Events& events) 
   for (const auto id : open_ids(s))
     if (!s.orders[id - 1].system) cancel_order(s, id, failure(Reason::EVALUATION_CLOSED, verdict.message), events);
 }
+/// Scope-aware system closes shared by calendar and future flat-time rules.
+void flatten_scope(State& s, const std::string& scope, std::string_view label, Events& events) {
+  std::vector<std::string> symbols;
+  for (const auto& [symbol, p] : s.ledger.positions())
+    if (p.quantity != 0 && (scope.empty() || s.contracts.at(symbol).underlying == scope)) symbols.push_back(symbol);
+  std::stable_partition(symbols.begin(), symbols.end(), [&](const auto& symbol) { return held(s, symbol) < 0; });
+  for (const auto& symbol : symbols) flatten(s, symbol, label, events);
+  std::vector<std::pair<std::string, Quantity>> stocks;
+  for (const auto& [symbol, p] : s.ledger.stocks())
+    if (p.shares != 0 && (scope.empty() || symbol == scope)) stocks.emplace_back(symbol, p.shares);
+  for (const auto& [symbol, shares] : stocks) close_shares(s, symbol, shares, StockSource::Rule, events);
+}
+bool holds_scope(const State& s, const std::string& scope) {
+  for (const auto& [symbol, p] : s.ledger.positions())
+    if (p.quantity != 0 && (scope.empty() || s.contracts.at(symbol).underlying == scope)) return true;
+  for (const auto& [symbol, p] : s.ledger.stocks())
+    if (p.shares != 0 && (scope.empty() || symbol == scope)) return true;
+  return false;
+}
+void monitor_calendar(State& s, Events& events) {
+  const auto& r = s.config.rules;
+  if (r.events.empty() && r.hold_restrictions.empty()) return;
+  auto& e = s.evaluation;
+  const auto from = e.event_checked > 0 ? e.event_checked : (e.started > 0 ? e.started : s.time);
+  for (const auto& w : event_windows(r, from, s.time)) {
+    if (w.kind != "news" && w.end <= s.time && from < w.end && holds_scope(s, w.symbol)) {
+      const auto violation = w.kind + ":" + (w.symbol.empty() ? "account" : w.symbol);
+      if (std::find(e.holding_violations.begin(), e.holding_violations.end(), violation) == e.holding_violations.end()) {
+        e.holding_violations.push_back(violation);
+        event(events, "holding_boundary_crossed", Json{{"key", w.key}, {"scope", violation}, {"boundary", w.end}});
+      }
+    }
+    // A news window skipped in its entirety never acts retroactively.
+    if (w.kind == "news" && s.time >= w.end) continue;
+    if (std::find(e.event_actions.begin(), e.event_actions.end(), w.key) != e.event_actions.end()) continue;
+    for (const auto id : open_ids(s)) {
+      const auto& order = s.orders[id - 1];
+      if (order.system || kept_within(order) || closing_only(s, order)) continue;
+      const auto symbols = order_symbols(order.request);
+      if (std::any_of(symbols.begin(), symbols.end(), [&](const auto& symbol) {
+        return w.symbol.empty() || s.contracts.at(symbol).underlying == w.symbol;
+      })) cancel_order(s, id, event_decision(r, w, s.time), events);
+    }
+    e.event_actions.push_back(w.key);
+    event(events, "calendar_action", Json{{"key", w.key}, {"kind", w.kind}, {"start", w.start}, {"end", w.end}});
+    if (w.kind != "news" || r.news_action == "flatten") flatten_scope(s, w.symbol, w.kind == "news" ? "news" : "hold", events);
+  }
+  e.event_checked = s.time;
+}
+/// Any restriction can share the rollover failure path without adding a separate liquidation implementation.
+void fail_boundary(State& s, Reason code, const std::string& message, Events& events) {
+  if (s.evaluation.status != EvaluationStatus::Active) return;
+  decide(s, {EvaluationStatus::Failed, false, code, {}, message}, measure(s).equity, events);
+}
 /// A plan limit locks the trading day: open orders cancel with its code, the
 /// positions close (monitor_rules) and only closing orders are accepted until rollover.
 void lock_day(State& s, const PlanVerdict& verdict, Money equity, Events& events) {
@@ -3107,7 +3163,9 @@ void observe_equity(State& s, Events& events) {
       if (!e.day_low_equity || *equity < *e.day_low_equity) { e.day_low_equity = *equity; e.day_low_at = s.time; }
       if (!e.day_high_equity || *equity > *e.day_high_equity) { e.day_high_equity = *equity; e.day_high_at = s.time; }
     }
-    if (e.status == EvaluationStatus::Active) {
+    // A crossed holding boundary is decided at rollover; a close in the meantime
+    // cannot turn that pending failure into a pass.
+    if (e.status == EvaluationStatus::Active && e.holding_violations.empty()) {
       const auto verdict = evaluate_plan(e, rules, plan_inputs(s, *equity));
       // Include the deciding observation, then freeze the closest approach. Fills
       // after the decision still mark equity but never evaluate the attempt again.
@@ -3133,6 +3191,7 @@ std::string_view liquidation_label(const Evaluation& e, bool decided) {
   if (code == Reason::TIME_LIMIT) return "time_limit";
   if (code == Reason::INACTIVITY) return "inactivity";
   if (code == Reason::OVERNIGHT_HOLD) return "overnight";
+  if (code == Reason::HOLD_RESTRICTED) return "hold";
   if (decided) return e.status == EvaluationStatus::Passed ? "target" : "drawdown";
   return "day_lock";
 }
@@ -3740,6 +3799,7 @@ State prepared(const State& state, Timestamp time, const PreviewMarket& market) 
       before.valuations[valuation.symbol] = valuation;
   Events ignored;
   advance(before, time, ignored);
+  monitor_calendar(before, ignored);
   monitor_loss(before, ignored);
   return before;
 }
@@ -4665,6 +4725,7 @@ struct TradingSession::Impl {
            !s.config.rules.flat_time &&
            s.evaluation.started > 0 && s.evaluation.cycle_started > 0 &&
            !evaluate_time_rules(s.evaluation, s.config.rules, time).decided() &&
+           s.config.rules.events.empty() && s.config.rules.hold_restrictions.empty() &&
            s.guardrails.cooldown_until <= s.time &&
            open_ids(s).empty() && s.alerts.items.empty();
   }
@@ -4680,6 +4741,7 @@ struct TradingSession::Impl {
     // Other commands must close against the current book before matching orders.
     if (type != "market" && next.evaluation.flat_pending && next.evaluation.status == EvaluationStatus::Active)
       flatten_positions(next, "flat_time", events);
+    if (type != "market") monitor_calendar(next, events);
     next.actor = actor;
     auto result = action(next, events);
     place_chained(next, events);
@@ -4737,6 +4799,7 @@ TradingSession::TradingSession(SessionConfig config, Timestamp time, std::shared
     : impl_(std::make_unique<Impl>()) {
   validate_limits(config.limits);
   validate_scenarios(config.scenarios);
+  normalize_event_rules(config.rules, true);
   validate_rules(config.rules);
   validate_guardrails(config.guardrails);
   if (time < 0) throw TradingError(Reason::INVALID_TIME, "Negative session time");
@@ -5409,6 +5472,7 @@ CommandResult TradingSession::on_quotes(const std::vector<QuoteObservation>& quo
       s.indicators[key] = {indicator.value, indicator.time};
     }
     detail::update_reviews(s);
+    monitor_calendar(s, events);
     monitor_loss(s, events);
     monitor_rules(s, events);
     // Invalid quotes provide no liquidity. Keep orders until a new valid quote
@@ -5694,6 +5758,9 @@ CommandResult TradingSession::roll_day(Timestamp time, const std::vector<Dividen
   return impl_->transact(time, "day_rollover", [&](State& s, Events& events) {
     const auto day = plan_trading_date(s.config.rules, time);
     if (day <= s.day) return CommandResult{failure(Reason::INVALID_TIME, "Rollover requires a later trading date"), {}, 0};
+    if (!s.evaluation.holding_violations.empty())
+      fail_boundary(s, Reason::HOLD_RESTRICTED, "Position held across a restricted boundary: " +
+          s.evaluation.holding_violations.front(), events);
     monitor_loss(s, events);
     const auto& snapshot = *closing;
     if (!snapshot.valuation_complete) return CommandResult{failure(Reason::STALE_QUOTE, "Rollover requires complete marked equity"), {}, 0};
@@ -5816,6 +5883,7 @@ CommandResult TradingSession::request_payout(Money amount, Timestamp time) {
 }
 CommandResult TradingSession::reset_account(Money initial_cash, AccountRules rules, std::string reason, Timestamp time) {
   require_reason(reason);
+  normalize_event_rules(rules, true);
   validate_rules(rules);
   if (initial_cash <= Money{}) throw TradingError(Reason::INVALID_MONEY, "Starting balance must be positive");
   if (rules.size_scaling && rules.size_scaling->max_balance < initial_cash)

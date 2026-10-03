@@ -3,9 +3,6 @@
 #include "../trading/state.hpp"
 #include "openport/server/desk.hpp"
 
-namespace openport::md {
-NLOHMANN_DEFINE_TYPE_NON_INTRUSIVE(ScheduledDay, date, name, closed, close_hour, overnight_until)
-}
 namespace openport::trading {
 inline void to_json(nlohmann::json& j, const OrderChange& c) {
   j = nlohmann::json{{"quantity", c.quantity}, {"limit_price", c.limit_price}, {"trigger_level", c.trigger_level}};

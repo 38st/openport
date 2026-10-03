@@ -18,6 +18,7 @@ template <class T> struct adl_serializer<std::optional<T>> {
 }  // namespace nlohmann
 namespace openport::md {
 NLOHMANN_DEFINE_TYPE_NON_INTRUSIVE(Date, year, month, day)
+NLOHMANN_DEFINE_TYPE_NON_INTRUSIVE(ScheduledDay, date, name, closed, close_hour, overnight_until)
 NLOHMANN_DEFINE_TYPE_NON_INTRUSIVE(OptionContract, root, underlying, expiry, strike, type, style, settlement, multiplier, standard)
 }  // namespace openport::md
 namespace openport::trading {
@@ -321,6 +322,16 @@ inline void from_json(const Json& j, SizeScaling& r) {
 }
 /// The rules recorded only when they differ from their defaults, with those
 /// defaults: a plan without them keeps its journal bytes.
+inline void to_json(Json& j, const PlanEvent& e) {
+  j = {{"kind", e.kind}, {"time", e.time}};
+  if (!e.symbol.empty()) j["symbol"] = e.symbol;
+  if (!e.session.empty()) j["session"] = e.session;
+  if (!e.label.empty()) j["label"] = e.label;
+}
+inline void from_json(const Json& j, PlanEvent& e) {
+  j.at("kind").get_to(e.kind); j.at("time").get_to(e.time);
+  added_field(j, "symbol", e.symbol); added_field(j, "session", e.session); added_field(j, "label", e.label);
+}
 inline Json optional_rule_defaults() {
   const AccountRules d;
   return Json{{"fill_latency_ms", d.fill_latency_ms}, {"impact_ticks", d.impact_ticks}, {"lock_at_start", d.lock_at_start},
@@ -341,7 +352,10 @@ inline Json optional_rule_defaults() {
               {"time_limit_days", d.time_limit_days}, {"inactivity_days", d.inactivity_days},
               {"underlyings", d.underlyings}, {"trading_start", d.trading_start}, {"trading_end", d.trading_end},
               {"flat_time", d.flat_time}, {"no_overnight", d.no_overnight},
-               {"scaling", d.scaling}, {"size_scaling", d.size_scaling}};
+               {"scaling", d.scaling}, {"size_scaling", d.size_scaling},
+              {"events", d.events}, {"news_before_minutes", d.news_before_minutes}, {"news_after_minutes", d.news_after_minutes},
+              {"news_action", d.news_action}, {"hold_restrictions", d.hold_restrictions}, {"hold_cutoff", d.hold_cutoff},
+              {"hold_calendar", d.hold_calendar}};
 }
 NLOHMANN_DEFINE_TYPE_NON_INTRUSIVE(FeeSchedule, open, close, leg_cap, clearing, regulatory, index, exercise)
 inline void to_json(Json& j, const AccountRules& r) {
@@ -368,7 +382,10 @@ inline void to_json(Json& j, const AccountRules& r) {
                  {"time_limit_days", r.time_limit_days}, {"inactivity_days", r.inactivity_days},
                  {"underlyings", r.underlyings}, {"trading_start", r.trading_start}, {"trading_end", r.trading_end},
               {"flat_time", r.flat_time}, {"no_overnight", r.no_overnight},
-                  {"scaling", r.scaling}, {"size_scaling", r.size_scaling}};
+                  {"scaling", r.scaling}, {"size_scaling", r.size_scaling},
+              {"events", r.events}, {"news_before_minutes", r.news_before_minutes}, {"news_after_minutes", r.news_after_minutes},
+              {"news_action", r.news_action}, {"hold_restrictions", r.hold_restrictions}, {"hold_cutoff", r.hold_cutoff},
+              {"hold_calendar", r.hold_calendar}};
   static const auto defaults = optional_rule_defaults();
   for (auto it = all.begin(); it != all.end(); ++it)
     if (it.value() != defaults.at(it.key())) j[it.key()] = it.value();
@@ -425,6 +442,13 @@ inline void from_json(const Json& j, AccountRules& r) {
   added_field(j, "no_overnight", r.no_overnight);
   added_field(j, "scaling", r.scaling);
   added_field(j, "size_scaling", r.size_scaling);
+  for (const auto* key : {"news_before_minutes", "news_after_minutes", "hold_cutoff"})
+    if (j.contains(key) && !j.at(key).is_number_integer())
+      throw TradingError(Reason::JOURNAL_CORRUPT, "Recorded event rule minutes must be integers");
+  added_field(j, "events", r.events); added_field(j, "news_before_minutes", r.news_before_minutes);
+  added_field(j, "news_after_minutes", r.news_after_minutes); added_field(j, "news_action", r.news_action);
+  added_field(j, "hold_restrictions", r.hold_restrictions); added_field(j, "hold_cutoff", r.hold_cutoff);
+  added_field(j, "hold_calendar", r.hold_calendar);
 }
 NLOHMANN_DEFINE_TYPE_NON_INTRUSIVE_ONLY_SERIALIZE(SessionConfig, initial_cash, fee_per_contract, limits, scenarios, rules, guardrails)
 inline void from_json(const Json& j, SessionConfig& c) {
@@ -496,6 +520,9 @@ inline void to_json(Json& j, const Evaluation& e) {
   if (e.flat_pending) j["flat_pending"] = true;
   if (e.size_scaling) j["size_scaling"] = *e.size_scaling;
   if (e.scaling_limit != 0) j["scaling_limit"] = e.scaling_limit;
+  if (!e.holding_violations.empty()) j["holding_violations"] = e.holding_violations;
+  if (!e.event_actions.empty()) j["event_actions"] = e.event_actions;
+  if (e.event_checked != 0) j["event_checked"] = e.event_checked;
 }
 inline void from_json(const Json& j, Evaluation& e) {
   j.at("attempt").get_to(e.attempt); j.at("started").get_to(e.started); j.at("starting_balance").get_to(e.starting_balance);
@@ -520,6 +547,8 @@ inline void from_json(const Json& j, Evaluation& e) {
   added_field(j, "flat_time_day", e.flat_time_day); added_field(j, "flat_pending", e.flat_pending);
   added_field(j, "scaling_limit", e.scaling_limit);
   added_field(j, "size_scaling", e.size_scaling);
+  added_field(j, "holding_violations", e.holding_violations);
+  added_field(j, "event_actions", e.event_actions); added_field(j, "event_checked", e.event_checked);
 }
 inline void to_json(Json& j, const AttemptSummary& a) {
   j = Json{{"attempt", a.attempt}, {"plan", a.plan}, {"started", a.started}, {"ended", a.ended},

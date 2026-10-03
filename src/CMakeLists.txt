@@ -27,6 +27,7 @@ if(NOT TARGET OpenSSL::Crypto)
 endif()
 add_library(openport_trading
   trading/evaluation.cpp
+  trading/events.cpp
   trading/money.cpp
   trading/types.cpp
   trading/guardrails.cpp

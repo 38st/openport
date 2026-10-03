@@ -1,4 +1,5 @@
 #include "openport/trading/evaluation.hpp"
+#include "openport/trading/events.hpp"
 
 #include <algorithm>
 #include <random>
@@ -337,6 +338,7 @@ Decision plan_entry_check(const AccountRules& rules, std::string_view underlying
   if (plan_flat_now(rules, time))
     return {Reason::FLAT_TIME, "Flat time passed; openings blocked until the day ends. Closing orders still work",
         static_cast<double>(md::new_york_time(time).seconds / 60), static_cast<double>(*rules.flat_time), "account"};
+  if (const auto d = event_entry_check(rules, underlying, time); !d.ok()) return d;
   const std::string scope(underlying);
   if (!rules.underlyings.empty() && std::find(rules.underlyings.begin(), rules.underlyings.end(), underlying) == rules.underlyings.end())
     return {Reason::INSTRUMENT_NOT_ALLOWED, scope + " is not an allowed underlying for this plan", {}, {}, scope};

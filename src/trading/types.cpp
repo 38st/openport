@@ -1,4 +1,5 @@
 #include "openport/trading/types.hpp"
+#include "openport/trading/events.hpp"
 
 #include <algorithm>
 #include <cmath>
@@ -33,6 +34,7 @@ std::string_view to_string(Reason reason) noexcept {
     CASE(TIME_LIMIT); CASE(INACTIVITY); CASE(INSTRUMENT_NOT_ALLOWED); CASE(OUTSIDE_PLAN_HOURS); CASE(FLAT_TIME); CASE(OVERNIGHT_HOLD);
     CASE(TRADE_CONSISTENCY); CASE(MIN_TRADES); CASE(MIN_HOLD); CASE(MICROSCALPING);
     CASE(HEDGING); CASE(COUNTER_POSITION); CASE(MAX_VOLUME_SHARE);
+    CASE(NEWS_BLACKOUT); CASE(HOLD_RESTRICTED);
   }
 #undef CASE
   return "UNKNOWN";
@@ -286,6 +288,7 @@ void validate_rules(const AccountRules& r) {
   if (r.max_trade_risk < Money{} || r.max_trade_risk_percent < 0 || r.max_trade_risk_percent > 100)
     throw TradingError(Reason::INVALID_RULES, "Maximum trade risk must be nonnegative and its percentage 0 to 100");
   validate_time_rules(r);
+  validate_event_rules(r);
   if (r.fees) {
     const auto& f = *r.fees;
     const auto amount = [](Money value) { return value >= Money{} && value <= Money::from_micros(1'000'000'000); };
