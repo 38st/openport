@@ -32,10 +32,10 @@ enum class Reason {
   // Plan decisions and objectives: what decided an attempt, what locked its day,
   // and what a pass still waits for.
   PROFIT_TARGET, DRAWDOWN_FLOOR, DAILY_LOSS_LIMIT, MIN_TRADING_DAYS, MIN_PROFITABLE_DAYS, CONSISTENCY,
-  ACCOUNT_TYPE
+  ACCOUNT_TYPE, INVALID_ALERT, UNKNOWN_ALERT
 };
 /// The last Reason; recorded codes are strings, so new codes append here.
-inline constexpr Reason kLastReason = Reason::ACCOUNT_TYPE;
+inline constexpr Reason kLastReason = Reason::UNKNOWN_ALERT;
 [[nodiscard]] std::string_view to_string(Reason reason) noexcept;
 
 class TradingError : public std::runtime_error {
@@ -116,6 +116,45 @@ struct Leg {
   Quantity ratio = 1;
   bool operator==(const Leg&) const = default;
 };
+
+/// What an alert watches: a contract's quote, mark, implied volatility or
+/// Greeks; a spread's net mark; an underlying's price or a study of it; or a
+/// measure of the account.
+enum class AlertScope { Contract, Spread, Underlying, Account };
+struct AlertCondition {
+  AlertScope scope = AlertScope::Contract;
+  std::string metric;          ///< One the scope offers: see alert_metric.
+  std::string symbol = {};     ///< Contract: its padded OSI; underlying: its symbol.
+  std::vector<Leg> legs = {};  ///< Spread: two to four legs; the net mark per unit.
+  TriggerDirection direction = TriggerDirection::AtOrAbove;
+  Money level;                 ///< Inclusive, in the metric's units; any sign.
+  bool operator==(const AlertCondition&) const = default;
+};
+struct AlertSpec {
+  std::string label = {};  ///< At most 100 bytes without control characters; may be empty.
+  AlertCondition condition;
+  bool repeat = false;     ///< Fire again each time the condition returns after lapsing.
+  bool operator==(const AlertSpec&) const = default;
+};
+struct Alert {
+  std::uint64_t id = 0;  ///< Never reused.
+  AlertSpec spec;
+  Timestamp created = 0;
+  std::string actor = "unknown";
+  bool armed = true;           ///< Waiting for its condition.
+  std::uint64_t fired = 0;     ///< Times it has fired.
+  Timestamp fired_at = 0;      ///< When it last fired.
+  std::optional<Money> value;  ///< The value it last fired at.
+};
+inline constexpr std::size_t kMaxAlerts = 100;
+/// Contract: bid, ask, mark, iv (vol points), delta, gamma, theta, vega (per
+/// unit). Spread: mark. Underlying: price, iv30, iv7, term_ratio. Account:
+/// equity, day_pnl, unrealised, floor_room, buying_power, dollar_delta, vega, theta.
+[[nodiscard]] bool alert_metric(AlertScope scope, std::string_view metric);
+/// Throws INVALID_ALERT unless the terms fit their scope: a metric it offers, a
+/// canonical OSI for a contract, an underlying symbol, two to four distinct legs
+/// with ratios of 1 to 10 for a spread, nothing else, and a short label.
+void validate_alert(const AlertSpec& spec);
 inline constexpr std::size_t kMaxLegs = 4;
 /// A roll may take up to eight legs, as a condor rolls whole: those past four must
 /// close held contracts, so no more than four legs open.

@@ -2,6 +2,8 @@
 
 #include <algorithm>
 #include <cmath>
+#include <map>
+#include <set>
 
 namespace openport::trading {
 std::string_view to_string(Reason reason) noexcept {
@@ -24,7 +26,7 @@ std::string_view to_string(Reason reason) noexcept {
     CASE(SOFT_FLOOR); CASE(TRADE_LIMIT); CASE(COOLDOWN); CASE(PROFIT_LOCK);
     CASE(RUN_ENDED); CASE(INVALID_GROUP); CASE(GTD_END);
     CASE(PROFIT_TARGET); CASE(DRAWDOWN_FLOOR); CASE(DAILY_LOSS_LIMIT); CASE(MIN_TRADING_DAYS);
-    CASE(MIN_PROFITABLE_DAYS); CASE(CONSISTENCY); CASE(ACCOUNT_TYPE);
+    CASE(MIN_PROFITABLE_DAYS); CASE(CONSISTENCY); CASE(ACCOUNT_TYPE); CASE(INVALID_ALERT); CASE(UNKNOWN_ALERT);
   }
 #undef CASE
   return "UNKNOWN";
@@ -67,6 +69,50 @@ Money tick_size(std::string_view root, Money price) {
       root != "SPY" && root != "QQQ" && root != "IWM")
     return Money::from_micros(below ? 10'000 : 50'000);
   return Money::from_micros(10'000);
+}
+bool alert_metric(AlertScope scope, std::string_view metric) {
+  static const std::map<AlertScope, std::vector<std::string_view>> metrics{
+      {AlertScope::Contract, {"bid", "ask", "mark", "iv", "delta", "gamma", "theta", "vega"}},
+      {AlertScope::Spread, {"mark"}},
+      {AlertScope::Underlying, {"price", "iv30", "iv7", "term_ratio"}},
+      {AlertScope::Account, {"equity", "day_pnl", "unrealised", "floor_room", "buying_power", "dollar_delta", "vega", "theta"}}};
+  const auto it = metrics.find(scope);
+  return it != metrics.end() && std::find(it->second.begin(), it->second.end(), metric) != it->second.end();
+}
+void validate_alert(const AlertSpec& spec) {
+  const auto invalid = [](std::string message) { throw TradingError(Reason::INVALID_ALERT, std::move(message)); };
+  const auto& c = spec.condition;
+  if (spec.label.size() > 100 || std::any_of(spec.label.begin(), spec.label.end(), [](unsigned char ch) { return ch < 0x20 || ch == 0x7f; }))
+    invalid("An alert's label has at most 100 bytes and no control characters");
+  if (!alert_metric(c.scope, c.metric)) invalid("Unknown metric for this alert's scope");
+  if (c.direction != TriggerDirection::AtOrAbove && c.direction != TriggerDirection::AtOrBelow) invalid("Unknown alert direction");
+  const auto osi = [](const std::string& symbol) {
+    const auto contract = md::parse_osi(symbol);
+    return contract && contract->osi_symbol() == symbol;
+  };
+  switch (c.scope) {
+    case AlertScope::Contract:
+      if (!osi(c.symbol) || !c.legs.empty()) invalid("A contract alert names one canonical padded OSI and no legs");
+      break;
+    case AlertScope::Spread: {
+      std::set<std::string> seen;
+      if (!c.symbol.empty() || c.legs.size() < 2 || c.legs.size() > kMaxLegs) invalid("A spread alert takes two to four legs and no symbol");
+      for (const auto& leg : c.legs)
+        if (!osi(leg.symbol) || !seen.insert(leg.symbol).second || leg.ratio < 1 || leg.ratio > kMaxRatio ||
+            (leg.side != Side::Buy && leg.side != Side::Sell))
+          invalid("Each spread leg needs its own canonical OSI, a side and a ratio from 1 to 10");
+      break;
+    }
+    case AlertScope::Underlying: {
+      Trigger shape{TriggerSource::Underlying, c.direction, Money::from_micros(1)};
+      shape.symbol = c.symbol;
+      if (c.symbol.empty() || !valid_trigger(shape) || !c.legs.empty()) invalid("An underlying alert names its underlying and no legs");
+      break;
+    }
+    case AlertScope::Account:
+      if (!c.symbol.empty() || !c.legs.empty()) invalid("An account alert names no symbol or legs");
+      break;
+  }
 }
 bool valid_trigger(const Trigger& t) {
   if (t.direction != TriggerDirection::AtOrBelow && t.direction != TriggerDirection::AtOrAbove) return false;

@@ -106,6 +106,7 @@ struct TradingSnapshot {
   /// and whole-trade reviews of trades with more than one entry, by trade ID.
   SharedMap<std::string, std::string> groups;
   SharedMap<std::string, TradeReview> group_reviews;
+  std::vector<Alert> alerts;  ///< The account's alerts, oldest first.
   /// Equity if every position closed now with a market order at the displayed
   /// quotes (bids for longs, asks for shorts) and the account's slippage and
   /// impact, after fees: a long nobody bids for counts as nothing, a short without
@@ -162,6 +163,7 @@ struct CommandResult {
   bool replayed = false;
   /// Delivered shares a flatten could not close, by symbol, and why.
   std::map<std::string, Decision> kept_stocks = {};
+  std::optional<std::uint64_t> alert_id = {};  ///< create_alert: the new alert.
   /// Positions in scope a flatten left open, by symbol.
   std::vector<Residual> residuals = {};
 };
@@ -510,6 +512,15 @@ class TradingSession {
   /// The same trade on a private copy, without recording anything.
   [[nodiscard]] StockPreview preview_trade_stock(const std::string& symbol, Quantity signed_shares, Timestamp time,
       std::optional<StockPrice> price = {}, Decision rejection = {}) const;
+  /// Watch a value and announce, with an alert_fired event, when it reaches a
+  /// level: see AlertSpec. Alerts are checked after each market batch and when
+  /// created, so one whose condition already holds fires at once; a missing or
+  /// stale value neither fires nor rearms one. Invalid terms throw INVALID_ALERT;
+  /// a contract or leg not registered returns UNKNOWN_CONTRACT, and a 101st alert
+  /// INVALID_ALERT. Allowed whatever the account's state or session.
+  CommandResult create_alert(AlertSpec spec, Timestamp time);
+  /// Delete an alert, fired or not; an unknown ID returns UNKNOWN_ALERT.
+  CommandResult delete_alert(std::uint64_t id, Timestamp time);
   [[nodiscard]] std::shared_ptr<const TradingSnapshot> snapshot() const;
 
   /// Read-only integration context, owned by the reducer. The engine copies it
