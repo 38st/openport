@@ -124,8 +124,8 @@ TEST(MultiDayReplay, OneRunCarriesTheAccountThroughEverySessionAndItsJournalVeri
         // GTC orders carry from day to day; a DAY order ends with its session.
         send(time, batch->received, order("gtc", "SPX261016P05800000", Buy, 1, Limit, Gtc, away("SPX261016P05800000", 0.82)));
         send(time, batch->received, order("day", "SPX261016P05800000", Buy, 1, Limit, Day, away("SPX261016P05800000", 0.82)));
-        // Deep in-the-money short puts trade below exercise value: holders exercise overnight.
-        send(time, batch->received, order("short", "SPY260925P00615000", Sell, 5, Market, Ioc));
+        // Calls with less time value than tomorrow's dividend can be assigned overnight.
+        send(time, batch->received, order("short", "SPY260925C00580000", Sell, 5, Market, Ioc));
       } else if (time == at(wednesday, 16, 30)) {
         // The curb takes plain limit orders, a DAY one lasting until 17:00.
         send(time, batch->received, order("curb-market", "SPXW260918C06000000", Sell, 1, Market, Ioc));
@@ -169,11 +169,11 @@ TEST(MultiDayReplay, OneRunCarriesTheAccountThroughEverySessionAndItsJournalVeri
     EXPECT_TRUE(std::any_of(snapshot.positions.begin(), snapshot.positions.end(), [](const auto& p) {
       return p.position.contract.osi_symbol() == md::parse_osi("SPXW260918C06000000")->osi_symbol() && p.position.quantity == 1;
     }));
-    // Some of the short puts were assigned at the rollover, delivering shares that
-    // were held into SPY's ex-date and paid its dividend.
+    // Some short calls were assigned at rollover, delivering short shares held
+    // into SPY's ex-date, which owe its dividend.
     ASSERT_EQ(snapshot.stocks.size(), 1U);
     const auto shares = snapshot.stocks.front().position.shares;
-    EXPECT_GT(shares, 0);
+    EXPECT_LT(shares, 0);
     EXPECT_EQ(shares % 100, 0);
     ASSERT_EQ(snapshot.dividends.size(), 1U);
     EXPECT_EQ(snapshot.dividends.front().ex_date, thursday);
