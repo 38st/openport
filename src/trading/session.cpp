@@ -424,6 +424,95 @@ bool touches(const OrderRequest& r, const std::string& symbol) {
   return r.symbol == symbol || std::any_of(r.legs.begin(), r.legs.end(), [&](const Leg& leg) { return leg.symbol == symbol; });
 }
 Quantity signed_contracts(const Leg& leg, Quantity units) { return leg.side == Side::Buy ? units * leg.ratio : -units * leg.ratio; }
+// Same freshness policy as portfolio_risk: invalid, future or stale Greeks
+// cannot establish direction. Dollar delta includes spot, as the risk buckets do.
+std::optional<double> option_dollar_delta(const State& s, const std::string& symbol, Quantity quantity) {
+  const auto c = s.contracts.find(symbol);
+  const auto v = s.valuations.find(symbol);
+  if (c == s.contracts.end() || v == s.valuations.end() || !valid_valuation(v->second) ||
+      v->second.time < 0 || v->second.time > s.time ||
+      observation_time(c->second, s.time) - v->second.time > s.config.limits.max_valuation_age) return std::nullopt;
+  const double delta = static_cast<double>(quantity) * c->second.multiplier * v->second.delta * v->second.spot;
+  return std::isfinite(delta) ? std::optional(delta) : std::nullopt;
+}
+std::optional<double> held_direction(const State& s, const std::string& underlying) {
+  double total = 0;
+  for (const auto& [symbol, p] : s.ledger.positions()) {
+    if (p.contract.underlying != underlying) continue;
+    const auto delta = option_dollar_delta(s, symbol, p.quantity);
+    if (!delta) return std::nullopt;
+    total += *delta;
+  }
+  if (const auto shares = shares_held(s, underlying); shares != 0) {
+    const auto price = stock_price(s, underlying);
+    if (!price) return std::nullopt;
+    total += static_cast<double>(shares) * price->dollars();
+  }
+  return std::isfinite(total) ? std::optional(total) : std::nullopt;
+}
+OpeningOrder opening_exposure(const State& s, const OrderRequest& request,
+                              const std::map<std::string, Quantity>& preceding = {}) {
+  OpeningOrder result;
+  auto legs = request.legs;
+  if (legs.empty()) legs.push_back({request.symbol, request.side, 1});
+  for (const auto& leg : legs) {
+    if (request.quantity <= 0 || leg.ratio < 1 || leg.ratio > kMaxRatio ||
+        request.quantity > std::numeric_limits<Quantity>::max() / leg.ratio ||
+        (leg.side != Side::Buy && leg.side != Side::Sell) || result.contracts.contains(leg.symbol)) {
+      result.decision = failure(Reason::INVALID_ORDER, "Invalid opening contract count or side");
+      return result;
+    }
+    const auto q = signed_contracts(leg, request.quantity);
+    auto position = held(s, leg.symbol);
+    if (const auto it = preceding.find(leg.symbol); it != preceding.end() && __builtin_add_overflow(position, it->second, &position)) {
+      result.decision = failure(Reason::ARITHMETIC_OVERFLOW, "Chained holdings overflow");
+      return result;
+    }
+    const auto closing = position != 0 && (position > 0) != (q > 0) ? std::min(magnitude(position), magnitude(q)) : 0;
+    const auto opening = magnitude(q) - closing;
+    result.contracts[leg.symbol] = opening;
+    result.opening = result.opening || opening > 0;
+  }
+  if (!result.opening) return result;
+  for (const auto& leg : legs) {
+    const auto c = s.contracts.find(leg.symbol);
+    if (c == s.contracts.end()) {
+      result.decision = failure(Reason::UNKNOWN_CONTRACT, "Opening order needs a registered contract");
+      return result;
+    }
+    const auto delta = option_dollar_delta(s, leg.symbol, signed_contracts(leg, request.quantity));
+    if (!delta) {
+      result.decision = failure(Reason::MISSING_VALUATION, "Fresh complete order valuations required to determine direction");
+      return result;
+    }
+    auto& total = result.dollar_delta[c->second.underlying];
+    total += *delta;
+    if (!std::isfinite(total)) {
+      result.decision = failure(Reason::MISSING_VALUATION, "Order dollar delta is not finite");
+      return result;
+    }
+  }
+  return result;
+}
+Decision hedging_direction_check(const State& s, const std::string& underlying, double delta) {
+  if (!s.config.rules.no_hedging || delta == 0) return {};
+  const auto held_delta = held_direction(s, underlying);
+  if (!held_delta) return failure(Reason::MISSING_VALUATION, "Fresh held valuations required to determine hedging direction");
+  if (*held_delta == 0 || (*held_delta > 0) == (delta > 0)) return {};
+  return {Reason::HEDGING, "Opening " + underlying + " dollar delta " + std::to_string(delta) +
+      " opposes held dollar delta " + std::to_string(*held_delta), delta, *held_delta, underlying,
+      RuleEvidence{underlying, delta, *held_delta}};
+}
+Decision hedging_check(const State& s, const Order& order) {
+  if (!s.config.rules.no_hedging || order.system || kept_within(order) || closing_only(s, order, false)) return {};
+  auto request = order.request;
+  request.quantity = order.remaining();
+  const auto exposure = opening_exposure(s, request);
+  if (!exposure.decision.ok()) return exposure.decision;
+  for (const auto& [underlying, delta] : exposure.dollar_delta)
+    if (auto d = hedging_direction_check(s, underlying, delta); !d.ok()) return d;
+  return {};
+}
 Quantity depth_used(Quantity size, Quantity left, Quantity offset = 0) {
   Quantity used = 0;
   if (__builtin_sub_overflow(size, left, &used) || __builtin_add_overflow(used, offset, &used))
@@ -1911,6 +2000,7 @@ Decision combo_check(const State& s, const Order& o, Stage stage) {
     return failure(Reason::PRICE_BAND, "The walk cap is outside the configured band around the net mid");
   const auto snapshot = measure(s);
   if (!snapshot.valuation_complete) return failure(Reason::STALE_QUOTE, "All held positions need fresh marks before trading");
+  if (const auto d = hedging_check(s, o); !d.ok()) return d;
   if (const auto d = contracts_held_check(s, o); !d.ok()) return d;
   if (stage == Stage::Accept)
     if (const auto d = trade_rules_check(s, o, snapshot.equity); !d.ok()) return d;
@@ -2063,6 +2153,7 @@ Decision order_check(const State& s, const Order& o, Stage stage = Stage::Accept
   }
   const auto snapshot = measure(s);
   if (!snapshot.valuation_complete) return failure(Reason::STALE_QUOTE, "All held positions need fresh marks before trading");
+  if (const auto d = hedging_check(s, o); !d.ok()) return d;
   if (const auto d = contracts_held_check(s, o); !d.ok()) return d;
   if (stage == Stage::Accept)
     if (const auto d = trade_rules_check(s, o, snapshot.equity); !d.ok()) return d;
@@ -5778,6 +5869,16 @@ std::string TradingSession::snapshot_json() const { return Json(*impl_->snapshot
 const SessionConfig& TradingSession::config() const { return impl_->state.config; }
 const Contracts& TradingSession::contracts() const { return impl_->state.contracts; }
 const Valuations& TradingSession::valuations() const { return impl_->state.valuations; }
+OpeningOrder TradingSession::opening_order(const OrderRequest& request, Timestamp time, const PreviewMarket& market,
+                                            const std::map<std::string, Quantity>& preceding) const {
+  return opening_exposure(prepared(impl_->state, time, market), request, preceding);
+}
+std::optional<double> TradingSession::held_dollar_delta(const std::string& underlying, Timestamp time) const {
+  auto state = impl_->state;
+  state.time = time;
+  return held_direction(state, underlying);
+}
+
 std::optional<QuoteObservation> TradingSession::quote(const std::string& symbol) const {
   const auto it = impl_->state.books.find(symbol);
   return it == impl_->state.books.end() ? std::nullopt : std::optional(it->second.quote);
@@ -6034,6 +6135,8 @@ CommandResult TradingSession::trade_stock(const std::string& symbol, Quantity si
     if (!reduces) {
       if (s.config.rules.require_stop_loss)
         return CommandResult{failure(Reason::STOP_REQUIRED, "This plan requires a stop-loss; share entries do not support brackets"), {}, 0};
+      if (const auto d = hedging_direction_check(s, symbol, static_cast<double>(signed_shares) * price->dollars()); !d.ok())
+        return CommandResult{d, {}, 0};
       const auto before = measure(s);
       if (!before.valuation_complete)
         return CommandResult{failure(Reason::STALE_QUOTE, "All held positions need fresh marks before opening shares"), {}, 0};

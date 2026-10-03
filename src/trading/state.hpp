@@ -38,7 +38,16 @@ inline void from_json(const Json& j, Reason& r) {
 template <class T> void added_field(const Json& j, const char* key, T& value) {
   if (const auto it = j.find(key); it != j.end()) it->get_to(value);
 }
-NLOHMANN_DEFINE_TYPE_NON_INTRUSIVE(Decision, code, message, actual, limit, scope)
+NLOHMANN_DEFINE_TYPE_NON_INTRUSIVE(RuleEvidence, underlying, order_dollar_delta, held_dollar_delta, other_account)
+inline void to_json(Json& j, const Decision& d) {
+  j = Json{{"code", d.code}, {"message", d.message}, {"actual", d.actual}, {"limit", d.limit}, {"scope", d.scope}};
+  if (d.evidence) j["evidence"] = *d.evidence;
+}
+inline void from_json(const Json& j, Decision& d) {
+  j.at("code").get_to(d.code); j.at("message").get_to(d.message);
+  j.at("actual").get_to(d.actual); j.at("limit").get_to(d.limit); j.at("scope").get_to(d.scope);
+  added_field(j, "evidence", d.evidence);
+}
 NLOHMANN_DEFINE_TYPE_NON_INTRUSIVE(Trail, unit, value)
 inline void to_json(Json& j, const Trigger& t) {
   j = Json{{"source", t.source}, {"direction", t.direction}, {"level", t.level}};
@@ -313,6 +322,7 @@ inline Json optional_rule_defaults() {
               {"account_type", d.account_type}, {"house_margin_percent", d.house_margin_percent},
               {"pm_vol_shock", d.pm_vol_shock},
               {"max_contracts_held", d.max_contracts_held},
+              {"no_hedging", d.no_hedging}, {"no_counter_positions", d.no_counter_positions},
               {"require_stop_loss", d.require_stop_loss}, {"max_trade_risk", d.max_trade_risk},
               {"max_trade_risk_percent", d.max_trade_risk_percent},
               {"time_limit_days", d.time_limit_days}, {"inactivity_days", d.inactivity_days},
@@ -339,6 +349,7 @@ inline void to_json(Json& j, const AccountRules& r) {
                  {"account_type", r.account_type}, {"house_margin_percent", r.house_margin_percent},
                  {"pm_vol_shock", r.pm_vol_shock},
                  {"max_contracts_held", r.max_contracts_held},
+                 {"no_hedging", r.no_hedging}, {"no_counter_positions", r.no_counter_positions},
                  {"require_stop_loss", r.require_stop_loss}, {"max_trade_risk", r.max_trade_risk},
                  {"max_trade_risk_percent", r.max_trade_risk_percent},
                  {"time_limit_days", r.time_limit_days}, {"inactivity_days", r.inactivity_days},
@@ -385,6 +396,7 @@ inline void from_json(const Json& j, AccountRules& r) {
   added_field(j, "account_type", r.account_type); added_field(j, "house_margin_percent", r.house_margin_percent);
   added_field(j, "pm_vol_shock", r.pm_vol_shock);
   added_field(j, "max_contracts_held", r.max_contracts_held);
+  added_field(j, "no_hedging", r.no_hedging); added_field(j, "no_counter_positions", r.no_counter_positions);
   added_field(j, "require_stop_loss", r.require_stop_loss); added_field(j, "max_trade_risk", r.max_trade_risk);
   added_field(j, "max_trade_risk_percent", r.max_trade_risk_percent);
   added_field(j, "time_limit_days", r.time_limit_days); added_field(j, "inactivity_days", r.inactivity_days);

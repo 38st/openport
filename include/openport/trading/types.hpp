@@ -35,10 +35,11 @@ enum class Reason {
   ACCOUNT_TYPE, INVALID_ALERT, UNKNOWN_ALERT, PLAYBOOK_TIME_STOP, PLAYBOOK_TRAILING_STOP, PLAYBOOK_DTE_STOP, PLAYBOOK_DAYS_IN_TRADE_STOP,
   MAX_CONTRACTS_HELD, STOP_REQUIRED, MAX_TRADE_RISK,
   TIME_LIMIT, INACTIVITY, INSTRUMENT_NOT_ALLOWED, OUTSIDE_PLAN_HOURS,
-  FLAT_TIME, OVERNIGHT_HOLD, SCALING_LIMIT, TRADE_CONSISTENCY, MIN_TRADES, MIN_HOLD, MICROSCALPING
+  FLAT_TIME, OVERNIGHT_HOLD, SCALING_LIMIT, TRADE_CONSISTENCY, MIN_TRADES, MIN_HOLD, MICROSCALPING,
+  HEDGING, COUNTER_POSITION
 };
 /// The last Reason; recorded codes are strings, so new codes append here.
-inline constexpr Reason kLastReason = Reason::MICROSCALPING;
+inline constexpr Reason kLastReason = Reason::COUNTER_POSITION;
 [[nodiscard]] std::string_view to_string(Reason reason) noexcept;
 
 class TradingError : public std::runtime_error {
@@ -49,6 +50,12 @@ class TradingError : public std::runtime_error {
   Reason code_;
 };
 
+struct RuleEvidence {
+  std::string underlying;
+  double order_dollar_delta = 0;
+  double held_dollar_delta = 0;
+  std::string other_account = {};
+};
 /// actual/limit are populated for numeric checks; scope is the underlying or "aggregate".
 struct Decision {
   Reason code = Reason::NONE;
@@ -56,6 +63,7 @@ struct Decision {
   std::optional<double> actual;
   std::optional<double> limit;
   std::string scope;
+  std::optional<RuleEvidence> evidence = {};
   [[nodiscard]] bool ok() const { return code == Reason::NONE; }
 };
 
@@ -658,6 +666,8 @@ struct AccountRules {
   std::int64_t day_end_minutes = kDayEndMinutes;
   std::optional<FeeSchedule> fees;  ///< Empty keeps SessionConfig::fee_per_contract.
   Quantity max_contracts_held = 0;  ///< Held options plus working opening contracts, 1-100000; zero disables.
+  bool no_hedging = false;  ///< Opening orders cannot oppose held delta on their underlying.
+  bool no_counter_positions = false;  ///< Server gate against other live accounts' held delta.
   bool require_stop_loss = false;  ///< Opening option orders need a protective bracket stop.
   Money max_trade_risk;            ///< Per-order loss at its stop or bounded expiry payoff, excluding fees; zero disables.
   std::int64_t max_trade_risk_percent = 0;  ///< Percent of equity less the plan floor, 0-100; zero disables.

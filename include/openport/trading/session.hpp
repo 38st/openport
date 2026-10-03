@@ -196,6 +196,15 @@ struct PreviewMarket {
   std::vector<QuoteObservation> quotes;
   std::vector<Valuation> valuations;
 };
+/// Read-only pre-trade facts for server gates. Dollar delta is the whole order's
+/// signed delta, including its closing legs. Missing Greeks leave decision set
+/// to MISSING_VALUATION; contract counts remain available.
+struct OpeningOrder {
+  bool opening = false;
+  std::map<std::string, Quantity> contracts;
+  std::map<std::string, double> dollar_delta;
+  Decision decision;
+};
 /// Advice on accepted terms that are rarely meant: STOP_AS_LIMIT (a bracket stop
 /// given only a limit price rests as a limit exit), STOP_REACHED (its trigger is
 /// already reached, so it fires at once), TARGET_REACHED (the take-profit is already
@@ -565,6 +574,11 @@ class TradingSession {
   [[nodiscard]] const SessionConfig& config() const;
   [[nodiscard]] const Contracts& contracts() const;
   [[nodiscard]] const Valuations& valuations() const;
+  [[nodiscard]] OpeningOrder opening_order(const OrderRequest& request, Timestamp time, const PreviewMarket& market = {},
+      const std::map<std::string, Quantity>& preceding = {}) const;
+  /// Held positions only, on one underlying, at fresh marks/valuations. Unknown
+  /// direction is null, never zero; no position is zero.
+  [[nodiscard]] std::optional<double> held_dollar_delta(const std::string& underlying, Timestamp time) const;
   [[nodiscard]] std::optional<QuoteObservation> quote(const std::string& symbol) const;
   /// The quotes whose displayed size this account's orders have taken some of.
   [[nodiscard]] std::map<std::string, SizeLeft> sizes_left() const;

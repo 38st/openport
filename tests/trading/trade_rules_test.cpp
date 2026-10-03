@@ -652,7 +652,7 @@ TEST(TradeRules, DisabledRulesAreAbsentFromJournalBytes) {
   }
   const auto recovery = FileJournal::read(file.path);
   for (const auto& record : recovery.records)
-    for (const auto* field : {"min_hold_seconds", "microscalp_seconds", "microscalp_percent", "short_profit", "first_stock_fill", "min_trades", "closed_trades", "trade_consistency_percent", "best_trade", "max_contracts_held", "require_stop_loss", "max_trade_risk", "max_trade_risk_percent"})
+    for (const auto* field : {"no_hedging", "no_counter_positions", "min_hold_seconds", "microscalp_seconds", "microscalp_percent", "short_profit", "first_stock_fill", "min_trades", "closed_trades", "trade_consistency_percent", "best_trade", "max_contracts_held", "require_stop_loss", "max_trade_risk", "max_trade_risk_percent"})
       EXPECT_EQ(record.payload.find(field), std::string::npos);
   auto s = TradingSession::recover(recovery);
   EXPECT_EQ(s.config().rules.max_contracts_held, 0);
@@ -667,6 +667,8 @@ TEST(TradeRules, DisabledRulesAreAbsentFromJournalBytes) {
   }
   JournalFile repeated;
   auto defaults = config();
+  defaults.rules.no_hedging = false;
+  defaults.rules.no_counter_positions = false;
   defaults.rules.max_contracts_held = 0;
   defaults.rules.require_stop_loss = false;
   defaults.rules.max_trade_risk = {};
@@ -693,6 +695,56 @@ TEST(TradeRules, ContractCapValidatesItsRange) {
   }
   rules.max_contracts_held = 100000;
   EXPECT_NO_THROW(validate_rules(rules));
+}
+
+TEST(TradeRules, HedgingChecksNetDeltaAndAllowsReductionsAndSystemExitsAcrossRecovery) {
+  ScriptedMarket call, put;
+  put.contract.type = pricing::OptionType::Put;
+  AccountRules rules; rules.no_hedging = true;
+  JournalFile file;
+  TradingSession s(config(rules), call.time, FileJournal::create(file.path));
+  call.seed(s); put.seed(s);
+  s.on_quotes({}, {put.valuation(-0.5)}, put.time);
+  ASSERT_TRUE(s.submit(call.market("long"), call.time).decision.ok());
+  const auto refused = s.submit(put.market("hedge"), put.time);
+  EXPECT_EQ(refused.decision.code, Reason::HEDGING);
+  ASSERT_TRUE(refused.decision.evidence);
+  EXPECT_EQ(refused.decision.evidence->underlying, "SPX");
+  EXPECT_EQ(refused.decision.evidence->order_dollar_delta, -250000);
+  EXPECT_EQ(refused.decision.evidence->held_dollar_delta, 250000);
+  EXPECT_EQ(s.preview(put.market("preview"), put.time).decision.code, Reason::HEDGING);
+  auto recovered = TradingSession::recover(FileJournal::read(file.path));
+  EXPECT_EQ(recovered.snapshot_json(), s.snapshot_json());
+  EXPECT_EQ(recovered.submit(put.market("after-recovery"), put.time).decision.code, Reason::HEDGING);
+  // A reversal opens and is refused, while closing the existing call is allowed.
+  EXPECT_EQ(s.submit(call.market("reverse", 2, Side::Sell), call.time).decision.code, Reason::HEDGING);
+  ASSERT_TRUE(s.submit(call.market("reduce", 1, Side::Sell), call.time).decision.ok());
+  ASSERT_TRUE(s.submit(put.market("new-direction"), put.time).decision.ok());
+  ASSERT_TRUE(s.close_positions({}, put.time).decision.ok());
+  // A delta-neutral combo has no opposite direction.
+  auto neutral = call.market("neutral"); neutral.symbol.clear();
+  neutral.legs = {{call.symbol(), Side::Buy, 1}, {put.symbol(), Side::Buy, 1}};
+  ASSERT_TRUE(s.submit(neutral, call.time).decision.ok());
+}
+
+TEST(TradeRules, HedgingIncludesSharesAndRejectsUnknownDelta) {
+  ScriptedMarket f;
+  f.contract = *md::parse_osi("SPY261022P00500000");
+  AccountRules rules; rules.no_hedging = true;
+  TradingSession s(config(rules), f.time);
+  f.seed(s);
+  s.on_quotes({}, {f.valuation(-0.5)}, f.time, {{"SPY", f.time, m("500")}});
+  ASSERT_TRUE(s.submit(f.market("put"), f.time).decision.ok());
+  EXPECT_EQ(s.preview_trade_stock("SPY", 1, f.time).decision.code, Reason::HEDGING);
+  EXPECT_EQ(s.trade_stock("SPY", 1, f.time).decision.code, Reason::HEDGING);
+  ASSERT_TRUE(s.close_positions({}, f.time).decision.ok());
+  ASSERT_TRUE(s.trade_stock("SPY", 1, f.time).decision.ok());
+  EXPECT_EQ(s.submit(f.market("hedges-shares"), f.time).decision.code, Reason::HEDGING);
+  EXPECT_EQ(s.trade_stock("SPY", -2, f.time).decision.code, Reason::HEDGING);
+  EXPECT_TRUE(s.trade_stock("SPY", -1, f.time).decision.ok());
+  auto missing = f.valuation(); missing.valid = false;
+  s.on_quotes({}, {missing}, f.time);
+  EXPECT_EQ(s.submit(f.market("unknown"), f.time).decision.code, Reason::MISSING_VALUATION);
 }
 }  // namespace
 }  // namespace openport::trading
