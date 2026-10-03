@@ -52,7 +52,7 @@ export function ChainView({ symbol, expiry, onExpiry }: { symbol: string; expiry
   const live = useLive()
   const account = useAccount().data
   const planNotice = planEntryNotice(account?.rules, symbol, planMarketTime(account?.time,
-    live.underlyings.find((u) => u.symbol === symbol)?.as_of, live.source !== "live" ? live.replay?.time : null), false)
+    live.underlyings.find((u) => u.symbol === symbol)?.as_of, live.source !== "live" ? live.replay?.time : null), false, account?.evaluation)
   const version = live.version(symbol)
   const [window, setWindow] = useState(0.05)
   const [showGreeks, setShowGreeks] = useState(false)

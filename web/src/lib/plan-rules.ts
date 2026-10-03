@@ -119,6 +119,9 @@ export function timeRuleEntries(r: AccountRules): { title: string; body: string 
   return [
     ...(r.flat_time ? [{ title: "Mandatory flat time", body: `Flat by ${r.flat_time} ET: options and shares close; openings blocked until ${dayEnd(r)} ET. Unfilled closes retry on fresh quotes.` }] : []),
     ...(r.no_overnight ? [{ title: "No overnight holds", body: `Positions held at the ${dayEnd(r)} ET rollover fail the attempt (OVERNIGHT_HOLD); positions awaiting settlement are excluded` }] : []),
+    ...((r.news_before_minutes || r.news_after_minutes) ? [{ title: "News blackouts", body: `News: ${r.news_before_minutes ?? 0} minutes before / ${r.news_after_minutes ?? 0} after; ${r.news_action === "flatten" ? "closes positions once" : "blocks openings"}; exits keep working` }] : []),
+    ...(r.hold_restrictions?.length ? [{ title: "Holding restrictions", body: `Close before ${r.hold_cutoff ?? "15:45"} ET for ${r.hold_restrictions.join(", ")}; holding across the boundary fails the attempt` }] : []),
+    ...(r.events?.length ? [{ title: "Plan event calendar", body: `${r.events.length} saved events: ${r.events.map((e) => `${e.label || e.kind} ${e.symbol || "all underlyings"} ${e.time}${e.session ? ` ${e.session}` : ""}`).join("; ")}` }] : []),
     ...(r.time_limit_days ? [{ title: "Evaluation time limit", body: `Evaluation ends after ${r.time_limit_days} calendar days` }] : []),
     ...(r.inactivity_days ? [{ title: "Inactivity limit", body: `Inactivity limit: ${r.inactivity_days} calendar days without your own execution` }] : []),
     ...(r.underlyings?.length ? [{ title: "Allowed underlyings", body: `Allowed underlyings: ${r.underlyings.join(", ")}${r.underlyings.includes("SPX") ? " (SPX includes SPXW options)" : ""}` }] : []),
@@ -144,6 +147,16 @@ export function planEntryNotice(r: AccountRules | undefined, underlying: string,
   if (r.underlyings?.length && !r.underlyings.includes(underlying))
     return `INSTRUMENT_NOT_ALLOWED: ${underlying} is outside this plan's allowed underlyings (${r.underlyings.join(", ")}); closing orders still work.`
   const timestamp = Date.parse(time ?? "")
+  for (const e of r.events ?? []) {
+    if (e.kind !== "news" || (e.symbol && e.symbol !== underlying) || !(r.news_before_minutes || r.news_after_minutes)) continue
+    const at = Date.parse(e.time), end = at + (r.news_after_minutes ?? 0) * 60_000
+    if (timestamp >= at - (r.news_before_minutes ?? 0) * 60_000 && timestamp < end)
+      return `NEWS_BLACKOUT: ${e.label || "news"} blocks openings until ${new Date(end).toISOString()}; closing orders still work.`
+  }
+  for (const e of [...(evaluation?.active_events ?? []), ...(evaluation?.next_event ? [evaluation.next_event] : [])]) {
+    if (e.kind !== "news" && (!e.symbol || e.symbol === underlying) && timestamp >= Date.parse(e.start) && timestamp < Date.parse(e.end))
+      return `HOLD_RESTRICTED: ${e.kind} holding cutoff reached for ${e.symbol || "the account"}; closing orders still work.`
+  }
   if (r.trading_start && r.trading_end && Number.isFinite(timestamp)) {
     const clock = planClock.format(timestamp)
     if (clock < r.trading_start || clock >= r.trading_end)
@@ -167,6 +180,8 @@ export function timeRuleNotices(e: Evaluation, r: AccountRules, time?: string): 
   return [
     ...((e.flat_now ?? flatNow(r, time)) ? ["Flat time passed; openings blocked until the day ends"]
       : remaining != null && remaining > 0 && remaining <= 30 ? [`Flat by ${r.flat_time} ET, positions will be closed`] : []),
+    ...(e.active_events ?? []).filter((w) => w.kind === "news").map((w) => `Active news blackout: ${w.label || "News"}, ${w.symbol || "all underlyings"}, until ${w.end}. Closing orders still work.`),
+    ...(e.next_event ? [`${e.next_event.active ? "Active" : "Next"} ${e.next_event.kind === "news" ? "news blackout" : `${e.next_event.kind} holding cutoff`}: ${e.next_event.label || e.next_event.kind}, ${e.next_event.symbol || "all underlyings"}, ${e.next_event.start} until ${e.next_event.end}.`] : []),
     ...(e.days_left != null && e.deadline ? [`Evaluation: ${e.days_left} calendar days left; deadline ${e.deadline}.`] : []),
     ...(r.inactivity_days && e.inactive_days != null && e.inactivity_deadline && r.inactivity_days - e.inactive_days <= 7
       ? [`Inactivity: ${Math.max(0, r.inactivity_days - e.inactive_days)} calendar days left to execute a trade; deadline ${e.inactivity_deadline}.`] : []),

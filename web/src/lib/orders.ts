@@ -98,11 +98,12 @@ export function checkCode(reason: Decision): string {
 export function reasonEvidence(reason: Decision | null | undefined): string | null {
   if (!reason) return null
   const code = checkCode(reason)
-  const value = (n: number) => dollarChecks.has(code) ? formatMoney(n.toFixed(2))
+  const value = (n: number | string) => typeof n === "string" ? n : dollarChecks.has(code) ? formatMoney(n.toFixed(2))
     : `${n.toLocaleString("en-US", { maximumFractionDigits: 2 })}${units[code] ?? ""}`
   const parts: string[] = []
   if (reason.actual != null && reason.limit != null) parts.push(`${value(reason.actual)} against a limit of ${value(reason.limit)}`)
   else if (reason.actual != null) parts.push(value(reason.actual))
+  else if (reason.limit != null) parts.push(`Limit ${value(reason.limit)}`)
   if (reason.scope) parts.push(reason.scope)
   return parts.length ? parts.join(" · ") : null
 }

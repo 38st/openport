@@ -20,8 +20,8 @@ export class ApiError extends Error {
     readonly status: number,
     message: string,
     readonly code: string = "HTTP_ERROR",
-    readonly actual: number | null = null,
-    readonly limit: number | null = null,
+    readonly actual: number | string | null = null,
+    readonly limit: number | string | null = null,
     readonly scope: string | null = null,
   ) {
     super(message)
@@ -36,8 +36,8 @@ export function mapApiError(status: number, body: unknown, fallback: string): Ap
     const e = error as Record<string, unknown>
     return new ApiError(status, typeof e.message === "string" ? e.message : fallback,
       typeof e.code === "string" ? e.code : "HTTP_ERROR",
-      typeof e.actual === "number" && Number.isFinite(e.actual) ? e.actual : null,
-      typeof e.limit === "number" && Number.isFinite(e.limit) ? e.limit : null,
+      typeof e.actual === "string" || (typeof e.actual === "number" && Number.isFinite(e.actual)) ? e.actual : null,
+      typeof e.limit === "string" || (typeof e.limit === "number" && Number.isFinite(e.limit)) ? e.limit : null,
       typeof e.scope === "string" ? e.scope : null)
   }
   return new ApiError(status, fallback)
@@ -228,6 +228,7 @@ export const api = {
   series: (symbol: string, signal?: AbortSignal) => get<VolatilitySeries>(`${underlying(symbol)}/series?interval=1d&fields=mfiv30,atm30,rr25,rv21,proxy_iv30`, signal),
   briefSeries: (symbol: string, now: number, signal?: AbortSignal) => get<VolatilitySeries>(`${underlying(symbol)}/series?interval=1d&fields=mfiv30,atm30,rr25&from=${Math.floor(now / 1000) - 21 * 86400}&to=${Math.floor(now / 1000)}`, signal),
   volatility: (symbol: string, signal?: AbortSignal) => get<Volatility>(`${underlying(symbol)}/volatility`, signal),
+  calendarEvents: (signal?: AbortSignal) => request<{ events: import("./trading-types").PlanEvent[] }>("/api/calendar/events", { signal, headers: readHeaders() }),
   summary: (symbol: string, signal?: AbortSignal) => get<Summary>(`${underlying(symbol)}/summary`, signal),
   chain: (symbol: string, expiry: string, window: number, signal?: AbortSignal) =>
     get<Chain>(`${underlying(symbol)}/chain?expiry=${encodeURIComponent(expiry)}&window=${window}`, signal),

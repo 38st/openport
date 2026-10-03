@@ -12,7 +12,7 @@ export function TradingError({ error }: { error: unknown }) {
   return <div role="alert" className="rounded-md border border-danger/50 p-3 text-sm text-danger [overflow-wrap:anywhere]">
     {error instanceof ApiError ? <>
       <strong>{error.code}</strong>: {error.message}
-      {(error.actual != null || error.limit != null) && <div className="mt-1 tabular">Actual {fixed(error.actual, 2)} · Limit {fixed(error.limit, 2)}{error.scope ? ` · ${error.scope}` : ""}</div>}
+      {(error.actual != null || error.limit != null) && <div className="mt-1 tabular">Actual {typeof error.actual === "string" ? error.actual : fixed(error.actual, 2)} · Limit {typeof error.limit === "string" ? error.limit : fixed(error.limit, 2)}{error.scope ? ` · ${error.scope}` : ""}</div>}
     </> : error instanceof Error || error instanceof DOMException ? error.message : "Request failed. Please retry."}
   </div>
 }

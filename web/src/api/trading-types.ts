@@ -68,7 +68,16 @@ export interface SizeScalingStatus {
 }
 export interface ScalingStep { profit: Money; contracts: number }
 export interface ScalingStatus { limit: number; held: number; profit: Money; next: ScalingStep | null }
+export type HoldRestriction = "weekend" | "earnings" | "ex_dividend" | "split"
+export interface PlanEvent { kind: "news" | "earnings" | "ex_dividend" | "split"; time: string; symbol?: string; session?: "before_open" | "after_close"; label?: string }
+export interface EventWindow { kind: PlanEvent["kind"] | "weekend"; symbol: string | null; label: string | null; start: string; end: string; active: boolean }
 export interface AccountRules {
+  events?: PlanEvent[]
+  news_before_minutes?: number
+  news_after_minutes?: number
+  news_action?: "block" | "flatten"
+  hold_restrictions?: HoldRestriction[]
+  hold_cutoff?: string
   plan_id?: string | null
   plan: string | null
   phase: "evaluation" | "funded"
@@ -147,7 +156,7 @@ export interface AccountRules {
 export type ProfitBasis = "equity" | "balance"
 export type DailyLossBasis = "equity" | "balance" | "higher" | "peak"
 /**
- * A reason code with its numeric evidence: `actual` against `limit` for a numeric
+ * A reason code with numeric or calendar evidence (NEWS_BLACKOUT ISO UTC timestamps; HOLD_RESTRICTED HH:MM limit and kind:scope): `actual` against `limit` for a numeric
  * check, and `scope`, the underlying or "aggregate" it applies to. The evidence is
  * absent on older servers and null when a check has none.
  */
@@ -157,7 +166,7 @@ export type PlanRuleReason =
   | "TRADE_CONSISTENCY" | "MIN_TRADES" | "MIN_HOLD" | "MICROSCALPING" | "HEDGING" | "COUNTER_POSITION" | "MAX_VOLUME_SHARE"
 export type RuleEvidence = { underlying: string; order_dollar_delta: number; held_dollar_delta: number; other_account?: string }
   | { contract: string; contracts: number; volume: number | null; percent: number }
-export interface Decision { evidence?: RuleEvidence; code: PlanRuleReason | string; message: string; actual?: number | null; limit?: number | null; scope?: string | null }
+export interface Decision { evidence?: RuleEvidence; code: PlanRuleReason | string; message: string; actual?: number | string | null; limit?: number | string | null; scope?: string | null }
 /** `requirement` is `short_requirement` under a name that fits portfolio margin too; absent on older servers. */
 export interface BuyingPower { available: Money; reserved: Money; short_requirement: Money; requirement?: Money }
 /**
@@ -264,6 +273,8 @@ export interface PayoutStatus {
   split_percent: number
 }
 export interface Evaluation {
+  next_event?: EventWindow | null
+  active_events?: EventWindow[]
   time_limit_days?: number | null
   deadline?: string | null
   days_left?: number | null

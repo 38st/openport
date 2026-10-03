@@ -1,10 +1,18 @@
-import type { ReactNode } from "react"
-import type { AccountRules, DailyLossBasis, Money, Plan } from "../api/trading-types"
+import { useState, type ReactNode } from "react"
+import { api } from "../api/client"
+import { useLive } from "../api/live"
+import type { AccountRules, DailyLossBasis, Money, Plan, PlanEvent, HoldRestriction } from "../api/trading-types"
 import { dailyLossBasisText, dayEnd, sizeScalingRule, type SizeScalingForm } from "../lib/plan-rules"
 import { compareMoney, validMoney } from "../lib/trading"
 
 /** The custom plan form: text fields as typed, choices as their API words. */
 export interface PlanForm extends SizeScalingForm {
+  events: PlanEvent[]
+  news_before_minutes: string
+  news_after_minutes: string
+  news_action: "block" | "flatten"
+  hold_restrictions: HoldRestriction[]
+  hold_cutoff: string
   name: string
   scaling: { profit: string; contracts: string }[]
   phase: AccountRules["phase"]
@@ -60,6 +68,9 @@ export function planForm(plan: Pick<Plan, "initial_cash" | "rules">): PlanForm {
   const r = plan.rules
   const p = r.payouts
   return {
+    events: r.events?.map((e) => ({ ...e })) ?? [],
+    news_before_minutes: String(r.news_before_minutes ?? 0), news_after_minutes: String(r.news_after_minutes ?? 0),
+    news_action: r.news_action ?? "block", hold_restrictions: [...(r.hold_restrictions ?? [])], hold_cutoff: r.hold_cutoff ?? "15:45",
     phase: r.phase,
     size_scaling_enabled: r.size_scaling ? "yes" : "no",
     size_profit_percent: String(r.size_scaling?.profit_percent ?? 10), size_payouts: String(r.size_scaling?.payouts ?? 2),
@@ -138,6 +149,17 @@ export function customPlan(form: PlanForm, base: AccountRules): { initial_cash: 
     return { error: "Set both trading hours as HH:MM ET, with the start before the end" }
   if (form.flat_time && (!/^([01]\d|2[0-3]):[0-5]\d$/.test(form.flat_time) || form.flat_time >= form.day_end))
     return { error: "flat_time must be HH:MM New York time from 00:00 to 23:59, before day_end" }
+  for (const value of [form.news_before_minutes, form.news_after_minutes])
+    if (!Number.isInteger(count(value)) || count(value) < 0 || count(value) > 240) return { error: "News minutes must be integers from 0 to 240" }
+  if (!clock(form.hold_cutoff) || form.hold_cutoff >= form.day_end) return { error: "Holding cutoff must be HH:MM ET before day end" }
+  if (form.events.length > 256) return { error: "Use at most 256 events" }
+  for (const e of form.events) {
+    if ((e.symbol || e.kind !== "news") && !/^[A-Z0-9.]{1,12}$/.test(e.symbol ?? "")) return { error: "Corporate events need an uppercase underlying symbol" }
+    if (Array.from(e.label ?? "").length > 64) return { error: "Event labels have at most 64 characters" }
+    if (e.kind === "news" ? !/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d{1,9})?Z$/.test(e.time) || !Number.isFinite(Date.parse(e.time))
+      : !/^\d{4}-\d{2}-\d{2}$/.test(e.time) || !Number.isFinite(Date.parse(e.time)) || new Date(e.time).toISOString().slice(0, 10) !== e.time)
+      return { error: "News events need a UTC timestamp ending in Z; other events need a valid YYYY-MM-DD date" }
+  }
   const drawdown = amount(form.max_drawdown)
   if (form.lock === "balance" && !amount(form.lock_balance)) return { error: "Enter the balance the floor locks at" }
   const trailing = drawdown != null && form.drawdown_mode !== "static"
@@ -179,6 +201,8 @@ export function customPlan(form: PlanForm, base: AccountRules): { initial_cash: 
   const rules: AccountRules = {
     ...base, plan: name, plan_id: null, phase: form.phase, payouts, size_scaling: sizeScaling.value,
     scaling: form.scaling.map((step) => ({ profit: step.profit.trim(), contracts: count(step.contracts) })),
+    events: form.events, news_before_minutes: count(form.news_before_minutes), news_after_minutes: count(form.news_after_minutes),
+    news_action: form.news_action, hold_restrictions: form.hold_restrictions, hold_cutoff: form.hold_cutoff,
     profit_target: form.phase === "funded" ? null : amount(form.profit_target), profit_basis: form.profit_basis,
     max_drawdown: drawdown, drawdown_mode: form.drawdown_mode,
     lock_at_start: trailing && form.lock === "start", lock_balance: trailing && form.lock === "balance" ? amount(form.lock_balance) : null,
@@ -214,13 +238,32 @@ function Field({ label, hint, children }: { label: string; hint?: string; childr
 
 /** Edits a custom plan's rules; the dialog submits it. */
 export function PlanEditor({ form, onChange, disabled }: { form: PlanForm; onChange: (form: PlanForm) => void; disabled?: boolean }) {
+  const [importStatus, setImportStatus] = useState("")
+  const live = useLive()
+  const mergeEvents = (events: PlanEvent[]) => {
+    const merged = [...form.events, ...events].filter((e, i, all) => all.findIndex((v) => JSON.stringify(v) === JSON.stringify(e)) === i)
+    if (merged.length > 256) { setImportStatus("Import exceeds 256 events; remove rows first."); return }
+    onChange({ ...form, events: merged }); setImportStatus(`Imported ${merged.length - form.events.length} events. Review and save the plan to apply them.`)
+  }
+  const importCalendar = async () => {
+    try { mergeEvents((await api.calendarEvents()).events) } catch (e) { setImportStatus(e instanceof Error ? e.message : "Calendar import failed") }
+  }
+  const importDividends = async () => {
+    try {
+      const symbols = form.underlyings.trim() ? form.underlyings.trim().split(/[\s,]+/) : live.underlyings.map((u) => u.symbol)
+      const summaries = await Promise.all(symbols.map(async (symbol) => ({ symbol, summary: await api.summary(symbol) })))
+      mergeEvents(summaries.flatMap(({ symbol, summary }) => [...new Set(summary.expiries.flatMap((e) => e.dividends?.map((d) => d.ex_date) ?? []))]
+        .map((time): PlanEvent => ({ kind: "ex_dividend", time, symbol, label: "Dividend ex-date" }))))
+    } catch (e) { setImportStatus(e instanceof Error ? e.message : "Dividend import failed") }
+  }
+  const changeEvent = (index: number, patch: Partial<PlanEvent>) => onChange({ ...form, events: form.events.map((e, i) => i === index ? { ...e, ...patch } : e) })
   const set = <K extends keyof PlanForm>(key: K) => (value: PlanForm[K]) => onChange({ ...form, [key]: value })
-  const text = (key: Exclude<keyof PlanForm, "scaling">, placeholder = "") => <input className="trade-input w-full" value={form[key]} placeholder={placeholder}
-    disabled={disabled} inputMode={["name", "day_end", "payout_caps", "payout_consistency_percents", "underlyings", "trading_start", "trading_end", "flat_time"].includes(key) ? "text" : "decimal"}
+  const text = (key: Exclude<keyof PlanForm, "scaling" | "events" | "hold_restrictions">, placeholder = "") => <input className="trade-input w-full" value={form[key] as string} placeholder={placeholder}
+    disabled={disabled} inputMode={["name", "day_end", "payout_caps", "payout_consistency_percents", "underlyings", "trading_start", "trading_end", "flat_time", "hold_cutoff"].includes(key) ? "text" : "decimal"}
     onChange={(event) => set(key)(event.target.value as never)} />
-  const choice = <K extends Exclude<keyof PlanForm, "scaling">>(key: K, options: [PlanForm[K], string][]) => <select className="trade-input w-full"
-    value={form[key]} disabled={disabled} onChange={(event) => set(key)(event.target.value as PlanForm[K])}>
-    {options.map(([value, label]) => <option key={value} value={value}>{label}</option>)}
+  const choice = <K extends Exclude<keyof PlanForm, "scaling" | "events" | "hold_restrictions">>(key: K, options: [PlanForm[K], string][]) => <select className="trade-input w-full"
+    value={form[key] as string} disabled={disabled} onChange={(event) => set(key)(event.target.value as PlanForm[K])}>
+    {options.map(([value, label]) => <option key={String(value)} value={String(value)}>{label}</option>)}
   </select>
   const trailing = form.drawdown_mode !== "static"
   return (
@@ -301,6 +344,38 @@ export function PlanEditor({ form, onChange, disabled }: { form: PlanForm; onCha
         </div>)}
         <button type="button" className="trade-button" disabled={disabled || form.scaling.length >= 16}
           onClick={() => set("scaling")([...form.scaling, { profit: form.scaling.length ? "" : "0", contracts: form.scaling.at(-1)?.contracts ?? "2" }])}>Add scaling step</button>
+      </div>
+      <Field label="News minutes before" hint="0–240; both zero disables blackouts">{text("news_before_minutes")}</Field>
+      <Field label="News minutes after">{text("news_after_minutes")}</Field>
+      <Field label="News action">{choice("news_action", [["block", "Block openings"], ["flatten", "Block and close positions once"]])}</Field>
+      <Field label="Holding cutoff (ET)" hint="Before day end; defaults to 15:45">{text("hold_cutoff")}</Field>
+      <div className="sm:col-span-2"><p className="text-sm">Forbid holding over</p><div className="flex flex-wrap gap-3">
+        {(["weekend", "earnings", "ex_dividend", "split"] as HoldRestriction[]).map((kind) => <label key={kind} className="text-sm">
+          <input type="checkbox" checked={form.hold_restrictions.includes(kind)} onChange={(e) => set("hold_restrictions")(e.target.checked
+            ? [...form.hold_restrictions, kind] : form.hold_restrictions.filter((v) => v !== kind))} /> {kind.replaceAll("_", " ")}</label>)}
+      </div></div>
+      <div className="grid gap-2 sm:col-span-2" aria-label="Plan event calendar">
+        <p className="text-sm">Event calendar · saved with this plan; imports do not update it automatically.</p>
+        <div className="flex flex-wrap gap-3"><button type="button" onClick={() => void importCalendar()}>Import server calendar</button>
+          <button type="button" onClick={() => void importDividends()}>Import known dividend ex-dates</button>
+          <button type="button" disabled={form.events.length >= 256} onClick={() => set("events")([...form.events, { kind: "news", time: "" }])}>Add event</button></div>
+        {importStatus && <p role="status" className="text-sm">{importStatus}</p>}
+        {form.events.map((e, i) => <div key={i} className="grid gap-2 rounded border border-border p-2 sm:grid-cols-3">
+          <Field label={`Event ${i + 1} kind`}><select className="trade-input" value={e.kind} onChange={(v) => {
+            const kind = v.target.value as PlanEvent["kind"]
+            const updated = { ...e, kind }; delete updated.session
+            if (kind === "earnings") updated.session = "before_open"
+            set("events")(form.events.map((old, n) => n === i ? updated : old))
+          }}>{["news", "earnings", "ex_dividend", "split"].map((kind) => <option key={kind}>{kind}</option>)}</select></Field>
+          <Field label={`Event ${i + 1} time`} hint={e.kind === "news" ? "UTC: YYYY-MM-DDTHH:MM:SSZ" : "YYYY-MM-DD"}>
+            <input className="trade-input" value={e.time} onChange={(v) => changeEvent(i, { time: v.target.value })} /></Field>
+          <Field label={`Event ${i + 1} underlying`} hint={e.kind === "news" ? "Blank for all underlyings" : "Required"}>
+            <input className="trade-input" value={e.symbol ?? ""} onChange={(v) => changeEvent(i, { symbol: v.target.value })} /></Field>
+          {e.kind === "earnings" && <Field label={`Event ${i + 1} session`}><select className="trade-input" value={e.session ?? "before_open"}
+            onChange={(v) => changeEvent(i, { session: v.target.value as PlanEvent["session"] })}><option value="before_open">Before open</option><option value="after_close">After close</option></select></Field>}
+          <Field label={`Event ${i + 1} label`}><input className="trade-input" maxLength={128} value={e.label ?? ""} onChange={(v) => changeEvent(i, { label: v.target.value })} /></Field>
+          <button type="button" onClick={() => set("events")(form.events.filter((_, n) => n !== i))}>Remove event {i + 1}</button>
+        </div>)}
       </div>
       <Field label="Strategies">{choice("strategies", [["buy_only", "Buy only, single leg"], ["defined_risk", "Defined risk"], ["any", "Any"]])}</Field>
     </fieldset>
