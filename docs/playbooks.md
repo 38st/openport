@@ -62,7 +62,15 @@ midnight. The normal product session and feed-freshness checks still apply.
 | `term_inverted` | Whether model-free 9d/30d is greater than one; false includes equality |
 | `dte: {min,max}` | Inclusive ACT/365 calendar days to the selected expiry's settlement |
 
-A missing input fails its condition. Prior close uses the preceding business day's
+A missing input fails its condition. The publication's `reasons` and backtests'
+`entry_reasons` name the first failed condition, checked in this fixed order: DTE,
+IV rank, VRP, term structure, then price. Reasons include measured values and
+thresholds, for example `IV rank 0.12 is outside 0.30-1.00` or
+`Price 5912.30 is not above day open 5920.00 + 0.00`. Missing inputs name what is
+absent: `IV rank unavailable (no IV history)`, `Day open unavailable (no 09:30 minute)`
+or `Prior close unavailable`. Formatting uses fixed decimal precision and no locale.
+
+Prior close uses the preceding business day's
 official close (in a scenario replay or backtest, the previous close the generated
 day opens with), or its stored daily close. Day open requires the 09:30 minute,
 not the first later observation of a partially recorded day. No missing opening
@@ -102,8 +110,14 @@ the better price, so it never asks less than its percent; stop triggers take any
 day allowance, it is that later day's deadline, moved back to the previous business
 day if necessary. It is capped at the day's regular close. At the first market
 update at or after the deadline, a time stop cancels the entry and its working exits
-and submits a reducing market IOC. It checks the close through the normal preview
-first: while the checks would refuse it, for example because a leg has no bid or
+and submits a reducing market IOC. New runs label those cancellations
+`PLAYBOOK_TIME_STOP` / `Playbook time stop`, visible in order reasons and detail,
+the Orders page, Journal trade details, the reducer journal and trade CSV's
+`time_stop_orders`. The close order retains `Playbook automatic time stop; entry N`
+in its note, shown in Orders and Journal details. Older recorded runs keep their
+original `USER_CANCEL` labels when verified.
+
+The time stop checks the close through the normal preview first: while the checks would refuse it, for example because a leg has no bid or
 its quotes are stale, it records no order and checks again at each update,
 submitting once the close can be accepted. The delayed closure then fails the
 time-stop adherence rule.
@@ -130,8 +144,15 @@ seconds for demo days and scenarios. A rule that turns on the clock, such as a
 window opening, a cooldown ending or a `close_by` deadline, therefore takes effect
 at the first update at or after that time: a cooldown ending at 10:05:07 allows the
 next entry at 10:05:15, which trades that snapshot's quotes. A stage holds selected
-contracts, units, exits and a version tag. It expires when conditions or the window
-end. Its ID stays the same while the same contracts are selected; its price, size
+contracts, units, exits and a version tag. Each stage's `order` is the exact body
+shape accepted by `POST /api/orders` (or `/api/replay/orders`): decimal-string
+prices, word-valued side/type/time_in_force, legs, optional bracket, tags, note and
+client_order_id. Clients may review or submit it themselves; normal validation,
+risk checks and client-ID deduplication still apply. `request` remains the legacy
+internal journal encoding with integer micro-dollar prices and numeric enums.
+Older servers omit `order`. The terminal continues using the stage send route.
+
+A stage expires when conditions or the window end. Its ID stays the same while the same contracts are selected; its price, size
 and exits follow the market. Send re-evaluates, then submits the stage's latest
 order through the normal order path, so a click on a moving market still sends. When other contracts are selected, the old ID is refused
 and the new stage is shown. Each entry gets a new client order ID, so a repeat send

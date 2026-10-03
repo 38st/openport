@@ -32,10 +32,10 @@ enum class Reason {
   // Plan decisions and objectives: what decided an attempt, what locked its day,
   // and what a pass still waits for.
   PROFIT_TARGET, DRAWDOWN_FLOOR, DAILY_LOSS_LIMIT, MIN_TRADING_DAYS, MIN_PROFITABLE_DAYS, CONSISTENCY,
-  ACCOUNT_TYPE, INVALID_ALERT, UNKNOWN_ALERT
+  ACCOUNT_TYPE, INVALID_ALERT, UNKNOWN_ALERT, PLAYBOOK_TIME_STOP
 };
 /// The last Reason; recorded codes are strings, so new codes append here.
-inline constexpr Reason kLastReason = Reason::UNKNOWN_ALERT;
+inline constexpr Reason kLastReason = Reason::PLAYBOOK_TIME_STOP;
 [[nodiscard]] std::string_view to_string(Reason reason) noexcept;
 
 class TradingError : public std::runtime_error {

@@ -1,11 +1,15 @@
 #include "openport/server/playbooks.hpp"
 #include "strategy_template.hpp"
+#include "paper_json.hpp"
 #include "../trading/state.hpp"
 #include "openport/trading/history.hpp"
 
 #include <algorithm>
 #include <cmath>
 #include <fstream>
+#include <iomanip>
+#include <locale>
+#include <sstream>
 #include <numeric>
 #include <set>
 #include <stdexcept>
@@ -209,20 +213,54 @@ bool playbook_window(const json& definition, md::Timestamp time) {
   return std::find(weekdays.begin(), weekdays.end(), weekday) != weekdays.end() &&
       current >= minute(window.at("start")) && current < minute(window.at("end"));
 }
-bool playbook_conditions(const json& definition, const PlaybookInputs& inputs, double dte) {
+std::optional<std::string> playbook_condition_reason(const json& definition, const PlaybookInputs& inputs, double dte) {
   const auto& conditions = definition.at("conditions");
-  const auto inside = [](double value, const json& limits) { return std::isfinite(value) && value >= limits.at("min").get<double>() && value <= limits.at("max").get<double>(); };
-  if (conditions.contains("dte") && !inside(dte, conditions.at("dte"))) return false;
-  if (conditions.contains("iv_rank") && !inside(inputs.iv_rank, conditions.at("iv_rank"))) return false;
-  if (conditions.contains("vrp_min") && (!std::isfinite(inputs.vrp) || inputs.vrp <= conditions.at("vrp_min").get<double>())) return false;
-  if (conditions.contains("term_inverted") && (!std::isfinite(inputs.term_ratio) || (inputs.term_ratio > 1) != conditions.at("term_inverted").get<bool>())) return false;
+  const auto fixed = [](double value, int digits) {
+    std::ostringstream text;
+    text.imbue(std::locale::classic());
+    text << std::fixed << std::setprecision(digits) << value;
+    return text.str();
+  };
+  const auto range_reason = [&](const char* name, double value, const json& limits, int digits, const char* missing) -> std::optional<std::string> {
+    if (!std::isfinite(value)) return missing;
+    if (value < limits.at("min").get<double>() || value > limits.at("max").get<double>())
+      return std::string(name) + " " + fixed(value, digits) + " is outside " + fixed(limits.at("min"), digits) + "-" + fixed(limits.at("max"), digits);
+    return std::nullopt;
+  };
+  if (conditions.contains("dte"))
+    if (auto reason = range_reason("DTE", dte, conditions.at("dte"), 1, "DTE unavailable (no expiry)")) return reason;
+  if (conditions.contains("iv_rank"))
+    if (auto reason = range_reason("IV rank", inputs.iv_rank, conditions.at("iv_rank"), 2, "IV rank unavailable (no IV history)")) return reason;
+  if (conditions.contains("vrp_min")) {
+    if (!std::isfinite(inputs.vrp)) return "VRP unavailable (missing IV or realized volatility)";
+    const double minimum = conditions.at("vrp_min");
+    if (inputs.vrp <= minimum) return "VRP " + fixed(inputs.vrp, 1) + " is not above " + fixed(minimum, 1);
+  }
+  if (conditions.contains("term_inverted")) {
+    if (!std::isfinite(inputs.term_ratio)) return "Term structure unavailable (missing 9d or 30d IV)";
+    const bool inverted = conditions.at("term_inverted");
+    if ((inputs.term_ratio > 1) != inverted)
+      return std::string("Term structure is ") + (inverted ? "not inverted" : "inverted") + " (9d/30d " + fixed(inputs.term_ratio, 2) + ")";
+  }
   if (conditions.contains("price")) {
     const auto& price = conditions.at("price");
-    const double reference = price.at("reference") == "level" ? 0 : price.at("reference") == "prior_close" ? inputs.prior_close : inputs.day_open;
-    const double level = reference + price.at("value").get<double>();
-    if (!std::isfinite(inputs.spot) || !std::isfinite(level) || !(price.at("direction") == "above" ? inputs.spot > level : inputs.spot < level)) return false;
+    const auto reference_name = price.at("reference").get<std::string>();
+    const double reference = reference_name == "level" ? 0 : reference_name == "prior_close" ? inputs.prior_close : inputs.day_open;
+    if (!std::isfinite(reference)) return reference_name == "prior_close" ? "Prior close unavailable" : "Day open unavailable (no 09:30 minute)";
+    if (!std::isfinite(inputs.spot)) return "Price unavailable";
+    const double offset = price.at("value");
+    const double level = reference + offset;
+    if (!(price.at("direction") == "above" ? inputs.spot > level : inputs.spot < level)) {
+      const auto target = reference_name == "level" ? fixed(offset, 2) :
+          std::string(reference_name == "prior_close" ? "prior close " : "day open ") + fixed(reference, 2) +
+          (offset < 0 ? " - " : " + ") + fixed(std::abs(offset), 2);
+      return "Price " + fixed(inputs.spot, 2) + " is not " + price.at("direction").get<std::string>() + " " + target;
+    }
   }
-  return true;
+  return std::nullopt;
+}
+bool playbook_conditions(const json& definition, const PlaybookInputs& inputs, double dte) {
+  return !playbook_condition_reason(definition, inputs, dte);
 }
 std::string playbook_tag(const json& definition) { return "playbook:" + definition.at("id").get<std::string>() + "@v" + std::to_string(definition.at("version").get<int>()); }
 Money playbook_tick(const OrderRequest& order) {
@@ -459,7 +497,7 @@ void Playbooks::evaluate(const std::string& account, bool replay, md::Timestamp 
           if (structure.at("template").contains("farExpiry") && template_chain(underlying, slice).at("expiry").at("id") == structure.at("template").at("farExpiry")) far = &slice;
         }
         if (!selected) invalid("No expiry in the requested DTE range");
-        if (!playbook_conditions(definition, inputs(symbol, definition.at("conditions")), md::years_between(now, selected->expiry_time) * 365)) invalid("Entry conditions unmet or required data missing");
+        if (const auto failed = playbook_condition_reason(definition, inputs(symbol, definition.at("conditions")), md::years_between(now, selected->expiry_time) * 365)) invalid(*failed);
         const auto setup = build_template(structure.at("template"), template_chain(underlying, *selected), far ? template_chain(underlying, *far) : json(nullptr));
         OrderRequest order;
         order.type = OrderType::Limit;
@@ -507,7 +545,7 @@ void Playbooks::evaluate(const std::string& account, bool replay, md::Timestamp 
         const auto stage_id = std::to_string(fingerprint(contracts));
         order.client_order_id = "playbook:" + stage_id + ":" + std::to_string(current->snapshot->account_version);
         json stage{{"id", stage_id}, {"key", stage_key}, {"playbook", id}, {"version", definition.at("version")},
-            {"name", definition.at("name")}, {"underlying", symbol}, {"time", now}, {"request", order},
+            {"name", definition.at("name")}, {"underlying", symbol}, {"time", now}, {"request", order}, {"order", order_request_json(order)},
             {"legs", setup.at("legs")}, {"units", order.quantity}, {"net", debit.str()},
             {"max_loss", final_preview.max_loss ? json(final_preview.max_loss->str()) : json(nullptr)},
             {"max_loss_basis", final_preview.max_loss_basis}, {"close_by", md::format_timestamp(playbook_deadline(definition, now))},

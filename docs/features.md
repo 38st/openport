@@ -117,7 +117,9 @@ simulation's limits.
   for review; replays and scenarios can send them automatically. The Playbooks page
   compares adherence and expectancy, and the Journal filters by playbook. Dashboard
   and playbook pass odds are labelled estimates from past results, not predictions.
-  [Rules and limits](playbooks.md).
+  Failed conditions name their inputs and thresholds; stages include an HTTP order
+  body for review or submission. Automatic time-stop cancellations and closes are
+  labelled in orders, Journal details and trade CSV. [Rules and limits](playbooks.md).
 - **Batch backtests**: run a pinned playbook over recorded, imported or seeded
   scenario days, with independent daily results and carried-account evaluation
   attempts. The CLI, API and Backtest page keep reports and verifiable journals.
@@ -295,6 +297,8 @@ special opening quotation; live providers keep manual imports.
 - [x] F72: held-size close tickets, confirmed cancellations with persistent results,
       fresh finished runs in the switcher, held-strategy gamma and vega, and sizing labels
       that name the binding floor, buying power or limit
+- [x] Specific playbook condition reasons, staged orders in HTTP shape and time-stop labels (F51, partial)
+- [ ] Automated forward testing on live paper (F51)
 - [x] Seeded demo soak with JSON run identity, counters and exit status (F73)
 
 - [x] Opening share positions for hedges, covered calls and collars, with share previews and terminal shortcuts

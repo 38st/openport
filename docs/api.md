@@ -56,6 +56,7 @@ The web terminal uses these routes, so anything it does can be scripted:
 | --- | --- |
 | `GET /api/portfolio`, `/api/orders`, `/api/fills`, `/api/risk`, `/api/account`, `/api/trades` | The account's positions with their margin breakdown, orders and fills with actors (each fill with the bid, ask and sizes it took and the quote's age), risk, warnings and breach estimates, rules and progress, and its round trips |
 | `GET /api/risk/profile?underlying=&benchmark=SPY&days=0,1,expiry&iv=&range=10&steps=41&betas=` | The held book's P&L curve across moves of one underlying, or of SPY or SPX with each underlying beta-weighted to it, today and on later dates with a volatility offset; where each curve reaches the floors, with touch odds, and beta-weighted delta ([details](paper-trading.md#risk-profile-and-probabilities)) |
+| `GET /api/orders/{id}` | One order with status, cancellation reason, note and changes; also available under replay and replay history. Unknown ids are 404 `UNKNOWN_ORDER` |
 | `POST /api/orders/preview` | A pure order check, buying power, Greeks change, maximum loss, size to buying power and to floor with the binding `max_units_basis` (floor, buying_power, limits or null), projected breach risk, and warnings about terms that act at once |
 | `POST /api/orders/what-if` | Up to six candidate adjustments of up to four orders each, filled on a private copy of the account and compared on buying power, Greeks, grid loss and floor room |
 | `POST /api/orders/{id}/preview` | The same preview of a change to a resting order, as `PUT /api/orders/{id}` would make it, without making it |
@@ -75,7 +76,7 @@ The web terminal uses these routes, so anything it does can be scripted:
 | `POST /api/settlements` | Import an expired position’s decimal-string reference `{symbol, value}`; admin scope |
 | `POST /api/positions/abandon` | Give up a long at zero without a fee: `{symbol}`, allowed with a fresh ask-only quote or after expiry |
 | `POST /api/positions/instruction` | Set or withdraw a long's expiry instruction: `{symbol, do_not_exercise}`; true forfeits shares and cash settlement. Both routes return the portfolio and require trade scope (replay scope on the replay mirror) |
-| `GET /api/trades.csv`, `/api/fills.csv` | Trades or fills, with context and excursions, filtered by account and New York `from`/`to` dates. Fills include `fees.commission`, `fees.clearing`, `fees.regulatory`, and `fees.index` columns (empty for flat fees) |
+| `GET /api/trades.csv`, `/api/fills.csv` | Trades or fills, with context and excursions, filtered by account and New York `from`/`to` dates. Trade CSV appends related playbook cancellations/closes in `time_stop_orders`. Fills include `fees.commission`, `fees.clearing`, `fees.regulatory`, and `fees.index` columns (empty for flat fees) |
 | `PUT /api/days/{YYYY-MM-DD}/note` | The account's plan and review for a day; returned in `/api/trades` as `day_notes` |
 | `PUT /api/trades/{id}/note` | A trade's note and tags, or a share trade's (`s1`, ...) |
 | `GET/POST /api/alerts`, `DELETE /api/alerts/{id}` | The account's alerts on a contract, spread legs, an underlying or account measures, kept and checked by the server and forwarded to notification channels |

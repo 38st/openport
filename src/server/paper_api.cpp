@@ -1999,6 +1999,41 @@ ApiResponse api_error(int status, std::string code, std::string message, const D
       {"limit", evidence.limit ? number(*evidence.limit) : json(nullptr)},
       {"scope", scope_json(evidence.scope)}}}}.dump()};
 }
+json order_request_json(const OrderRequest& order) {
+  json body{{"client_order_id", order.client_order_id}, {"type", order.type == OrderType::Limit ? "limit" : "market"},
+            {"time_in_force", tif_name(order.tif)}, {"quantity", order.quantity}, {"tags", order.tags}, {"note", order.note}};
+  if (multi_leg(order)) {
+    body["legs"] = json::array();
+    for (const auto& leg : order.legs)
+      body["legs"].push_back({{"symbol", leg.symbol}, {"side", side_name(leg.side)}, {"ratio", leg.ratio}});
+    if (order.exits_only) body["exits_only"] = true;
+  } else {
+    body["symbol"] = order.symbol;
+    body["side"] = side_name(order.side);
+  }
+  if (order.limit_price) body["limit_price"] = order.limit_price->str();
+  if (order.good_till) body["good_till"] = md::format_timestamp(*order.good_till);
+  if (!order.group.empty()) body["group"] = order.group;
+  const auto trigger_body = [](const Trigger& trigger) {
+    auto result = trigger_json(trigger);
+    if (trigger.source == TriggerSource::Time) result.erase("level");
+    return result;
+  };
+  if (order.trigger) body["trigger"] = trigger_body(*order.trigger);
+  if (order.bracket) {
+    body["bracket"] = json::object();
+    const auto add_exit = [&](const char* key, const std::optional<ExitSpec>& exit) {
+      if (!exit) return;
+      json terms = json::object();
+      if (exit->trigger) terms["trigger"] = trigger_body(*exit->trigger);
+      if (exit->limit_price) terms["limit_price"] = exit->limit_price->str();
+      body["bracket"][key] = std::move(terms);
+    };
+    add_exit("stop_loss", order.bracket->stop_loss);
+    add_exit("take_profit", order.bracket->take_profit);
+  }
+  return body;
+}
 json trading_status_json(const TradingStatus& status) {
   return {{"enabled", status.enabled}, {"reason", nullable(status.reason)},
           {"account_version", std::to_string(status.account_version)},
@@ -2259,7 +2294,8 @@ ApiResponse risk_profile_response(const std::map<std::string, std::string>& quer
 std::optional<ApiResponse> paper_read(const ApiRequest& request, const MetricsSource& source) {
   const auto question = request.target.find('?');
   const auto path = request.target.substr(0, question);
-  if (path != "/api/portfolio" && path != "/api/orders" && path != "/api/fills" && path != "/api/risk" &&
+  const bool order_detail = path.starts_with("/api/orders/") && path.find('/', 12) == std::string::npos;
+  if (!order_detail && path != "/api/portfolio" && path != "/api/orders" && path != "/api/fills" && path != "/api/risk" &&
       path != "/api/trades.csv" && path != "/api/fills.csv" && path != "/api/account" && path != "/api/account/equity" &&
       path != "/api/trades" && path != "/api/settlements" && path != "/api/plans" && path != "/api/accounts" && path != "/api/risk/profile" &&
       path != "/api/alerts") return {};
@@ -2301,6 +2337,14 @@ std::optional<ApiResponse> paper_read(const ApiRequest& request, const MetricsSo
   const auto view = source.trading_view(account);
   if (!view || !view->snapshot) return api_error(503, "TRADING_UNAVAILABLE", "Paper trading is disabled or unavailable");
   const auto& s = *view->snapshot;
+  if (order_detail) {
+    OrderId id;
+    try { id = identifier(std::string_view(path).substr(12)); }
+    catch (const std::invalid_argument& error) { return api_error(400, "INVALID_REQUEST", error.what()); }
+    if (!id || id > s.recent_orders.size()) return api_error(404, "UNKNOWN_ORDER", "Unknown order ID");
+    return ApiResponse{200, json{{"account_version", std::to_string(s.account_version)},
+        {"order", order_json(s.recent_orders[id - 1], *view)}}.dump()};
+  }
   if (path == "/api/account/equity") {
     json samples = json::array();
     for (const auto& sample : view->equity_samples) {
@@ -2339,7 +2383,27 @@ std::optional<ApiResponse> paper_read(const ApiRequest& request, const MetricsSo
       for (auto it = s.recent_fills.rbegin(); it != s.recent_fills.rend(); ++it) rows.push_back(fill_json(*it, *view));
     } else {
       const auto trades = trades_json(*view, status, attempt == "current");
-      for (auto row : trades.at("trades")) { row["kind"] = "option"; rows.push_back(std::move(row)); }
+      std::map<std::string, OrderId> fill_orders;
+      for (const auto& fill : s.recent_fills) fill_orders[std::to_string(fill.id)] = fill.order_id;
+      std::map<OrderId, json> time_stops;
+      for (const auto& order : s.recent_orders) {
+        if (order.reason.code != Reason::PLAYBOOK_TIME_STOP && !order.request.note.starts_with("Playbook automatic time stop")) continue;
+        const auto related = order.parent ? order.parent : order.id;
+        if (!time_stops.contains(related)) time_stops[related] = json::array();
+        time_stops[related].push_back({{"order_id", std::to_string(order.id)}, {"reason", decision_json(order.reason)}, {"note", order.request.note}});
+      }
+      for (auto row : trades.at("trades")) {
+        row["kind"] = "option";
+        row["time_stop_orders"] = json::array();
+        std::set<OrderId> related;
+        for (const auto& fill : row.at("fills"))
+          if (const auto found = fill_orders.find(fill.get<std::string>()); found != fill_orders.end()) related.insert(found->second);
+        for (const auto id : related)
+          if (const auto found = time_stops.find(id); found != time_stops.end())
+            for (const auto& event : found->second) row["time_stop_orders"].push_back(event);
+        row["time_stop_orders"] = row["time_stop_orders"].empty() ? "" : row["time_stop_orders"].dump();
+        rows.push_back(std::move(row));
+      }
       for (const auto& row : trades.at("share_trades")) rows.push_back(row);
     }
     return ApiResponse{200, paper_csv(rows, fills, account.empty() ? std::string(kMainAccount) : account,

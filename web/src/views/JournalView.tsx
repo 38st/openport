@@ -3,7 +3,7 @@ import { Fragment, useMemo, useState } from "react"
 import { api, downloadCsv } from "../api/client"
 import { marketNow, useLive } from "../api/live"
 import { useAllOrders, useFills, useRefreshTrading, useSettlements, useTrades, useTradingSession } from "../api/trading"
-import type { DayNote, Fill, RunIdentity, SettlementRecord, ShareTrade, Trade, TradingStatus, WholeTrade } from "../api/trading-types"
+import type { Order, DayNote, Fill, RunIdentity, SettlementRecord, ShareTrade, Trade, TradingStatus, WholeTrade } from "../api/trading-types"
 import { HBarChart } from "../charts/HBarChart"
 import { FillBook } from "../components/FillBook"
 import { TradingError, WriteAccess, writeBlocked } from "../components/TradingControls"
@@ -409,7 +409,7 @@ function History({ trades, wholes = [], trading }: { trades: Trade[]; wholes?: W
   const visible = filtered.slice(current * pageSize, (current + 1) * pageSize)
   const net = trades.filter((t) => t.status === "closed").reduce((sum, t) => sum + tradeNet(t), 0)
   const toggle = (key: string) => setExpanded(expanded === key ? null : key)
-  const detail = (t: Trade) => <TradeDetail trade={t} trading={trading} fills={t.fills.map((id) => fillsById.get(id)).filter((f): f is Fill => f != null)} />
+  const detail = (t: Trade) => <TradeDetail trade={t} trading={trading} orders={orders} fills={t.fills.map((id) => fillsById.get(id)).filter((f): f is Fill => f != null)} />
   return (
     <Panel title="Trade history" actions={<>
       <span className="text-xs text-muted">Net <span className={`tabular ${toneText[toneOf(net)]}`}>{usd(net)}</span></span>
@@ -512,7 +512,10 @@ function Shares({ trades, trading }: { trades: ShareTrade[]; trading: TradingSta
   )
 }
 
-export function TradeDetail({ trade, fills, trading }: { trade: Trade; fills: Fill[]; trading: TradingStatus }) {
+export function TradeDetail({ trade, fills, trading, orders = [] }: { trade: Trade; fills: Fill[]; trading: TradingStatus; orders?: Order[] }) {
+  const orderIds = new Set(fills.map((fill) => fill.order_id))
+  const timeStops = orders.filter((order) => (orderIds.has(order.id) || (order.parent && orderIds.has(order.parent))) &&
+    (order.reason?.code === "PLAYBOOK_TIME_STOP" || order.note?.startsWith("Playbook automatic time stop")))
   return <div className="space-y-4"><div className="grid gap-4 md:grid-cols-[16rem_1fr]">
     <dl className="grid grid-cols-2 gap-x-3 gap-y-1 text-xs">
       <dt className="text-muted">Entry cost</dt><dd className="tabular">{formatMoney(trade.cost)}</dd>
@@ -541,6 +544,8 @@ export function TradeDetail({ trade, fills, trading }: { trade: Trade; fills: Fi
       </table>
     </div>
   </div>
+  {timeStops.map((order) => <p key={order.id} className="text-xs text-muted">Order #{order.id}: {order.reason?.code === "PLAYBOOK_TIME_STOP"
+    ? `cancelled · ${order.reason.message} (${order.reason.code})` : order.note}</p>)}
   <div className="grid gap-3 md:grid-cols-2"><ContextCard title="Entry context" context={trade.entry_context} /><ContextCard title="Exit context" context={trade.exit_context} /></div>
   <ReviewMetrics review={trade.review} />
   <TripAttribution attribution={trade.attribution} open={trade.status === "open"} />

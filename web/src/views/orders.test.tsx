@@ -9,6 +9,8 @@ import { CancelAllDialog, EditOrderDialog, FlattenDialog, FlattenDryRun, Flatten
 import { OrderDetailDialog } from "../components/OrderDetail"
 import { ExerciseDialog } from "../components/StockActions"
 import { account, fill, order, portfolio, risk, status, trading } from "../test/trading-fixtures"
+import { TradeDetail } from "./JournalView"
+import { trades } from "../test/trading-fixtures"
 import { OrdersView } from "./OrdersView"
 import { PositionsView } from "./PositionsView"
 
@@ -277,4 +279,18 @@ describe("flatten dry run", () => {
     expect(refused).toContain("The flatten would be refused: Feed stalled.")
     expect(render(<FlattenDryRun preview={{ error: new Error("x"), isFetching: false }} />)).toContain("The dry run failed")
   })
+})
+
+it("shows playbook time-stop cancellations and the automatic close note", () => {
+  const cancelled: Order = { ...stop, status: "cancelled", parent: fill.order_id,
+    reason: { code: "PLAYBOOK_TIME_STOP", message: "Playbook time stop", actual: null, limit: null, scope: null } }
+  const close: Order = { ...order, id: fill.order_id, note: "Playbook automatic time stop; entry 1" }
+  const detail = render(<OrderDetailDialog order={cancelled} onClose={() => {}} />)
+  expect(detail).toContain("PLAYBOOK_TIME_STOP")
+  expect(detail).toContain("Playbook time stop")
+  expect(detail).not.toContain("Cancelled by you")
+  expect(render(<OrdersView />, [close])).toContain(close.note)
+  const journal = render(<TradeDetail trade={trades[0]!} fills={[fill]} trading={trading} orders={[cancelled, close]} />)
+  expect(journal).toContain("PLAYBOOK_TIME_STOP")
+  expect(journal).toContain(close.note)
 })

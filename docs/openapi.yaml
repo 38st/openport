@@ -952,7 +952,7 @@
       ],
       "get": {
         "summary": "GET /api/trades.csv",
-        "description": "Read the current publication.",
+        "description": "Read the current publication. Trade CSV appends time_stop_orders: a JSON array of objects with order_id, reason and note for related automatic playbook cancellations and closes.",
         "x-scope": "read",
         "responses": {
           "200": {
@@ -1093,6 +1093,26 @@
         "summary": "DELETE /api/orders/{id}",
         "description": "Paper trading only. Requires trade:ACCOUNT (or trade:*) for live accounts; replay scope for replay accounts.",
         "x-scope": "trade",
+        "responses": {
+          "200": {
+            "description": "Success",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/OrderResponse"
+                }
+              }
+            }
+          },
+          "default": {
+            "$ref": "#/components/responses/Error"
+          }
+        }
+      },
+      "get": {
+        "summary": "GET /api/orders/{id}",
+        "description": "Read one order, including its cancellation reason, note and changes. Unknown ids return 404 UNKNOWN_ORDER.",
+        "x-scope": "read",
         "responses": {
           "200": {
             "description": "Success",
@@ -2311,6 +2331,49 @@
     "/api/replay/orders": {
       "$ref": "#/paths/~1api~1orders"
     },
+    "/api/replay/history/{run_id}/orders/{id}": {
+      "parameters": [
+        {
+          "name": "run_id",
+          "in": "path",
+          "required": true,
+          "schema": {
+            "type": "string"
+          }
+        },
+        {
+          "$ref": "#/components/parameters/account"
+        },
+        {
+          "name": "id",
+          "in": "path",
+          "required": true,
+          "schema": {
+            "type": "string"
+          }
+        }
+      ],
+      "get": {
+        "summary": "GET /api/orders/{id}",
+        "description": "Read one order, including its cancellation reason, note and changes. Unknown ids return 404 UNKNOWN_ORDER.",
+        "x-scope": "read",
+        "responses": {
+          "200": {
+            "description": "Success",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/OrderResponse"
+                }
+              }
+            }
+          },
+          "default": {
+            "$ref": "#/components/responses/Error"
+          }
+        }
+      }
+    },
     "/api/replay/history/{run_id}/orders": {
       "parameters": [
         {
@@ -2725,7 +2788,7 @@
       ],
       "get": {
         "summary": "GET /api/trades.csv",
-        "description": "Read the current publication.",
+        "description": "Read the current publication. Trade CSV appends time_stop_orders: a JSON array of objects with order_id, reason and note for related automatic playbook cancellations and closes.",
         "x-scope": "read",
         "responses": {
           "200": {
@@ -15235,7 +15298,11 @@
           },
           "request": {
             "type": "object",
-            "description": "The order as the simulator would receive it."
+            "description": "Legacy internal journal encoding (integer micro-dollar prices and numeric enums). Use order for HTTP submission."
+          },
+          "order": {
+            "$ref": "#/components/schemas/NewOrder",
+            "description": "Body accepted by POST /api/orders (or /api/replay/orders). Absent on older servers."
           },
           "legs": {
             "type": "array",
@@ -17236,7 +17303,7 @@
       },
       "Decision": {
         "type": "object",
-        "description": "A reason code with its numeric evidence: actual against limit for a numeric check, and scope, the underlying or aggregate it applies to (null when a check has none). A check on one contract reports its underlying; the journal keeps the contract's OSI.",
+        "description": "Cancellation codes include PLAYBOOK_TIME_STOP for automatic playbook time stops (older runs retain USER_CANCEL). A reason code with its numeric evidence: actual against limit for a numeric check, and scope, the underlying or aggregate it applies to (null when a check has none). A check on one contract reports its underlying; the journal keeps the contract's OSI.",
         "properties": {
           "code": {
             "type": "string"

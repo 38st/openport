@@ -36,6 +36,7 @@ inline void to_json(nlohmann::json& j, const TradingCommand& c) {
   if (c.kind == TradingCommand::Kind::CreateAlert) j["alert"] = c.alert;
   if (c.kind == TradingCommand::Kind::DeleteAlert) j["alert_id"] = c.alert_id;
   // Later fields are recorded only when set, so earlier commands keep their bytes.
+  if (c.cancel_reason != trading::Reason::USER_CANCEL) j["cancel_reason"] = c.cancel_reason;
   if (c.stock_price) j["stock_price"] = {{"symbol", c.stock_price->symbol}, {"time", c.stock_price->time}, {"price", c.stock_price->price}};
   if (c.do_not_exercise) j["do_not_exercise"] = true;
   if (!c.trades.empty()) j["trades"] = c.trades;
@@ -72,6 +73,7 @@ inline void from_json(const nlohmann::json& j, TradingCommand& c) {
     const auto& p = j.at("stock_price");
     c.stock_price = trading::StockPrice{p.at("symbol").get<std::string>(), p.at("time").get<md::Timestamp>(), p.at("price").get<trading::Money>()};
   }
+  trading::added_field(j, "cancel_reason", c.cancel_reason);
   trading::added_field(j, "actor", c.actor);
   trading::added_field(j, "alert", c.alert);
   trading::added_field(j, "alert_id", c.alert_id);

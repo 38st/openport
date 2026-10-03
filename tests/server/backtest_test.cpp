@@ -148,6 +148,17 @@ TEST(Backtest, EntryReasonsGiveWhatBlockedEntriesInsideTheWindow) {
   ASSERT_EQ(skipped.at("status"), "completed") << skipped.dump();
   EXPECT_EQ(skipped.at("days")[0].at("entry_reasons"), json({{"batch:SPX", "Outside entry window"}}));
 }
+TEST(Backtest, EntryReasonsRetainSpecificMissingConditions) {
+  test::RecordingFile storage;
+  auto request = request_for({recorded_day(storage.directory, {2026, 9, 14})});
+  request.playbooks["definitions"]["batch"]["versions"][0]["conditions"] = {{"iv_rank", {{"min", .3}, {"max", 1}}}};
+  const std::atomic_bool cancel{false};
+  const auto report = server::run_backtest(request, storage.directory / "missing-iv", cancel);
+  ASSERT_EQ(report.at("status"), "completed") << report.dump();
+  const json expected{{"batch:SPX", "IV rank unavailable (no IV history)"}};
+  EXPECT_EQ(report.at("days")[0].at("entry_reasons"), expected);
+  EXPECT_EQ(report.at("attempts")[0].at("entry_reasons"), expected);
+}
 TEST(Backtest, GeneratedDaysMatchSingleReplayAndParallelReportsAreByteIdentical) {
   test::RecordingFile storage;
   auto definitions = catalogue();

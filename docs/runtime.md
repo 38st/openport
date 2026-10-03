@@ -635,7 +635,7 @@ first differing transaction, or reports a damaged journal or missing/changed inp
 New runs record replay driver 5, which adds AM opening-print settlement. Verification
 of drivers 1–4 keeps their manual AM behavior and original journal bytes. Driver 5
 changes the start input for every new run and adds settlement transactions when an
-AM position is held into an expiry opening print. Resuming requires driver 5;
+AM position is held into an expiry opening print. Resuming requires the current driver (6, below);
 older runs remain readable and verifiable. The scenario generator revision stays 3.
 A stopped run verifies through its recorded prefix; it need not have reached EOF.
 So does a run a crash cut off, whichever record its journal ends at: each input and
@@ -659,6 +659,12 @@ Inside-fill and walking-limit settings are opt-in. Walk steps use market time,
 including replay clock advances, and are retained as order changes. Recovery
 preserves their last scheduled step. Their added journal fields are omitted when
 unused, so runs from before walking limits and inside fills still verify on the new build on the same platform.
+
+New runs record driver 6, which also labels automatic playbook entry/exit cancellations
+`PLAYBOOK_TIME_STOP`. Drivers 1–5 still verify using their original `USER_CANCEL`
+bytes. Older cancel commands omit the optional `cancel_reason` and default to
+`USER_CANCEL`; existing account journals and saved reports still load. Resuming
+an interrupted run requires the current driver, as before.
 
 Verification currently compares exact hashes on the same build/platform. Math-library
 changes can alter analytic floating-point fields; see the platform qualification in

@@ -2051,7 +2051,17 @@ marks days with notes and opens the day's plan and review when selected.
 `GET /api/trades` includes `day_notes`, an object keyed by `YYYY-MM-DD`, with
 `plan`, `review` and the last edit's UTC `time`, independently of attempt filters.
 
+`GET /api/orders/{id}?account=ID` reads one order with the same fields as the
+orders list, including reason, note and changes; replay and archived-run mirrors
+also support it. The response is `{account_version, order}`. Unknown ids return
+404 `UNKNOWN_ORDER`; malformed ids return 400 `INVALID_REQUEST`.
+
 ### CSV downloads
+
+Trade CSV appends `time_stop_orders`: a JSON array of objects containing
+`order_id`, `reason` (code/message/evidence, or null for the closing order) and
+`note` for related automatic playbook cancellations and closes. The same exit event
+can appear on each contract round trip of a spread. Share rows leave it empty.
 
 `GET /api/trades.csv` exports option and share round trips; `GET /api/fills.csv`
 exports option fills. Both accept `account`, `from` and `to`; dates are inclusive
@@ -2394,6 +2404,7 @@ compilers/architectures, although recovery restores the recorded doubles.
 | `MIN_TRADING_DAYS`, `MIN_PROFITABLE_DAYS`, `CONSISTENCY` | Objective codes: what a pass still waits for |
 | `DAILY_LOSS`, `KILL_SWITCH` | Daily equity allowance breached, or an order would open/increase exposure (or exercise) while the kill latch is active |
 | `RISK_CHANGED` | Fill/limit-change recheck failed; original cause at the start of the message, its `actual`, `limit` and `scope` kept on the order |
+| `PLAYBOOK_TIME_STOP` | Automatic playbook deadline cancelled an entry or working exit; message `Playbook time stop`. Older replay drivers retain `USER_CANCEL` |
 | `IOC_REMAINDER`, `USER_CANCEL`, `DAY_END` | IOC remainder (a stop exit's re-arms instead), explicit cancellation, the end of a DAY order's session (a triggered one's activation session) or an EXTO trading date |
 | `SESSION_CLOSED`, `EXPIRED`, `AWAITING_SETTLEMENT` | Outside the product's sessions (or an AM-settled series after its last regular close), expiry or last-trade boundary, or pending settlement quality flag |
 | `LIMIT_ONLY` | Overnight/curb executions require limits. Plain market entry/flatten is refused. Only EXTO/GTC_EXTO simulator-managed stops and brackets work there; legacy protection waits for regular hours |
@@ -2922,7 +2933,7 @@ restart only a print that arrives counts. Until then an expired PM position's
 `settle_by` reads `closing_print`, as it does once the print is recorded; after it,
 with neither, the position waits and its `settle_by` reads `manual`.
 
-In demo and new replays (driver 5), an AM position settles on the first valid
+In demo and new replays (driver 5 and later), an AM position settles on the first valid
 underlying print received at or after 09:30 ET on its expiry date. Premarket
 prints and prints from other dates do not count; later prints do not replace the
 first. This is an approximation of the official special opening quotation, which

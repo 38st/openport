@@ -156,6 +156,7 @@ export const api = {
   fills: (signal?: AbortSignal) => get<FillsResponse>(scoped("/api/fills"), signal),
   risk: (signal?: AbortSignal) => get<Risk>(scoped("/api/risk"), signal),
   riskProfile: (query: RiskProfileQuery, signal?: AbortSignal) => get<RiskProfile>(scoped(riskProfilePath(query)), signal),
+  order: (id: string, signal?: AbortSignal) => get<OrderResponse>(scoped(`/api/orders/${encodeURIComponent(id)}`), signal),
   submitOrder: (order: NewOrder, mode: WriteMode) => write<SubmitOrderResponse>(scoped("/api/orders"), "POST", mode, order),
   cancelOrder: (id: string, mode: WriteMode) => write<OrderResponse>(scoped(`/api/orders/${encodeURIComponent(id)}`), "DELETE", mode),
   modifyOrder: (id: string, change: OrderChange, mode: WriteMode) => write<SubmitOrderResponse>(scoped(`/api/orders/${encodeURIComponent(id)}`), "PUT", mode, change),

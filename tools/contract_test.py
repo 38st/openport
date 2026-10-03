@@ -156,6 +156,7 @@ class Contract:
                 path = path.replace("/playbooks/{id}", "/playbooks/" + quote(playbook, safe=""))
             if path == "/api/backtests/{id}":
                 path = "/api/backtests/000000"  # A missing saved run exercises the documented error.
+            path = path.replace("/orders/{id}", "/orders/1")
             if "{" in path:
                 continue
             item = self.resolve(raw)
@@ -213,6 +214,7 @@ class Contract:
             self.call("POST", "/api/replay/orders/" + placed["order"]["id"] + "/preview?account=main", {"quantity": 2}, success=True)
             self.call("POST", "/api/replay/positions/close/preview?account=main", {}, success=True)
             self.call("DELETE", "/api/replay/orders/" + placed["order"]["id"] + "?account=main", success=True)
+            self.call("GET", "/api/replay/orders/" + placed["order"]["id"] + "?account=main", success=True)
             self.call("GET", "/api/replay/orders?account=main", success=True)
             self.call("DELETE", "/api/replay", success=True)
             started = False
@@ -221,6 +223,7 @@ class Contract:
                 run_id = state["replay"].get("id") or history[0]["id"]
                 self.call("GET", "/api/replay/history/" + quote(run_id), success=True)
                 self.get_family("/api/replay/history/" + quote(run_id), run_id, symbol)
+                self.call("GET", "/api/replay/history/" + quote(run_id) + "/orders/" + placed["order"]["id"], success=True)
             else:
                 raise ContractMismatch("/api/replay: history is empty; enable durable journals to check archived routes")
         finally:

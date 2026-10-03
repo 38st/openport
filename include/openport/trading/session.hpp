@@ -408,7 +408,7 @@ class TradingSession {
   /// dividend a share). `dividends` is the calendar the rollover pays from.
   [[nodiscard]] std::vector<RiskWarning> warnings(const std::map<std::string, double>& close_variances = {},
                                                   const std::vector<Dividend>& dividends = {}) const;
-  CommandResult cancel(OrderId id, Timestamp time);
+  CommandResult cancel(OrderId id, Timestamp time, Reason reason = Reason::USER_CANCEL);
   /// Change a resting order in place: a DAY limit order, an armed order or a
   /// bracket exit. Its ID, fills and place among equal prices stay. The new
   /// terms pass every check a new order takes, its own reservation released
