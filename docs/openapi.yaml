@@ -17679,14 +17679,41 @@
                         ]
                       },
                       "payouts": {
-                        "anyOf": [
-                          {
-                            "$ref": "#/components/schemas/PayoutRules"
+                        "type": "object",
+                        "properties": {
+                          "qualifying_profit": {
+                            "$ref": "#/components/schemas/PayoutRules/properties/qualifying_profit"
                           },
-                          {
-                            "type": "null"
+                          "qualifying_days": {
+                            "$ref": "#/components/schemas/PayoutRules/properties/qualifying_days"
+                          },
+                          "withdrawal_percent": {
+                            "$ref": "#/components/schemas/PayoutRules/properties/withdrawal_percent"
+                          },
+                          "split_percent": {
+                            "$ref": "#/components/schemas/PayoutRules/properties/split_percent"
+                          },
+                          "minimum": {
+                            "$ref": "#/components/schemas/PayoutRules/properties/minimum"
+                          },
+                          "caps": {
+                            "$ref": "#/components/schemas/PayoutRules/properties/caps"
+                          },
+                          "consistency_percents": {
+                            "$ref": "#/components/schemas/PayoutRules/properties/consistency_percents"
+                          },
+                          "buffer": {
+                            "$ref": "#/components/schemas/PayoutRules/properties/buffer"
+                          },
+                          "buffer_payouts": {
+                            "$ref": "#/components/schemas/PayoutRules/properties/buffer_payouts"
                           }
-                        ]
+                        },
+                        "required": [
+                          "qualifying_days"
+                        ],
+                        "additionalProperties": false,
+                        "description": "Custom funded plans require qualifying_days; other payout fields retain their defaults."
                       },
                       "lock_at_start": {
                         "type": "boolean",
@@ -17902,6 +17929,26 @@
                           "properties": {
                             "time_limit_days": {
                               "const": 0
+                            }
+                          },
+                          "required": [
+                            "payouts"
+                          ]
+                        }
+                      },
+                      {
+                        "if": {
+                          "required": [
+                            "payouts"
+                          ]
+                        },
+                        "then": {
+                          "required": [
+                            "phase"
+                          ],
+                          "properties": {
+                            "phase": {
+                              "const": "funded"
                             }
                           }
                         }

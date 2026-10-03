@@ -37,6 +37,13 @@ def test_time_rules_types_and_request_schemas():
         validator.validate({**enabled, "phase": "funded", "time_limit_days": 0, "profit_target": "0.00",
                             "payouts": {"qualifying_profit": "0.00", "qualifying_days": 1, "withdrawal_percent": 50,
                                         "split_percent": 80, "minimum": "0.00", "caps": []}})
+        if path != "AccountRulesInput":
+            funded = {**enabled, "phase": "funded", "time_limit_days": 0, "profit_target": "0.00",
+                      "payouts": {"qualifying_days": 1}}
+            validator.validate(funded)
+            for patch in ({"payouts": None}, {"payouts": {}}, {"phase": "evaluation"}):
+                with pytest.raises(jsonschema.ValidationError):
+                    validator.validate({**funded, **patch})
         for patch in ({"time_limit_days": 367}, {"inactivity_days": -1}, {"inactivity_days": 1.5},
                       {"underlyings": ["spx"]}, {"underlyings": ["SPX", "SPX"]},
                       {"underlyings": ["X" * 13]}, {"underlyings": [f"S{i}" for i in range(33)]},
