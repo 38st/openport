@@ -286,6 +286,17 @@ inline void from_json(const Json& j, ScalingStep& step) {
     throw TradingError(Reason::JOURNAL_CORRUPT, "Recorded scaling contracts must be signed 64-bit integers");
   contracts.get_to(step.contracts);
 }
+NLOHMANN_DEFINE_TYPE_NON_INTRUSIVE_ONLY_SERIALIZE(SizeScaling, profit_percent, payouts, days, increase_percent, max_balance)
+inline void from_json(const Json& j, SizeScaling& r) {
+  for (const auto* key : {"profit_percent", "payouts", "days", "increase_percent"}) {
+    const auto& v = j.at(key);
+    if (!v.is_number_integer() || (v.is_number_unsigned() && v.get<std::uint64_t>() > INT64_MAX))
+      throw TradingError(Reason::JOURNAL_CORRUPT, "Recorded size scaling counts must be signed integers");
+  }
+  j.at("profit_percent").get_to(r.profit_percent); j.at("payouts").get_to(r.payouts);
+  j.at("days").get_to(r.days); j.at("increase_percent").get_to(r.increase_percent);
+  j.at("max_balance").get_to(r.max_balance);
+}
 /// The rules recorded only when they differ from their defaults, with those
 /// defaults: a plan without them keeps its journal bytes.
 inline Json optional_rule_defaults() {
@@ -304,7 +315,7 @@ inline Json optional_rule_defaults() {
               {"time_limit_days", d.time_limit_days}, {"inactivity_days", d.inactivity_days},
               {"underlyings", d.underlyings}, {"trading_start", d.trading_start}, {"trading_end", d.trading_end},
               {"flat_time", d.flat_time}, {"no_overnight", d.no_overnight},
-               {"scaling", d.scaling}};
+               {"scaling", d.scaling}, {"size_scaling", d.size_scaling}};
 }
 NLOHMANN_DEFINE_TYPE_NON_INTRUSIVE(FeeSchedule, open, close, leg_cap, clearing, regulatory, index, exercise)
 inline void to_json(Json& j, const AccountRules& r) {
@@ -327,7 +338,7 @@ inline void to_json(Json& j, const AccountRules& r) {
                  {"time_limit_days", r.time_limit_days}, {"inactivity_days", r.inactivity_days},
                  {"underlyings", r.underlyings}, {"trading_start", r.trading_start}, {"trading_end", r.trading_end},
               {"flat_time", r.flat_time}, {"no_overnight", r.no_overnight},
-                  {"scaling", r.scaling}};
+                  {"scaling", r.scaling}, {"size_scaling", r.size_scaling}};
   static const auto defaults = optional_rule_defaults();
   for (auto it = all.begin(); it != all.end(); ++it)
     if (it.value() != defaults.at(it.key())) j[it.key()] = it.value();
@@ -377,6 +388,7 @@ inline void from_json(const Json& j, AccountRules& r) {
     throw TradingError(Reason::JOURNAL_CORRUPT, "Recorded no_overnight must be a boolean");
   added_field(j, "no_overnight", r.no_overnight);
   added_field(j, "scaling", r.scaling);
+  added_field(j, "size_scaling", r.size_scaling);
 }
 NLOHMANN_DEFINE_TYPE_NON_INTRUSIVE_ONLY_SERIALIZE(SessionConfig, initial_cash, fee_per_contract, limits, scenarios, rules, guardrails)
 inline void from_json(const Json& j, SessionConfig& c) {
@@ -422,6 +434,9 @@ inline Reason decision_code_of(EvaluationStatus status, Reason recorded) {
   if (recorded != Reason::NONE || status == EvaluationStatus::Active) return recorded;
   return status == EvaluationStatus::Passed ? Reason::PROFIT_TARGET : Reason::DRAWDOWN_FLOOR;
 }
+NLOHMANN_DEFINE_TYPE_NON_INTRUSIVE(SizeScale, day, old, size)
+NLOHMANN_DEFINE_TYPE_NON_INTRUSIVE(SizeScalingProgress, original, original_max_drawdown, original_daily_loss_limit,
+    period_started, period_days, period_balance, period_size, payouts_at_start, history)
 inline void to_json(Json& j, const Evaluation& e) {
   j = Json{{"attempt", e.attempt}, {"started", e.started}, {"starting_balance", e.starting_balance}, {"peak", e.peak},
            {"floor", e.floor}, {"status", e.status}, {"decided_at", e.decided_at}, {"decided_equity", e.decided_equity},
@@ -438,6 +453,7 @@ inline void to_json(Json& j, const Evaluation& e) {
   if (e.last_activity != 0) j["last_activity"] = e.last_activity;
   if (e.flat_time_day) j["flat_time_day"] = e.flat_time_day;
   if (e.flat_pending) j["flat_pending"] = true;
+  if (e.size_scaling) j["size_scaling"] = *e.size_scaling;
   if (e.scaling_limit != 0) j["scaling_limit"] = e.scaling_limit;
 }
 inline void from_json(const Json& j, Evaluation& e) {
@@ -459,6 +475,7 @@ inline void from_json(const Json& j, Evaluation& e) {
   added_field(j, "last_activity", e.last_activity);
   added_field(j, "flat_time_day", e.flat_time_day); added_field(j, "flat_pending", e.flat_pending);
   added_field(j, "scaling_limit", e.scaling_limit);
+  added_field(j, "size_scaling", e.size_scaling);
 }
 inline void to_json(Json& j, const AttemptSummary& a) {
   j = Json{{"attempt", a.attempt}, {"plan", a.plan}, {"started", a.started}, {"ended", a.ended},

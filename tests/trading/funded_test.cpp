@@ -59,6 +59,157 @@ void profit_day(TradingSession& s, ScriptedMarket& f, std::string_view profit) {
   ASSERT_TRUE(s.submit(f.market("day-close-" + std::to_string(f.observation), 1, Side::Sell), f.time).decision.ok());
 }
 
+AccountRules size_plan(std::int64_t days = 2, std::int64_t payouts = 1) {
+  auto r = funded("1000.03");
+  r.daily_loss_limit = m("500.03");
+  r.lock_balance = {};
+  r.payouts.buffer = m("50");
+  r.scaling = {{Money{}, 2}, {m("100"), 4}};
+  r.size_scaling = SizeScaling{1, payouts, days, 25, m("14000")};
+  return r;
+}
+
+TEST(TradingFunded, SizeScalingCreditsCapitalWithoutChangingProfitOrPayoutStanding) {
+  ScriptedMarket f;
+  TradingSession s(config(size_plan()), f.time);
+  f.seed(s);
+  profit_day(s, f, "200");
+  next_day(s, f, {2026, 9, 23});
+  EXPECT_EQ(s.snapshot()->evaluation.size_scaling->period_days, 1);
+  ASSERT_TRUE(s.request_payout(m("40"), f.time).decision.ok());
+  const auto before = *s.snapshot();
+  const auto payout_before = payout_quote(before, s.config().rules);
+  EXPECT_EQ(size_scaling_profit(before.evaluation, plan_inputs(before).balance), m("200"));
+  next_day(s, f, {2026, 9, 24});
+  const auto after = *s.snapshot();
+  const auto& e = after.evaluation;
+  EXPECT_EQ(e.starting_balance, m("12500"));
+  EXPECT_EQ(after.account.cash - before.account.cash, m("2500"));
+  EXPECT_EQ(plan_inputs(after).balance - plan_inputs(before).balance, m("2500"));
+  EXPECT_EQ(after.account.realised, before.account.realised);
+  EXPECT_EQ(after.account.fees, before.account.fees);
+  EXPECT_EQ(e.floor - before.evaluation.floor, m("2500"));
+  EXPECT_EQ(e.peak - before.evaluation.peak, m("2500"));
+  EXPECT_EQ(s.config().rules.max_drawdown, m("1250.03"));
+  EXPECT_EQ(s.config().rules.daily_loss_limit, m("625.03"));
+  EXPECT_EQ(e.day_open_equity, after.equity);
+  EXPECT_EQ(e.scaling_limit, 4);
+  EXPECT_EQ(size_scaling_profit(e, plan_inputs(after).balance), Money{});
+  EXPECT_EQ(e.size_scaling->period_days, 0);
+  EXPECT_EQ(e.size_scaling->period_started, (md::Date{2026, 9, 24}));
+  ASSERT_EQ(e.size_scaling->history.size(), 1U);
+  EXPECT_EQ(e.size_scaling->history[0].old, m("10000"));
+  const auto payout_after = payout_quote(after, s.config().rules);
+  EXPECT_EQ(payout_before.profit, payout_after.profit);
+  EXPECT_EQ(payout_before.withdrawable, payout_after.withdrawable);
+  EXPECT_EQ(payout_before.maximum, payout_after.maximum);
+  EXPECT_EQ(payout_before.blocked.code, payout_after.blocked.code);
+  EXPECT_EQ(*payout_after.buffer_balance - *payout_before.buffer_balance, m("2500"));
+  EXPECT_EQ(today_profit(e, s.config().rules, plan_inputs(after)), Money{});
+  EXPECT_EQ(attempt_profit(e, s.config().rules, plan_inputs(after)), m("200"));
+  // A new high must never undo the capital lift when the larger distance starts trailing.
+  profit_day(s, f, "10");
+  EXPECT_GE(s.snapshot()->evaluation.floor, e.floor);
+}
+
+TEST(TradingFunded, SizeScalingReviewsRestartWhenProfitOrPayoutsAreMissing) {
+  for (const bool missing_profit : {false, true}) {
+    ScriptedMarket f;
+    TradingSession s(config(size_plan()), f.time);
+    f.seed(s);
+    profit_day(s, f, missing_profit ? "60" : "200");
+    next_day(s, f, {2026, 9, 23});
+    if (missing_profit) { ASSERT_TRUE(s.request_payout(m("10"), f.time).decision.ok()); }
+    next_day(s, f, {2026, 9, 24});
+    const auto& e = s.snapshot()->evaluation;
+    EXPECT_EQ(e.starting_balance, m("10000"));
+    EXPECT_EQ(e.size_scaling->period_days, 0);
+    EXPECT_EQ(e.size_scaling->period_started, (md::Date{2026, 9, 24}));
+    EXPECT_EQ(size_scaling_profit(e, plan_inputs(*s.snapshot()).balance), Money{});
+    EXPECT_EQ(e.payouts.size(), e.size_scaling->payouts_at_start);
+  }
+}
+
+TEST(TradingFunded, SizeScalingCapsGrowthAndRoundsLossLimitsFromTheOriginalSize) {
+  ScriptedMarket f;
+  auto rules = size_plan(1, 0);
+  rules.drawdown_mode = DrawdownMode::Static;
+  TradingSession s(config(rules), f.time);
+  f.seed(s);
+  profit_day(s, f, "150");
+  next_day(s, f, {2026, 9, 23});
+  EXPECT_EQ(s.snapshot()->evaluation.floor, m("11499.97"));
+  profit_day(s, f, "150");
+  next_day(s, f, {2026, 9, 24});
+  EXPECT_EQ(s.snapshot()->evaluation.starting_balance, m("14000"));
+  EXPECT_EQ(s.snapshot()->evaluation.floor, m("12999.97"));
+  EXPECT_EQ(s.config().rules.max_drawdown, m("1400.04"));
+  EXPECT_EQ(s.config().rules.daily_loss_limit, m("700.04"));
+  EXPECT_EQ(s.snapshot()->evaluation.size_scaling->history.size(), 2U);
+  profit_day(s, f, "150");
+  next_day(s, f, {2026, 9, 25});
+  EXPECT_EQ(s.snapshot()->evaluation.starting_balance, m("14000"));
+  EXPECT_EQ(s.snapshot()->evaluation.size_scaling->history.size(), 2U);
+}
+
+TEST(TradingFunded, SizeScalingGrowthIsLinearAndFinishedDaysIgnoreCalendarGaps) {
+  ScriptedMarket f;
+  auto rules = size_plan(1, 0);
+  rules.size_scaling->max_balance = m("20000");
+  rules.drawdown_mode = DrawdownMode::EndOfDay;
+  TradingSession s(config(rules), f.time);
+  f.seed(s);
+  profit_day(s, f, "200");
+  next_day(s, f, {2026, 9, 25}); // A three-calendar-day gap still finishes one plan day.
+  EXPECT_EQ(s.snapshot()->evaluation.starting_balance, m("12500"));
+  EXPECT_EQ(s.snapshot()->evaluation.days.size(), 1U);
+  profit_day(s, f, "200");
+  next_day(s, f, {2026, 9, 28});
+  EXPECT_EQ(s.snapshot()->evaluation.starting_balance, m("15000"));
+  EXPECT_EQ(s.config().rules.max_drawdown, m("1500.04"));
+  EXPECT_EQ(s.config().rules.daily_loss_limit, m("750.04"));
+  // A fractional micro-dollar threshold rounds up, while the credit rounds down.
+  auto e = s.snapshot()->evaluation;
+  e.size_scaling->original = m("10000.000001");
+  e.size_scaling->period_size = m("10000.000001");
+  EXPECT_EQ(size_scaling_required(e, *rules.size_scaling), m("100.000001"));
+  EXPECT_EQ(size_scaling_increase(e, *rules.size_scaling), m("2500"));
+}
+
+TEST(TradingFunded, SizeScalingRejectsEvaluationAndInvalidRangesAndNeverScalesAFailedAccount) {
+  auto rules = size_plan();
+  for (auto field : {&SizeScaling::profit_percent, &SizeScaling::days, &SizeScaling::increase_percent}) {
+    auto bad = rules;
+    (*bad.size_scaling).*field = 0;
+    EXPECT_THROW(validate_rules(bad), TradingError);
+    (*bad.size_scaling).*field = 367;
+    EXPECT_THROW(validate_rules(bad), TradingError);
+  }
+  auto bad = rules; bad.size_scaling->payouts = -1;
+  EXPECT_THROW(validate_rules(bad), TradingError);
+  bad.size_scaling->payouts = 101;
+  EXPECT_THROW(validate_rules(bad), TradingError);
+  bad = rules; bad.phase = Phase::Evaluation;
+  EXPECT_THROW(validate_rules(bad), TradingError);
+  bad = rules; bad.size_scaling->max_balance = m("9999");
+  EXPECT_THROW(TradingSession(config(bad), ScriptedMarket{}.time), TradingError);
+  ScriptedMarket f;
+  rules = size_plan(2, 0);
+  rules.daily_loss_limit = m("10");
+  rules.daily_loss_action = BreachAction::Fail;
+  TradingSession s(config(rules), f.time);
+  f.seed(s);
+  // Start with shares so entry spread cannot trip the very small daily limit.
+  ASSERT_TRUE(s.trade_stock("SPY", 1, f.time, StockPrice{"SPY", f.time, m("100")}).decision.ok());
+  ASSERT_TRUE(s.trade_stock("SPY", -1, f.time, StockPrice{"SPY", f.time, m("300")}).decision.ok());
+  next_day(s, f, {2026, 9, 23});
+  s.submit(f.market("fail"), f.time);
+  EXPECT_EQ(s.snapshot()->evaluation.status, EvaluationStatus::Failed);
+  next_day(s, f, {2026, 9, 24});
+  EXPECT_EQ(s.snapshot()->evaluation.starting_balance, m("10000"));
+  EXPECT_TRUE(s.snapshot()->evaluation.size_scaling->history.empty());
+}
+
 TEST(TradingFunded, ConsistencyCountsNetDaysIncludingTodayAndRestartsAtThePayoutDay) {
   ScriptedMarket f;
   auto rules = funded("5000");
@@ -504,6 +655,58 @@ class CapturingJournal final : public Journal {
   std::uint64_t sequence() const override { return entries.size(); }
   std::string head() const override { return std::string(64, '0'); }
 };
+TEST(TradingFunded, SizeScalingJournalRoundTripsAndContinuesTheSameReview) {
+  std::string pattern = (std::filesystem::temp_directory_path() / "openport-size-XXXXXX").string();
+  ASSERT_NE(::mkdtemp(pattern.data()), nullptr);
+  const std::filesystem::path directory = pattern;
+  const auto path = (directory / "account.jsonl").string();
+  ScriptedMarket f;
+  TradingSession s(config(size_plan(2, 1)), f.time, FileJournal::create(path));
+  f.seed(s);
+  profit_day(s, f, "150");
+  next_day(s, f, {2026, 9, 23});
+  ASSERT_TRUE(s.request_payout(m("40"), f.time).decision.ok());
+  auto recovered = TradingSession::recover(FileJournal::read(path));
+  EXPECT_EQ(recovered.snapshot_json(), s.snapshot_json());
+  auto other = f;
+  next_day(s, f, {2026, 9, 24});
+  next_day(recovered, other, {2026, 9, 24});
+  EXPECT_EQ(recovered.snapshot_json(), s.snapshot_json());
+  auto scaled = TradingSession::recover(FileJournal::read(path));
+  EXPECT_EQ(scaled.snapshot_json(), s.snapshot_json());
+  EXPECT_EQ(scaled.config().rules, s.config().rules);
+  const auto capture = std::make_shared<CapturingJournal>();
+  TradingSession::expand(FileJournal::read(path), *capture);
+  std::size_t events = 0;
+  for (const auto& entry : capture->entries) {
+    const auto record = nlohmann::json::parse(entry.payload);
+    for (const auto& event : record.at("events")) {
+      if (event.at("type") == "account_scaled") { ++events; }
+    }
+  }
+  EXPECT_EQ(events, 1U);
+  ASSERT_TRUE(s.reset_account(m("10000"), funded(), "new attempt", f.time).decision.ok());
+  EXPECT_TRUE(s.snapshot()->attempts.back().rules->size_scaling);
+  EXPECT_FALSE(s.snapshot()->evaluation.size_scaling);
+  std::filesystem::remove_all(directory);
+}
+
+TEST(TradingFunded, DisabledSizeScalingLeavesJournalBytesUntouched) {
+  ScriptedMarket f;
+  auto a = std::make_shared<CapturingJournal>(), b = std::make_shared<CapturingJournal>();
+  auto rules = funded();
+  TradingSession first(config(rules), f.time, a);
+  rules.size_scaling = std::nullopt;
+  TradingSession second(config(rules), f.time, b);
+  f.seed(first); f.seed(second);
+  ASSERT_EQ(a->entries.size(), b->entries.size());
+  for (std::size_t i = 0; i < a->entries.size(); ++i) {
+    EXPECT_EQ(a->entries[i].payload, b->entries[i].payload);
+    EXPECT_EQ(a->entries[i].payload.find("size_scaling"), std::string::npos);
+    EXPECT_EQ(a->entries[i].payload.find("account_scaled"), std::string::npos);
+  }
+}
+
 /// Rewrite a transaction as the schema 2 record written before funded accounts
 /// and multi-leg orders.
 std::string earlier_schema_two(std::string_view payload) {

@@ -42,6 +42,8 @@ class Ledger {
   void settle(const std::string& symbol, Money intrinsic, Money fee = {});
   /// Cash leaves the account (a payout); realised P&L is unchanged.
   void withdraw(Money amount);
+  /// Capital credit, never realised profit or a fill.
+  void add_capital(Money amount);
   /// A dividend on held shares: cash and realised P&L move by `amount`, which is
   /// negative when short shares pay it.
   void receive_dividend(const std::string& symbol, Money amount);

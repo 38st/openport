@@ -759,6 +759,14 @@ re-verify without a driver or scenario revision change. Recovery keeps the activ
 session limit, even when current profit would select another step. Only rollover
 changes it and emits a `scaling_limit` event.
 
+Funded account-size scaling (F63) adds optional `size_scaling` rules and evaluation
+review state, omitted when disabled with the existing `added_field` compatibility
+pattern. One `account_scaled` event records each capital credit with old/new size,
+increase and review dates. The state delta records cash, size, lifted floor/peak,
+effective loss limits, original loss amounts and review/history state. Recovery
+restores the same review and continues deterministically; credits never touch
+realised P&L or fills. No journal schema or scenario revision change is needed.
+
 Inside-fill and walking-limit settings are opt-in. Walk steps use market time,
 including replay clock advances, and are retained as order changes. Recovery
 preserves their last scheduled step. Their added journal fields are omitted when

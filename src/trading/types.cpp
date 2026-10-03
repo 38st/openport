@@ -207,6 +207,14 @@ void validate_time_rules(const AccountRules& r) {
     throw TradingError(Reason::INVALID_RULES, "Set both trading_start and trading_end, between 00:00 and 24:00 New York, with start before end, or neither");
 }
 void validate_rules(const AccountRules& r) {
+  if (r.size_scaling) {
+    const auto& v = *r.size_scaling;
+    if (r.phase != Phase::Funded || v.profit_percent < 1 || v.profit_percent > 100 ||
+        v.payouts < 0 || v.payouts > 100 || v.days < 1 || v.days > 366 ||
+        v.increase_percent < 1 || v.increase_percent > 100 || v.max_balance <= Money{})
+      throw TradingError(Reason::INVALID_RULES, "Account size scaling requires funded rules, profit and increase 1-100%, "
+          "0-100 payouts, 1-366 days and a positive maximum balance at least the starting balance");
+  }
   if (r.scaling.size() > 16 || (!r.scaling.empty() && r.scaling.front().profit != Money{}))
     throw TradingError(Reason::INVALID_RULES, "Scaling takes at most 16 steps, starting at zero profit");
   for (std::size_t i = 0; i < r.scaling.size(); ++i) {

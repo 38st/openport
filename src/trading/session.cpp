@@ -1144,6 +1144,12 @@ Evaluation fresh_evaluation(const State& s, std::uint64_t attempt) {
   e.started = s.time;
   e.starting_balance = s.ledger.account().cash;
   e.scaling_limit = scaling_limit(s.config.rules, Money{});
+  if (s.config.rules.size_scaling) {
+    if (e.starting_balance <= Money{} || s.config.rules.size_scaling->max_balance < e.starting_balance)
+      throw TradingError(Reason::INVALID_RULES, "Account size scaling maximum must be at least the positive starting balance");
+    e.size_scaling = SizeScalingProgress{e.starting_balance, s.config.rules.max_drawdown, s.config.rules.daily_loss_limit,
+        s.day, 0, e.starting_balance, e.starting_balance, 0, {}};
+  }
   e.peak = e.starting_balance;
   e.floor = evaluation_floor(s.config.rules, e.peak, e.floor_locked, e.starting_balance);
   e.day_open_realised = net_realised(s);
@@ -1154,6 +1160,49 @@ Evaluation fresh_evaluation(const State& s, std::uint64_t attempt) {
   e.day_open_equity = e.starting_balance;
   e.day_close_equity = e.starting_balance;
   return e;
+}
+/// Capital changes neither P&L nor the account's distance above its floor.
+/// A review always restarts once its finished-day count is reached.
+Money review_size_scaling(State& s, md::Date next_day, Money balance, Events& events) {
+  auto& e = s.evaluation;
+  auto& rules = s.config.rules;
+  if (!rules.size_scaling || !e.size_scaling) return {};
+  auto& period = *e.size_scaling;
+  const auto& rule = *rules.size_scaling;
+  if (++period.period_days < static_cast<std::uint64_t>(rule.days)) return {};
+  Money increase;
+  if (e.status == EvaluationStatus::Active && e.starting_balance < rule.max_balance &&
+      size_scaling_profit(e, balance) >= size_scaling_required(e, rule) &&
+      e.payouts.size() - period.payouts_at_start >= static_cast<std::uint64_t>(rule.payouts)) {
+    increase = size_scaling_increase(e, rule);
+    if (increase > Money{}) {
+      const auto old = e.starting_balance;
+      e.starting_balance = old + increase;
+      s.ledger.add_capital(increase);
+      e.peak = e.peak + increase;
+      if (rules.max_drawdown > Money{}) e.floor = e.floor + increase;
+      if (rules.lock_balance > Money{}) rules.lock_balance = rules.lock_balance + increase;
+      const auto scale_loss = [&](Money original) {
+        __extension__ using Wide = __int128;
+        const Wide cents = static_cast<Wide>(original.micros()) * e.starting_balance.micros() /
+            period.original.micros() / 10'000;
+        if (cents > std::numeric_limits<std::int64_t>::max() / 10'000)
+          throw TradingError(Reason::ARITHMETIC_OVERFLOW, "Scaled loss limit overflow");
+        return Money::from_micros(static_cast<std::int64_t>(cents) * 10'000);
+      };
+      rules.max_drawdown = scale_loss(period.original_max_drawdown);
+      rules.daily_loss_limit = scale_loss(period.original_daily_loss_limit);
+      period.history.push_back({next_day, old, e.starting_balance});
+      event(events, "account_scaled", Json{{"old", old}, {"size", e.starting_balance}, {"increase", increase},
+          {"period_start", period.period_started}, {"period_end", e.day}, {"day", next_day}});
+    }
+  }
+  period.period_started = next_day;
+  period.period_days = 0;
+  period.period_balance = balance + increase;
+  period.period_size = e.starting_balance;
+  period.payouts_at_start = e.payouts.size();
+  return increase;
 }
 /// Cancel an open order now, with the reason it records.
 void cancel_order(State& s, OrderId id, Decision reason, Events& events) {
@@ -2870,6 +2919,8 @@ void observe_equity(State& s, Events& events) {
   if (e.started == 0 && s.time > 0) e.started = s.time;
   // Likewise the first payout cycle; journals from before payouts start it here too.
   if (e.cycle_started == 0) e.cycle_started = e.started;
+  if (e.size_scaling && e.size_scaling->period_started < plan_trading_date(rules, e.started))
+    e.size_scaling->period_started = plan_trading_date(rules, e.started);
   if (const auto equity = marked_equity(measure(s))) {
     if (plan_trading_date(rules, s.time) == e.day) {
       e.day_close_equity = *equity;
@@ -5478,6 +5529,7 @@ CommandResult TradingSession::roll_day(Timestamp time, const std::vector<Dividen
         e.scaling_limit = next;
       }
     }
+    Money capital;
     // A placeholder date from before the attempt started is not a trading day.
     // On a funded account, a day with enough net realised profit counts once,
     // toward the payout cycle in progress when it closes.
@@ -5490,6 +5542,7 @@ CommandResult TradingSession::roll_day(Timestamp time, const std::vector<Dividen
       e.days.push_back({e.day, e.day_open_equity, e.day_close_equity, e.peak, e.floor, realised, qualifying, snapshot.attribution,
                         e.day_low_equity, e.day_high_equity, e.day_low_at, e.day_high_at, e.day_executions, e.day_lock});
       event(events, "evaluation_day", e.days.back());
+      capital = review_size_scaling(s, day, plan_inputs(snapshot).balance, events);
     }
     // A plan limit's lock and the day's executions end with the day.
     e.day_lock = Reason::NONE;
@@ -5509,13 +5562,14 @@ CommandResult TradingSession::roll_day(Timestamp time, const std::vector<Dividen
     s.guardrails.owns_kill = personal_latch;
     if (cooldown_until > s.time) s.guardrails.cooldown_until = cooldown_until;
     refresh_guardrail_latch(s, events);
-    e.day_low_equity = snapshot.equity; e.day_high_equity = snapshot.equity;
+    const auto opening_equity = snapshot.equity + capital;
+    e.day_low_equity = opening_equity; e.day_high_equity = opening_equity;
     e.day_low_at = s.time; e.day_high_at = s.time;
     e.day_open_realised = net_realised(s);
     e.day = day;
-    e.day_open_equity = snapshot.equity;
-    e.day_close_equity = snapshot.equity;
-    s.start_equity = snapshot.equity;
+    e.day_open_equity = opening_equity;
+    e.day_close_equity = opening_equity;
+    s.start_equity = opening_equity;
     s.day = day;
     // Each round trip keeps its stretches to the close; the new day's P&L by
     // Greek runs from these marks.
@@ -5568,7 +5622,8 @@ CommandResult TradingSession::request_payout(Money amount, Timestamp time) {
     if (e.day_high_equity) e.day_high_equity = *e.day_high_equity - amount;
     if (!e.floor_locked) {
       e.peak = e.peak - amount;
-      e.floor = evaluation_floor(rules, e.peak, e.floor_locked, e.starting_balance);
+      const auto floor = evaluation_floor(rules, e.peak, e.floor_locked, e.starting_balance);
+      e.floor = e.size_scaling ? std::max(e.floor - amount, floor) : floor;
     }
     e.payouts.push_back({quote.number, s.time, e.day, amount, amount.prorate(rules.payouts.split_percent, 100), equity});
     e.qualifying_days = 0;
@@ -5581,6 +5636,8 @@ CommandResult TradingSession::reset_account(Money initial_cash, AccountRules rul
   require_reason(reason);
   validate_rules(rules);
   if (initial_cash <= Money{}) throw TradingError(Reason::INVALID_MONEY, "Starting balance must be positive");
+  if (rules.size_scaling && rules.size_scaling->max_balance < initial_cash)
+    throw TradingError(Reason::INVALID_RULES, "Account size scaling maximum must be at least the starting balance");
   return impl_->transact(time, "account_reset", [&](State& s, Events& events) {
     const auto snapshot = snapshot_of(s);
     for (const auto id : open_ids(s)) cancel_order(s, id, failure(Reason::ACCOUNT_RESET, reason), events);

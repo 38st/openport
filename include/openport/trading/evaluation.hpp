@@ -42,6 +42,25 @@ struct Payout {
   Money balance;  ///< Equity when requested, before the withdrawal.
 };
 
+struct SizeScale {
+  md::Date day;
+  Money old;
+  Money size;
+};
+/// Recorded only for enabled account-size scaling. Rules retain the original
+/// loss amounts here, so every resize rounds from the same original ratio.
+struct SizeScalingProgress {
+  Money original;
+  Money original_max_drawdown;
+  Money original_daily_loss_limit;
+  md::Date period_started;
+  std::uint64_t period_days = 0;
+  Money period_balance;
+  Money period_size;
+  std::uint64_t payouts_at_start = 0;
+  std::vector<SizeScale> history;
+};
+
 /// Rule progress for the current attempt. Fully marked equity (every position
 /// has a mark, fresh or not) drives equity rules; time and overnight rules need no marks.
 struct Evaluation {
@@ -83,11 +102,17 @@ struct Evaluation {
   Timestamp last_activity = 0;  ///< Own execution, only when inactivity is set; zero uses started.
   std::optional<md::Date> flat_time_day;  ///< Last date whose mandatory flatten started.
   bool flat_pending = false;  ///< Retry unfilled mandatory closes, including after rollover.
+  std::optional<SizeScalingProgress> size_scaling;
   std::int64_t scaling_limit = 0;  ///< In force this session; zero without scaling.
 };
 
 /// The highest reached step, or the first step below zero profit; zero without scaling.
 [[nodiscard]] std::int64_t scaling_limit(const AccountRules& rules, Money profit);
+
+/// Exact period profit, adding back withdrawals made during the review.
+[[nodiscard]] Money size_scaling_profit(const Evaluation& evaluation, Money balance);
+[[nodiscard]] Money size_scaling_required(const Evaluation& evaluation, const SizeScaling& rule);
+[[nodiscard]] Money size_scaling_increase(const Evaluation& evaluation, const SizeScaling& rule);
 
 /// Shared plan arithmetic. Observations check the floor before the target; rollover
 /// ratchets an end-of-day floor from the last fully marked close. The peak follows

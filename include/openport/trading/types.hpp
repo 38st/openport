@@ -600,6 +600,16 @@ struct ScalingStep {
   bool operator==(const ScalingStep&) const = default;
 };
 
+/// Periodic funded capital growth, linear in the original account size.
+struct SizeScaling {
+  std::int64_t profit_percent = 10;
+  std::int64_t payouts = 2;
+  std::int64_t days = 80;
+  std::int64_t increase_percent = 25;
+  Money max_balance;
+  bool operator==(const SizeScaling&) const = default;
+};
+
 /// Evaluation-account rules. The defaults describe an unrestricted paper
 /// account: no target, no drawdown floor, any side, no buying-power check.
 struct AccountRules {
@@ -655,6 +665,7 @@ struct AccountRules {
   std::optional<std::int64_t> flat_time;  ///< NY minute, before day_end; empty disables.
   bool no_overnight = false;  ///< Fail at rollover on positions not awaiting settlement.
   std::vector<ScalingStep> scaling;  ///< Empty disables; each option leg counts, shares do not.
+  std::optional<SizeScaling> size_scaling;  ///< Funded only; absent disables.
   [[nodiscard]] bool evaluation() const {
     return profit_target > Money{} || max_drawdown > Money{} || daily_loss_limit > Money{} ||
            time_limit_days > 0 || inactivity_days > 0 || no_overnight;
