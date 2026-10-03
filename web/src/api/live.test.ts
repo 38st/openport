@@ -182,3 +182,31 @@ it("uses simulated feed timestamps for ages and journal dates across the overnig
   expect(marketNow(liveState(simulated, next, "open"))).toBe(Date.parse("2026-09-23T13:30:00Z"))
   expect(marketNow(liveState(status, next, "open"))).toBeGreaterThan(Date.parse("2026-09-23T13:30:00Z"))
 })
+
+it("refreshes the switcher's shared finished-run cache on successive replay completions", async () => {
+  vi.stubGlobal("WebSocket", Socket)
+  const client = new QueryClient({ defaultOptions: { queries: { staleTime: Infinity, gcTime: Infinity, retry: false } } })
+  cleanups.push(() => client.clear())
+  const key = ["replay-listing"]
+  let history = ["first"]
+  client.setQueryData(key, { history })
+  const fetch = vi.fn(async () => ({ history }))
+  const switcher = new QueryObserver(client, { queryKey: key, queryFn: fetch })
+  cleanups.push(switcher.subscribe(() => {}))
+  cleanups.push(connectLive("ws://localhost/ws", client, () => {}, () => {}))
+  const socket = Socket.instances[0]!
+  const replay = { id: "second", file: "demo", provider: "demo", symbols: [], started: null, delay_seconds: 0, speed: 0, paused: false, finished: false, time: null }
+  socket.message({ ...tick, type: "replay_tick", replay })
+  await vi.waitFor(() => expect(fetch).toHaveBeenCalledTimes(1))
+  history = ["first", "second"]
+  socket.message({ ...tick, type: "replay_tick", replay: { ...replay, finished: true } })
+  await vi.waitFor(() => expect(switcher.getCurrentResult().data?.history).toEqual(history))
+  expect(fetch).toHaveBeenCalledTimes(2)
+  socket.message({ ...tick, type: "replay_tick", replay: { ...replay, finished: true } })
+  expect(fetch).toHaveBeenCalledTimes(2)
+  // A run can finish between ticks; its ID distinguishes it from the last finish.
+  history = [...history, "third"]
+  socket.message({ ...tick, type: "replay_tick", replay: { ...replay, id: "third", finished: true } })
+  await vi.waitFor(() => expect(switcher.getCurrentResult().data?.history).toEqual(history))
+  expect(fetch).toHaveBeenCalledTimes(3)
+})

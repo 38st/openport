@@ -127,7 +127,8 @@ simulation's limits.
   feed, on a practice or evaluation plan, at 1× to 300× or as fast as possible. Start
   at a chosen New York time, pause or skip, and keep each run's trades in its own journal.
   Resume a run a crash interrupted, on the same journal, where it stopped.
-  Finished runs open read-only in Journal and Dashboard. Replay journals sync to disk
+  Finished runs appear in the account switcher as they finish and open read-only in
+  Journal and Dashboard. Replay journals sync to disk
   every 250 ms rather than every record, so a power cut can lose their last quarter
   second.
 

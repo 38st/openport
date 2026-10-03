@@ -16,6 +16,7 @@ export function connectLive(
   let retry = 0
   let timer: ReturnType<typeof setTimeout> | undefined
   let disposed = false
+  let replayState: string | undefined
 
   const connect = () => {
     const token = writeToken.get()
@@ -37,7 +38,18 @@ export function connectLive(
       if (disposed || socket !== current) return
       const message = JSON.parse(event.data) as Tick
       if (message.type === "tick") onTick(message)
-      else if (message.type === "replay_tick") onReplayTick(message)
+      else if (message.type === "replay_tick") {
+        onReplayTick(message)
+        // The switcher and Replay page share this listing. Refresh on each run's
+        // start/finish, even when the page is not mounted, rather than every quote.
+        if (message.replay) {
+          const next = `${message.replay.id ?? message.replay.started}:${message.replay.finished}`
+          if (next !== replayState) {
+            replayState = next
+            void queryClient.invalidateQueries({ queryKey: ["replay-listing"] })
+          }
+        }
+      }
     }
     current.onclose = () => {
       if (disposed || socket !== current) return
