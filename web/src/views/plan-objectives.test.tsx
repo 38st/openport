@@ -30,6 +30,7 @@ const planned: Account = {
     objectives: [
       { code: "PROFIT_TARGET", met: false, actual: 150, required: 10000, message: "$9850.00 to go to the target $110000.00 on the closed balance" },
       { code: "MIN_TRADING_DAYS", met: false, actual: 2, required: 3, message: "2 of 3 days with a trade; a day counts once one of your own orders, or a share trade, executes on it" },
+      { code: "MICROSCALPING", met: false, actual: 60, required: 25, message: "Net positive profit $90.00 from round trips held under 30 seconds" },
       { code: "MIN_TRADES", met: false, actual: 2, required: 10, message: "2 of 10 closed whole trades" },
       { code: "TRADE_CONSISTENCY", met: false, actual: 75, required: 40, message: "Best trade 17, net $112.50; at most 40% of attempt profit $150.00" },
       { code: "CONSISTENCY", met: false, actual: 66.7, required: 40, message: "The best day, $100.00 on 2026-09-22, is 67% of the total profit $150.00" },
@@ -98,7 +99,7 @@ describe("plan objectives in the terminal", () => {
   })
   it("lists what a pass waits for, the daily loss room and what closing now would leave", () => {
     const html = render(<DashboardView />, planned)
-    for (const text of ["Objectives to pass", "0 of 5 met", "Closed trades", "2 of 10", "Trade consistency", "75% of 40% max", "Best trade 17", "Trading days", "2 of 3", "Consistency", "67% of 40% max",
+    for (const text of ["Objectives to pass", "0 of 6 met", "Microscalping", "60% of 25% max", "Closed trades", "2 of 10", "Trade consistency", "75% of 40% max", "Best trade 17", "Trading days", "2 of 3", "Consistency", "67% of 40% max",
       "Best day $100.00 on 2026-09-22", "needs $250.00 of profit", "Daily loss limit", "$98,150.00", "$2,117.50 room · locks the day",
       "to go on the closed balance", "Closed balance", "$100,150.00", "Equity if every position closed now", "$100,200.00", "· static"])
       expect(html).toContain(text)

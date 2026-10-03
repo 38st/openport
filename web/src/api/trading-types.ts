@@ -87,6 +87,9 @@ export interface AccountRules {
   /** lock: flatten and refuse opening orders until the next trading day; fail: fail the attempt. */
   daily_loss_action?: "lock" | "fail"
   /** The best day may be at most this percent of the basis; 0 is off. */
+  min_hold_seconds?: number
+  microscalp_seconds?: number
+  microscalp_percent?: number
   min_trades?: number
   trade_consistency_percent?: number
   consistency_percent?: number
@@ -146,7 +149,8 @@ export type DailyLossBasis = "equity" | "balance" | "higher" | "peak"
  * absent on older servers and null when a check has none.
  */
 /** Codes include PLAYBOOK_TIME_STOP, PLAYBOOK_TRAILING_STOP, PLAYBOOK_DTE_STOP and PLAYBOOK_DAYS_IN_TRADE_STOP for automatic entry/exit cancellations; older runs use USER_CANCEL. */
-export interface Decision { code: string; message: string; actual?: number | null; limit?: number | null; scope?: string | null }
+export type PlanRuleReason = "TRADE_CONSISTENCY" | "MIN_TRADES" | "MIN_HOLD" | "MICROSCALPING"
+export interface Decision { code: PlanRuleReason | string; message: string; actual?: number | null; limit?: number | null; scope?: string | null }
 /** `requirement` is `short_requirement` under a name that fits portfolio margin too; absent on older servers. */
 export interface BuyingPower { available: Money; reserved: Money; short_requirement: Money; requirement?: Money }
 /**
@@ -195,7 +199,7 @@ export interface EvaluationDay {
 }
 /** One condition a pass needs; `actual` and `required` are dollars, days or percent by code. */
 export interface Objective {
-  code: "PROFIT_TARGET" | "MIN_TRADING_DAYS" | "MIN_PROFITABLE_DAYS" | "CONSISTENCY" | string
+  code: "PROFIT_TARGET" | "MIN_TRADING_DAYS" | "MIN_PROFITABLE_DAYS" | "CONSISTENCY" | "TRADE_CONSISTENCY" | "MIN_TRADES" | "MICROSCALPING" | string
   met: boolean
   actual: number | null
   required: number
@@ -302,6 +306,7 @@ export interface Evaluation {
   objectives?: Objective[]
   trading_days?: number | null
   profitable_days?: number
+  short_profit?: Money | null
   closed_trades?: number | null
   best_trade?: { id: string; pnl: Money } | null
   best_day?: { day: string; profit: Money } | null

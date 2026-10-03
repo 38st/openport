@@ -27,6 +27,9 @@ export interface PlanForm extends SizeScalingForm {
   daily_loss_limit: string
   daily_loss_basis: DailyLossBasis
   daily_loss_action: "lock" | "fail"
+  min_hold_seconds: string
+  microscalp_seconds: string
+  microscalp_percent: string
   min_trades: string
   trade_consistency_percent: string
   consistency_percent: string
@@ -71,6 +74,9 @@ export function planForm(plan: Pick<Plan, "initial_cash" | "rules">): PlanForm {
     lock: r.lock_at_start ? "start" : r.lock_balance ? "balance" : "none", lock_balance: r.lock_balance ?? "",
     daily_loss_limit: r.daily_loss_limit ?? "", daily_loss_basis: r.daily_loss_basis ?? "equity", daily_loss_action: r.daily_loss_action ?? "lock",
     consistency_percent: r.consistency_percent ? String(r.consistency_percent) : "", consistency_basis: r.consistency_basis ?? "total",
+    min_hold_seconds: r.min_hold_seconds ? String(r.min_hold_seconds) : "",
+    microscalp_seconds: r.microscalp_seconds ? String(r.microscalp_seconds) : "",
+    microscalp_percent: r.microscalp_percent ? String(r.microscalp_percent) : "",
     min_trades: r.min_trades ? String(r.min_trades) : "",
     trade_consistency_percent: r.trade_consistency_percent ? String(r.trade_consistency_percent) : "",
     min_trading_days: r.min_trading_days ? String(r.min_trading_days) : "",
@@ -103,13 +109,16 @@ export function customPlan(form: PlanForm, base: AccountRules): { initial_cash: 
     ["Maximum trade risk", form.max_trade_risk], ["Daily loss limit", form.daily_loss_limit], ["Profitable-day profit", form.phase === "funded" ? "" : form.profitable_day_profit]] as const)
     if ((required || value.trim() !== "") && !validMoney(value.trim())) return { error: `${label} must be a dollar amount` }
   if (!(Number(form.initial_cash) > 0)) return { error: "The starting balance must be above zero" }
-  for (const [label, value, most] of [...(form.phase === "evaluation" ? [["Minimum trades", form.min_trades, 10000], ["Trade consistency", form.trade_consistency_percent, 100], ["Consistency", form.consistency_percent, 100], ["Minimum trading days", form.min_trading_days, 366],
+  for (const [label, value, most] of [...(form.phase === "evaluation" ? [["Microscalp seconds", form.microscalp_seconds, 3600], ["Microscalp percent", form.microscalp_percent, 100], ["Minimum trades", form.min_trades, 10000], ["Trade consistency", form.trade_consistency_percent, 100], ["Consistency", form.consistency_percent, 100], ["Minimum trading days", form.min_trading_days, 366],
     ["Minimum profitable days", form.min_profitable_days, 366], ["Evaluation time limit", form.time_limit_days, 366]] : []),
     ["Inactivity limit", form.inactivity_days, 366]] as [string, string, number][]) {
     const n = count(value)
     if (!Number.isInteger(n) || n < 0 || n > most) return { error: `${label} must be a whole number from 0 to ${most}` }
   }
-  for (const [label, value, most] of [["Maximum contracts held", form.max_contracts_held, 100000],
+  if (form.phase === "evaluation" && ((form.microscalp_seconds.trim() === "") !== (form.microscalp_percent.trim() === "") ||
+      (count(form.microscalp_percent) > 0 && count(form.microscalp_seconds) === 0)))
+    return { error: "Set both microscalp seconds and percent, or leave both off" }
+  for (const [label, value, most] of [["Minimum hold seconds", form.min_hold_seconds, 3600], ["Maximum contracts held", form.max_contracts_held, 100000],
     ["Maximum trade risk %", form.max_trade_risk_percent, 100]] as const) {
     const n = count(value)
     if (!Number.isInteger(n) || n < 0 || n > most) return { error: `${label} must be a whole number from 0 to ${most}` }
@@ -170,6 +179,9 @@ export function customPlan(form: PlanForm, base: AccountRules): { initial_cash: 
     lock_at_start: trailing && form.lock === "start", lock_balance: trailing && form.lock === "balance" ? amount(form.lock_balance) : null,
     daily_loss_limit: amount(form.daily_loss_limit), daily_loss_basis: form.daily_loss_basis, daily_loss_action: form.daily_loss_action,
     consistency_percent: form.phase === "funded" ? 0 : count(form.consistency_percent), consistency_basis: form.consistency_basis,
+    min_hold_seconds: count(form.min_hold_seconds),
+    microscalp_seconds: form.phase === "funded" ? 0 : count(form.microscalp_seconds),
+    microscalp_percent: form.phase === "funded" ? 0 : count(form.microscalp_percent),
     min_trades: form.phase === "funded" ? 0 : count(form.min_trades),
     trade_consistency_percent: form.phase === "funded" ? 0 : count(form.trade_consistency_percent),
     min_trading_days: form.phase === "funded" ? 0 : count(form.min_trading_days),
@@ -218,10 +230,13 @@ export function PlanEditor({ form, onChange, disabled }: { form: PlanForm; onCha
       <Field label="Daily loss limit" hint="Blank for none">{text("daily_loss_limit", "none")}</Field>
       <Field label="Measured from">{choice("daily_loss_basis", (Object.keys(dailyLossBasisText) as DailyLossBasis[]).map((b) => [b, dailyLossBasisText[b]]))}</Field>
       <Field label="Reaching it">{choice("daily_loss_action", [["lock", "Closes positions and locks the day"], ["fail", "Fails the attempt"]])}</Field>
+      <Field label="Minimum hold (seconds)" hint="User reductions only; protective exits and flatten still work">{text("min_hold_seconds", "0")}</Field>
       <Field label="Trading day ends (ET)" hint="HH:MM, 16:15 to 24:00">{text("day_end")}</Field>
       {form.phase === "evaluation" && <>
         <Field label="Consistency: best day at most %" hint="Blank for none">{text("consistency_percent", "none")}</Field>
         <Field label="Of">{choice("consistency_basis", [["total", "The total profit"], ["positive_days", "The profitable days' total"]])}</Field>
+        <Field label="Microscalp threshold (seconds)" hint="Final close under this age; set with percent">{text("microscalp_seconds", "off")}</Field>
+        <Field label="Microscalp profit at most %" hint="Positive net profit from short round trips / attempt profit">{text("microscalp_percent", "off")}</Field>
         <Field label="Minimum closed trades" hint="Whole option trades, including system closures">{text("min_trades", "0")}</Field>
         <Field label="Trade consistency: best trade at most %" hint="Net profit of a closed whole option trade; blank for none">{text("trade_consistency_percent", "none")}</Field>
         <Field label="Minimum trading days">{text("min_trading_days", "0")}</Field>

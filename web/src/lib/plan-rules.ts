@@ -50,6 +50,7 @@ export function objectiveFacts(rules: AccountRules): string[] {
     rules.profitable_day_profit ? ` of ${formatMoney(rules.profitable_day_profit, 0)}+` : ""}`)
   if (rules.consistency_percent) facts.push(`Best day at most ${rules.consistency_percent}% of ${
     rules.consistency_basis === "positive_days" ? "the profitable days' total" : "the total profit"}`)
+  if (rules.phase !== "funded" && rules.microscalp_percent) facts.push(`Profit from round trips under ${rules.microscalp_seconds}s at most ${rules.microscalp_percent}% of attempt profit`)
   if (rules.phase !== "funded" && rules.min_trades) facts.push(`At least ${rules.min_trades} closed whole ${rules.min_trades === 1 ? "trade" : "trades"}`)
   if (rules.phase !== "funded" && rules.trade_consistency_percent) facts.push(`Best closed whole trade at most ${rules.trade_consistency_percent}% of attempt profit`)
   return facts
@@ -67,13 +68,14 @@ export const objectiveLabels: Record<string, string> = {
   MIN_TRADING_DAYS: "Trading days",
   MIN_PROFITABLE_DAYS: "Profitable days",
   CONSISTENCY: "Consistency",
+  MICROSCALPING: "Microscalping",
   MIN_TRADES: "Closed trades",
   TRADE_CONSISTENCY: "Trade consistency",
 }
 /** An objective's standing in a few characters: dollars, days or percent. */
 export function objectiveValue(o: Objective): string {
   if (o.code === "PROFIT_TARGET") return `${formatMoney(o.actual?.toFixed(2))} of ${formatMoney(o.required.toFixed(2), 0)}`
-  if (o.code === "CONSISTENCY" || o.code === "TRADE_CONSISTENCY") return `${o.actual == null ? "—" : `${Math.round(o.actual)}%`} of ${o.required}% max`
+  if (o.code === "CONSISTENCY" || o.code === "TRADE_CONSISTENCY" || o.code === "MICROSCALPING") return `${o.actual == null ? "—" : `${Math.round(o.actual)}%`} of ${o.required}% max`
   return `${o.actual ?? 0} of ${o.required}`
 }
 export const decisionLabels: Record<string, string> = {
@@ -101,6 +103,7 @@ export const dayLockNotice = "The plan's daily loss limit locked trading until t
 /** Optional entry rules; older servers and plans leave them off. */
 export function tradeRuleFacts(r: AccountRules): string[] {
   return [
+    ...(r.min_hold_seconds ? [`Hold at least ${r.min_hold_seconds}s before user reductions; protective exits and flatten remain available`] : []),
     ...(r.max_contracts_held ? [`At most ${r.max_contracts_held} option contracts held or opening`] : []),
     ...(r.require_stop_loss ? ["Stop-loss required on every entry"] : []),
     ...(r.max_trade_risk && Number(r.max_trade_risk) > 0 ? [`Trade risk at most ${formatMoney(r.max_trade_risk)} before fees`] : []),

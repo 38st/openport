@@ -68,6 +68,9 @@ export function ruleText(account: Account, fee?: string, dailyLoss?: string) {
     ...(objectives.length ? [{ title: "Objectives to pass", body: <>
         {objectives.map((o, i) => i === 0 ? o : o.charAt(0).toLowerCase() + o.slice(1)).join("; ")}. A trading day counts once one of your own orders executes on it, or you trade shares; holding a position over a day, or an exercise, does not count.
         Days follow the plan's trading day, and a day's profit is {balance ? "what you close that day (net realised P&L after fees)" : "its change in equity"}.
+        {r.min_trades || r.trade_consistency_percent ? <> Whole option trades count only when every round trip in the group is flat, including settlement, expiry, assignment and account liquidation. Net P&amp;L includes fees; rolls count once.</> : null}
+        {r.trade_consistency_percent ? <> Trade consistency can hold the pass back but never fails the account. With no profitable closed trade, it is satisfied.</> : null}
+        {r.microscalp_percent ? <> Microscalping sums positive net profit from completed round trips held under {r.microscalp_seconds} seconds, including protective and system exits; losses do not offset it. It can hold a pass back but never fails the account. Exactly the threshold is allowed.</> : null}
         {r.consistency_percent ? <> The consistency rule never fails the attempt: while the best day is too large a share, the pass waits, as if the target were higher{e.consistency_target ? <> (the best day so far needs {formatMoney(e.consistency_target)} of profit)</> : null}, or for more profitable days.</> : null}</> }] : []),
     ...timeRuleEntries(r),
     ...(r.size_scaling ? [{ title: "Account size scaling", body: <>{sizeScalingFact(r)}. Withdrawals count toward review profit. Each review restarts, whether it qualifies or not. Growth credits capital, leaves profit and payout room unchanged, raises the floor by the credit, and scales loss limits from the original size, rounded down to cents.</> }] : []),
@@ -89,6 +92,7 @@ export function ruleText(account: Account, fee?: string, dailyLoss?: string) {
         {payoutCap(p.caps, e.payouts.length + 1) && <> Your next payout is number {e.payouts.length + 1}, capped at {formatMoney(payoutCap(p.caps, e.payouts.length + 1))}.</>}
       </> }] : []),
     ...(r.max_contracts_held ? [{ title: "Contracts held at once", body: `At most ${r.max_contracts_held} option contracts held plus working opening contracts, counting every combo leg and its ratio. Shares and managed exits are excluded; closing orders remain available.` }] : []),
+    ...(r.min_hold_seconds ? [{ title: "Minimum hold time", body: `User reductions need ${r.min_hold_seconds} seconds of market time from the first opening fill. Adding or partially closing does not restart the clock. Every closing leg must qualify. Protective triggers, bracket exits, OCO, trailing stops, flatten and system exits still execute.` }] : []),
     ...(r.require_stop_loss ? [{ title: "Stop-loss required", body: "Every opening order needs a protective bracket stop. Targets and limit prices alone do not qualify. Close the position before cancelling its required stop; flattening and automatic exits remain available. Share entries cannot attach stops." }] : []),
     ...((r.max_trade_risk && Number(r.max_trade_risk) > 0) || r.max_trade_risk_percent ? [{ title: "Maximum trade risk", body: <>
       {r.max_trade_risk && Number(r.max_trade_risk) > 0 ? <>At most {formatMoney(r.max_trade_risk)} per order. </> : null}
