@@ -8265,6 +8265,13 @@
             "pattern": "^([01][0-9]|2[0-3]):[0-5][0-9]$|^24:00$",
             "default": "17:00",
             "description": "New York time the plan's trading day ends, 16:15 to 24:00. It decides which day a moment counts toward: rollover, daily loss, the end-of-day floor and the day counts."
+          },
+          "inside_fill_percent": {
+            "type": "integer",
+            "minimum": 0,
+            "maximum": 100,
+            "default": 0,
+            "description": "Off at zero (omitted in responses and journals). A limit strictly inside a spread fills at its limit when this percent of the way from own side to far side. Net combos allocate improvement by leg spread. Displayed size only; latency applies, slippage and impact do not worsen an inside fill. Markets and stops are unchanged."
           }
         },
         "required": [
@@ -10455,9 +10462,10 @@
                 "type": "string",
                 "enum": [
                   "as_displayed",
-                  "conservative"
+                  "conservative",
+                  "midpoint"
                 ],
-                "description": "Override execution settings for the new attempt: As displayed uses zeros; Conservative uses 1000 ms latency, 1 impact tick and 1 slippage tick."
+                "description": "Override slippage, latency, impact and inside fills for the new attempt. As displayed sets all to zero; conservative sets 1 tick slippage, 1000 ms latency, 1 impact tick and no inside fills; midpoint sets inside_fill_percent to 50 and the others to zero."
               },
               "margin": {
                 "type": "string",
@@ -10804,6 +10812,16 @@
             "type": "string",
             "format": "date-time",
             "description": "Required only for gtd. ISO timestamp with Z or UTC offset, in the future and no more than 366 days after acceptance (market time). GTD trades regular hours; expires with GTD_END."
+          },
+          "walk": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/Walk"
+              },
+              {
+                "type": "null"
+              }
+            ]
           }
         },
         "required": [
@@ -11376,6 +11394,27 @@
               }
             ],
             "description": "Automatic flatten repricing: 0-10 adverse ticks from each leg touch, otherwise null. A manual price disables it."
+          },
+          "walk": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/Walk"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "next_walk": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/WalkStep"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "Next scheduled step, or null when there is none (including at cap or terminal)."
           }
         },
         "required": [
@@ -11398,7 +11437,9 @@
           "actor",
           "attempt",
           "good_till",
-          "limit_ticks"
+          "limit_ticks",
+          "next_walk",
+          "walk"
         ]
       },
       "Fill": {
@@ -12456,12 +12497,23 @@
               "gtc"
             ],
             "description": "A resting limit order's new time in force: day ends it with the current session, gtc at expiry. Bracket exits keep theirs."
+          },
+          "walk": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/Walk"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "Absent keeps current walk; null removes it; an object replaces it. Every accepted change restarts the interval, including a price-only change."
           }
         }
       },
       "OrderChangeRecord": {
         "type": "object",
-        "description": "A change asked of a resting order (PUT /api/orders/{id}): the terms requested, null where kept; the terms before it; and whether it was applied, or refused with its reason (a refused change leaves the order as it was).",
+        "description": "A change asked of a resting order (PUT /api/orders/{id}): the terms requested, null where kept; the terms before it; and whether it was applied, or refused with its reason (a refused change leaves the order as it was). Automatic walking steps appear with actor walk and their scheduled market time.",
         "properties": {
           "time": {
             "type": "string"
@@ -12540,6 +12592,16 @@
                   }
                 ],
                 "description": "The time in force before a change of it, on such a change only."
+              },
+              "walk": {
+                "anyOf": [
+                  {
+                    "$ref": "#/components/schemas/Walk"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ]
               }
             },
             "required": [
@@ -12576,6 +12638,16 @@
               }
             ],
             "description": "The time in force asked for, on a change of it only."
+          },
+          "walk": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/Walk"
+              },
+              {
+                "type": "null"
+              }
+            ]
           }
         },
         "required": [
@@ -12660,9 +12732,10 @@
                 "type": "string",
                 "enum": [
                   "as_displayed",
-                  "conservative"
+                  "conservative",
+                  "midpoint"
                 ],
-                "description": "Override execution settings for the new attempt: As displayed uses zeros; Conservative uses 1000 ms latency, 1 impact tick and 1 slippage tick."
+                "description": "Override slippage, latency, impact and inside fills for the new attempt. As displayed sets all to zero; conservative sets 1 tick slippage, 1000 ms latency, 1 impact tick and no inside fills; midpoint sets inside_fill_percent to 50 and the others to zero."
               },
               "margin": {
                 "type": "string",
@@ -14118,6 +14191,17 @@
               "$ref": "#/components/schemas/OrderWarning"
             },
             "description": "Advice on accepted terms that are rarely meant; empty when there is none. It never changes the decision."
+          },
+          "next_walk": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/WalkStep"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "Next scheduled step, or null when there is none (including at cap or terminal)."
           }
         },
         "required": [
@@ -14140,7 +14224,8 @@
           "simulated",
           "liquidity",
           "fee",
-          "fees"
+          "fees",
+          "next_walk"
         ]
       },
       "PreviewLiquidity": {
@@ -17611,6 +17696,13 @@
               }
             ],
             "description": "Omit or set null for the flat fee."
+          },
+          "inside_fill_percent": {
+            "type": "integer",
+            "minimum": 0,
+            "maximum": 100,
+            "default": 0,
+            "description": "Off at zero (omitted in responses and journals). A limit strictly inside a spread fills at its limit when this percent of the way from own side to far side. Net combos allocate improvement by leg spread. Displayed size only; latency applies, slippage and impact do not worsen an inside fill. Markets and stops are unchanged."
           }
         },
         "required": [
@@ -17974,6 +18066,45 @@
               }
             }
           }
+        ]
+      },
+      "Walk": {
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {
+          "step": {
+            "$ref": "#/components/schemas/Money"
+          },
+          "seconds": {
+            "type": "integer",
+            "minimum": 1,
+            "maximum": 3600
+          },
+          "limit": {
+            "$ref": "#/components/schemas/Money"
+          }
+        },
+        "required": [
+          "step",
+          "seconds",
+          "limit"
+        ],
+        "description": "Optional DAY/GTC limit walk without a trigger or managed exit. Positive tick-aligned step; cap at least as aggressive as current price; at most 1000 steps. Buys and signed combo nets increase; sells decrease. Tier ticks round toward cap. Each elapsed market-time interval records a change with actor walk; execution uses the current quote. Accepted manual changes restart the interval."
+      },
+      "WalkStep": {
+        "type": "object",
+        "properties": {
+          "time": {
+            "type": "string",
+            "description": "Scheduled market time (UTC)."
+          },
+          "limit_price": {
+            "$ref": "#/components/schemas/Money"
+          }
+        },
+        "required": [
+          "time",
+          "limit_price"
         ]
       },
       "StockTradeRequest": {

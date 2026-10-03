@@ -108,6 +108,63 @@ class PaperEngine : public testing::Test {
   std::unique_ptr<server::Engine> engine;
 };
 
+TEST_F(PaperEngine, InsideFillRulesAndWalkingOrdersRoundTrip) {
+  engine->stop();
+  const auto directory = paper_path().parent_path();
+  auto options = paper_options();
+  options.paper_accounts = directory / "accounts";
+  engine = std::make_unique<server::Engine>(provider, md::Subscription{{"SPX"}}, options);
+  engine->start();
+  ASSERT_TRUE(wait_for([&] { return engine->trading_view() != nullptr; }));
+  seed();
+  const auto reset = write(*engine, "POST", "/api/account/reset", {{"reason", "inside"}, {"plan", "practice"}, {"fill_model", "midpoint"}});
+  ASSERT_EQ(reset.status, 200) << reset.body;
+  EXPECT_EQ(read(*engine, "/api/account")["rules"]["inside_fill_percent"], 50);
+  const auto filled = write(*engine, "POST", "/api/orders", order(market, "mid", "4.10"));
+  ASSERT_EQ(filled.status, 201) << filled.body;
+  EXPECT_EQ(json::parse(filled.body)["order"]["average_fill_price"], "4.10");
+  auto request = order(market, "walk", "3.90");
+  request["walk"] = {{"step", "0.10"}, {"seconds", 10}, {"limit", "4.20"}};
+  const auto preview = write(*engine, "POST", "/api/orders/preview", request);
+  ASSERT_EQ(preview.status, 200) << preview.body;
+  EXPECT_EQ(json::parse(preview.body)["next_walk"]["limit_price"], "4.00");
+  const auto placed = write(*engine, "POST", "/api/orders", request);
+  ASSERT_EQ(placed.status, 201) << placed.body;
+  const auto walking = json::parse(placed.body)["order"];
+  EXPECT_EQ(walking["walk"], request["walk"]);
+  EXPECT_EQ(walking["next_walk"]["limit_price"], "4.00");
+  const auto path = "/api/orders/" + walking["id"].get<std::string>();
+  auto changed = write(*engine, "PUT", path, {{"walk", {{"step", "0.10"}, {"seconds", 5}, {"limit", "4.10"}}}});
+  ASSERT_EQ(changed.status, 200) << changed.body;
+  EXPECT_EQ(json::parse(changed.body)["order"]["walk"]["seconds"], 5);
+  changed = write(*engine, "PUT", path, {{"walk", nullptr}});
+  ASSERT_EQ(changed.status, 200) << changed.body;
+  const auto cleared = json::parse(changed.body)["order"];
+  EXPECT_TRUE(cleared["walk"].is_null());
+  EXPECT_TRUE(cleared["next_walk"].is_null());
+  EXPECT_TRUE(cleared["changes"].back()["walk"].is_null());
+  EXPECT_EQ(cleared["changes"].back()["previous"]["walk"]["seconds"], 5);
+  for (const auto seconds : {0, 3601}) {
+    request["client_order_id"] = "bad-" + std::to_string(seconds);
+    request["walk"]["seconds"] = seconds;
+    expect_error(write(*engine, "POST", "/api/orders", request), 422, "INVALID_ORDER");
+  }
+  request["walk"]["seconds"] = 1.5;
+  expect_error(write(*engine, "POST", "/api/orders", request), 400, "INVALID_REQUEST");
+  auto rules = read(*engine, "/api/account")["rules"];
+  rules["plan"] = "Custom inside";
+  for (const auto& value : {json(-1), json(101), json(1.5)}) {
+    rules["inside_fill_percent"] = value;
+    const auto bad = write(*engine, "POST", "/api/account/reset", {{"reason", "bad"}, {"initial_cash", "100000.00"}, {"rules", rules}});
+    expect_error(bad, value.is_number_integer() ? 422 : 400, value.is_number_integer() ? "INVALID_RULES" : "INVALID_REQUEST");
+  }
+  const auto created = write(*engine, "POST", "/api/accounts", {{"name", "Inside"}, {"plan", "practice"}, {"fill_model", "midpoint"}});
+  ASSERT_EQ(created.status, 201) << created.body;
+  EXPECT_EQ(read(*engine, "/api/account?account=inside")["rules"]["inside_fill_percent"], 50);
+  engine->stop();
+  std::filesystem::remove_all(directory);
+}
+
 TEST_F(PaperEngine, AlertsWatchUntradedContractsAndUnderlyingStudiesAndKeepAccountScope) {
   // Named accounts require durable journals; the ordinary fixture is memory-only.
   engine.reset();

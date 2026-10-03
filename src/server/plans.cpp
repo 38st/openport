@@ -126,6 +126,7 @@ bool follows_plan(const PlanPreset& plan, Money initial_cash, const AccountRules
   execution.slippage_ticks = plan.rules.slippage_ticks;
   execution.fill_latency_ms = plan.rules.fill_latency_ms;
   execution.impact_ticks = plan.rules.impact_ticks;
+  execution.inside_fill_percent = plan.rules.inside_fill_percent;
   execution.fees = plan.rules.fees;
   // The account's margin is the trader's broker's, not the plan's.
   execution.margin = plan.rules.margin;
