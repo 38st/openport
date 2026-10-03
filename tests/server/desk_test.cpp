@@ -1214,7 +1214,8 @@ TEST(ReproducibleRun, ScenarioDayHasIdenticalBytesAcrossSpeedsFastForwardAndVeri
       });
       test::DiscardEvents discard;
       replay.start(reader.header().subscription, discard);
-      const auto deadline = std::chrono::steady_clock::now() + 60s;
+      // Full-day replay competes with other scenario tests under parallel CTest.
+      const auto deadline = std::chrono::steady_clock::now() + 5min;
       while (!replay.finished() && std::chrono::steady_clock::now() < deadline) std::this_thread::sleep_for(10ms);
       ASSERT_TRUE(replay.finished());
       replay.stop();
