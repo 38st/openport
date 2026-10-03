@@ -516,6 +516,41 @@ TEST(Replay, UntilPastTheEndIsRefusedBeforeAnythingPlays) {
   replay.stop();
 }
 
+TEST(Replay, PlayUntilPacesOnTheTestClockAndSettlesExactlyLikeAStep) {
+  const auto file = quarter_minute_recording(8);
+  const auto open = md::new_york_to_utc({2026, 9, 16}, 10, 0);
+  auto clock = std::make_shared<ManualClock>();
+  providers::ReplayProvider::Options options{file.path, 1, false, clock};
+  options.paused = true;
+  providers::ReplayProvider replay(options);
+  replay.set_driver(immediate_driver());
+  test::DiscardEvents discard;
+  replay.start({{"SPX"}}, discard);
+  ASSERT_TRUE(test::recording_eventually([&] { return !replay.fast_forwarding(); }));
+  replay.play_until(open + 45 * md::kNanosPerSecond, 60);
+  EXPECT_EQ(replay.pause_at(), open + 45 * md::kNanosPerSecond);
+  EXPECT_FALSE(replay.stepping());
+  for (int step = 1; step <= 3; ++step) {
+    const auto expected = providers::ReplayClock::TimePoint{} + step * 250ms;
+    ASSERT_EQ(clock->waiting_for(expected), expected);
+    clock->advance(250ms);
+    ASSERT_TRUE(test::recording_eventually([&] { return replay.settled_through() == open + step * 15 * md::kNanosPerSecond; }));
+  }
+  ASSERT_TRUE(test::recording_eventually([&] { return replay.paused() && replay.pause_at() == 0; }));
+  replay.wait_paused();
+  EXPECT_THROW(replay.play_until(open + 200 * md::kNanosPerSecond, 1), std::invalid_argument);
+  EXPECT_EQ(replay.speed(), 60);
+  EXPECT_TRUE(replay.paused());
+  replay.play_until(open + 90 * md::kNanosPerSecond);
+  replay.set_speed(1);
+  EXPECT_EQ(replay.pause_at(), 0);
+  replay.abort();
+  replay.wait_paused();
+  EXPECT_TRUE(replay.paused());
+  EXPECT_EQ(replay.settled_through(), open + 45 * md::kNanosPerSecond);
+  replay.stop();
+}
+
 TEST(Replay, SkipCutsAnOvernightGapShortAndTheEndIsReported) {
   const auto file = paced_recording();
   auto clock = std::make_shared<ManualClock>();

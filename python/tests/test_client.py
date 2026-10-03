@@ -120,6 +120,10 @@ def test_preview_cancel_and_replay_routing(stub):
     assert stub.requests[-1][3] == {"skip": True}
     client.control_replay(skip=False)
     assert stub.requests[-1][3] == {"skip": False}
+    client.play_replay_until("+1m", speed=60)
+    assert stub.requests[-1][3] == {"play_until": "+1m", "speed": 60}
+    client.play_replay_until("14:30:15")
+    assert stub.requests[-1][3] == {"play_until": "14:30:15"}
     client.abort_replay()
     assert stub.requests[-1][1] == "/api/replay"
     assert stub.requests[-1][3] == {"abort": True}

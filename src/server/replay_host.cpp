@@ -355,6 +355,8 @@ struct ReplayHost::Session {
     out["fast_forwarding"] = provider->fast_forwarding();
     out["stepping"] = provider->stepping();
     out["skip_pending"] = provider->skip_pending();
+    const auto pause_at = provider->pause_at();
+    out["pause_at"] = pause_at > 0 ? json(md::format_timestamp(pause_at)) : json(nullptr);
     out["progress"] = target > provider->header().started ? std::clamp(
         static_cast<double>(time - provider->header().started) / static_cast<double>(target - provider->header().started), 0.0, 1.0) : 1.0;
     out["speed"] = provider->speed();
@@ -1433,7 +1435,7 @@ void ReplayHost::control(const ApiRequest& request, const ApiCompletion& complet
       old.reset();
       complete(ok({{"replay", session->state()}}, 201));
     } else if (request.method == "PUT") {
-      const auto body = parse_body(request, {"speed", "paused", "skip", "until", "abort"});
+      const auto body = parse_body(request, {"speed", "paused", "skip", "until", "abort", "play_until"});
       const auto session = current();
       if (!session) {
         complete(api_error(404, "NO_REPLAY", "No replay is running"));
@@ -1448,8 +1450,18 @@ void ReplayHost::control(const ApiRequest& request, const ApiCompletion& complet
       if (body.contains("abort")) {
         if (body.size() != 1 || body.at("abort") != json(true)) throw std::invalid_argument("abort must be true and the only control");
         session->provider->abort();
+        session->provider->wait_paused();
         session->engine->synchronize().get();
         complete(ok({{"replay", session->state()}, {"aborted", true}}));
+        return;
+      }
+      if (body.contains("play_until")) {
+        for (const auto& [key, value] : body.items())
+          if (key != "play_until" && key != "speed") throw std::invalid_argument("play_until takes only speed besides it");
+        if (!body.at("play_until").is_string()) throw std::invalid_argument("play_until must be a time string");
+        const auto target = control_time(body.at("play_until").get<std::string>(), session->windows, *session->provider, "play_until");
+        session->provider->play_until(target, body.contains("speed") ? std::optional<int>(speed_field(body)) : std::nullopt);
+        complete(ok({{"replay", session->state()}}));
         return;
       }
       if (body.contains("until")) {
@@ -1463,7 +1475,10 @@ void ReplayHost::control(const ApiRequest& request, const ApiCompletion& complet
       if (body.contains("speed")) session->provider->set_speed(speed_field(body));
       if (body.contains("paused")) session->provider->set_paused(body.at("paused").get<bool>());
       if (body.contains("skip")) session->provider->skip(body.at("skip").get<bool>());
-      if (body.value("paused", false)) session->engine->synchronize().get();
+      if (body.value("paused", false)) {
+        session->provider->wait_paused();
+        session->engine->synchronize().get();
+      }
       auto response = json{{"replay", session->state()}};
       if (session->provider->skip_pending()) response["message"] = "Skip queued for the next resume; skip:false cancels it";
       complete(ok(response));

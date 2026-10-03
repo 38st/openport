@@ -79,14 +79,20 @@ void ReplayProvider::wake() {
 void ReplayProvider::set_speed(int speed) {
   if (!valid_speed(speed))
     throw std::invalid_argument("replay: speed must be max, 1, 2, 5, 10, 30, 60, 120 or 300");
-  speed_ = speed;
+  { const std::lock_guard lock(control_mutex_); speed_ = speed; pause_at_ = 0; }
   wake();
 }
 
 void ReplayProvider::set_paused(bool paused) {
   // A pause starts when it is asked for, however soon the replay notices.
   if (paused && !paused_.load()) paused_at_ = options_.clock->now().time_since_epoch().count();
-  paused_ = paused;
+  {
+    const std::lock_guard lock(control_mutex_);
+    paused_ = paused;
+    pause_at_ = 0;
+    pause_settled_ = false;
+    if (paused && stepping_.load()) abort_requested_ = true;
+  }
   wake();
 }
 
@@ -96,11 +102,37 @@ void ReplayProvider::skip(bool pending) {
 }
 
 void ReplayProvider::abort() {
+  set_paused(true);
+}
+
+void ReplayProvider::wait_paused() {
+  std::unique_lock lock(control_mutex_);
+  control_.wait(lock, [&] { return pause_settled_ || finished_.load() || stopping_.load(); });
+}
+
+void ReplayProvider::validate_target(md::Timestamp target) {
+  if (target <= 0) throw std::invalid_argument("Target must be a positive market timestamp");
+  if (target % md::kNanosPerSecond != 0 && !snapshot_batches_.load())
+    throw std::invalid_argument("Streaming replays settle at whole market seconds; target must name a whole second");
+  if (target < std::max(market_time_.load(), in_flight_time_)) throw std::invalid_argument("Target must not precede the current market time");
+  if (finished_.load() || stopping_.load()) throw std::invalid_argument("Replay has finished");
+}
+
+void ReplayProvider::play_until(md::Timestamp target, std::optional<int> speed) {
+  if (!driver_) throw std::invalid_argument("Play until requires a deterministic consumer");
+  if (speed && !valid_speed(*speed)) throw std::invalid_argument("Invalid replay speed");
+  if (const auto end = end_time(); target > end)
+    throw std::invalid_argument("play_until exceeds the recording's end at " + md::format_timestamp(end) + "; the replay did not move");
   {
     const std::lock_guard lock(control_mutex_);
-    if (stepping_.load()) abort_requested_ = true;
+    validate_target(target);
+    if (stepping_.load() || preparing_.load()) throw std::invalid_argument("Wait for the current step or start state");
+    pause_at_ = target;
+    if (speed) speed_ = *speed;
+    paused_ = false;
+    pause_settled_ = false;
   }
-  set_paused(true);
+  wake();
 }
 
 bool ReplayProvider::pace(ReplayClock::TimePoint& deadline, int basis) {
@@ -109,6 +141,8 @@ bool ReplayProvider::pace(ReplayClock::TimePoint& deadline, int basis) {
     if (paused_.load()) {
       if (!synchronize()) return false;
       std::unique_lock lock(control_mutex_);
+      pause_settled_ = true;
+      control_.notify_all();
       control_.wait(lock, [&] { return !paused_.load() || seeking_.load() || stopping_.load(); });
       lock.unlock();
       if (stopping_.load()) return false;
@@ -314,11 +348,9 @@ bool ReplayProvider::until(md::Timestamp target) {
   if (const auto end = end_time(); target > end)
     throw std::invalid_argument("until exceeds the recording's end at " + md::format_timestamp(end) + "; the replay did not move");
   std::unique_lock lock(control_mutex_);
-  if (target <= 0) throw std::invalid_argument("until must be a positive market timestamp");
-  if (target % md::kNanosPerSecond != 0 && !snapshot_batches_.load())
-    throw std::invalid_argument("Streaming replays settle at whole market seconds; until must name a whole second");
-  if (target < std::max(market_time_.load(), in_flight_time_)) throw std::invalid_argument("until must not precede the current market time");
-  if (finished_.load() || stopping_.load()) throw std::invalid_argument("Replay has finished");
+  validate_target(target);
+  pause_at_ = 0;
+  pause_settled_ = false;
   step_target_ = target;
   step_pending_ = true;
   seeking_ = true;
@@ -344,16 +376,22 @@ void ReplayProvider::run_deterministic(md::Subscription subscription, md::EventS
     while (!stopping_.load() && next) {
       {
         std::unique_lock lock(control_mutex_);
-        if (step_pending_ && (abort_requested_ || next->time > step_target_)) {
+        const auto paced_target = pause_at_.load();
+        if ((step_pending_ && (abort_requested_ || next->time > step_target_)) ||
+            (paced_target > 0 && next->time > paced_target)) {
           lock.unlock();
           if (!synchronize()) break;
           lock.lock();
+          // A manual control can supersede a play-to while its barrier runs.
+          if (!step_pending_ && pause_at_.load() != paced_target) continue;
           step_aborted_ = abort_requested_;
-          if (!step_aborted_) {
-            market_time_ = step_target_;
-            settled_ = step_target_;
+          if (!step_pending_ || !step_aborted_) {
+            market_time_ = step_pending_ ? step_target_ : paced_target;
+            settled_ = market_time_.load();
           }
           paused_ = true;
+          pause_settled_ = true;
+          pause_at_ = 0;
           // The step played its batches unpaced: the next gap counts from here, not
           // from a deadline measured before it, or each step would add a stale gap.
           deadline = options_.clock->now();
@@ -374,6 +412,8 @@ void ReplayProvider::run_deterministic(md::Subscription subscription, md::EventS
       {
         const std::lock_guard lock(control_mutex_);
         if (step_pending_ && (abort_requested_ || next->time > step_target_)) continue;
+        if (pause_at_.load() > 0 && next->time > pause_at_.load()) continue;
+        if (paused_.load() && !seeking_.load()) continue;
         in_flight_time_ = next->time;
       }
       const auto receipt = next->received;
@@ -409,7 +449,10 @@ void ReplayProvider::run_deterministic(md::Subscription subscription, md::EventS
       paused_ = true;
       step_aborted_ = abort_requested_;
     }
+    if (pause_at_.load() > 0) paused_ = true;
     step_pending_ = false;
+    pause_at_ = 0;
+    pause_settled_ = true;
     seeking_ = false;
     preparing_ = false;
     finished_ = true;

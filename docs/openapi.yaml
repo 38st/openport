@@ -6571,6 +6571,13 @@
           "skip_pending": {
             "type": "boolean",
             "description": "A skip queued while paused, consumed by the next resumed pacing gap. Optional for older sidecars."
+          },
+          "pause_at": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "Pending play_until market target; null when absent, settled, aborted or superseded."
           }
         },
         "required": [
@@ -15328,6 +15335,10 @@
             "type": "boolean",
             "const": true,
             "description": "Only control. Interrupt an until step at the next settled batch boundary and pause; the step response has aborted:true. Pause and DELETE also interrupt."
+          },
+          "play_until": {
+            "type": "string",
+            "description": "Paced playback through a target using the same time forms as until; returns immediately and shows pause_at until settled and paused. Optional speed; otherwise keeps current speed. Manual pause, abort, speed or until clears the target. Past EOF is 400 before any change."
           }
         },
         "required": []

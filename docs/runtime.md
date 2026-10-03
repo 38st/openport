@@ -619,6 +619,16 @@ stay `REPLAY_STEPPING` until that barrier completes. Invalid controls do not int
 transactions; with the same commands at the same times it gives the same journal
 as continuous playback. A step plays unpaced and leaves the replay paused; resuming
 waits one receipt-time gap from the resume, however many steps came before.
+`PUT {"play_until":"14:30:15","speed":60}` watches the same advance at a chosen
+speed. It returns immediately; state and ticks show `pause_at` until all complete
+batches through the target settle and playback pauses, at the same market time as
+`until`. It accepts the same absolute, relative and `next` targets. Omit `speed` to
+keep the current speed (including Max). A manual speed change, pause/resume, abort,
+`until` or stop clears it; another `play_until` replaces it. Skip retains it. Invalid
+or past-EOF targets change neither speed nor pause state. Commands during watched
+playback are allowed; wait for `paused:true` and `pause_at:null` to trade at the target.
+A target between batches settles through T without consuming the following batch.
+
 `start_at` retains its receipt-time semantics for delayed recordings; `until` uses
 market time.
 

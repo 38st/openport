@@ -240,7 +240,7 @@ export const api = {
   replayVerification: (id: string, signal?: AbortSignal) => get<RunVerification>(`/api/replay/history/${encodeURIComponent(id)}/verify`, signal),
   downloadVerificationReceipt: (id: string) => downloadFile(`/api/replay/history/${encodeURIComponent(id)}/verify?format=receipt`, `${id}-verification.json`),
   deleteReplay: (id: string, mode: WriteMode) => write<{ deleted: string }>(`/api/replay/history/${encodeURIComponent(id)}`, "DELETE", mode),
-  controlReplay: (change: { speed?: number; paused?: boolean; skip?: boolean; until?: string; abort?: boolean }, mode: WriteMode) =>
+  controlReplay: (change: { speed?: number; paused?: boolean; skip?: boolean; until?: string; abort?: boolean; play_until?: string }, mode: WriteMode) =>
     write<{ replay: ReplayState }>("/api/replay", "PUT", mode, change),
   stopReplay: (mode: WriteMode) => write<{ replay: null }>("/api/replay", "DELETE", mode),
   probability: (symbol: string, days: number[], prices: number[], signal?: AbortSignal) =>
