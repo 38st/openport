@@ -9085,6 +9085,16 @@
             "minimum": 0,
             "maximum": 100,
             "description": "Maximum share of attempt profit from positive net P&L of short closed option/share round trips. Set with microscalp_seconds; 0 disables, 1-100 enables. Evaluation only."
+          },
+          "no_hedging": {
+            "type": "boolean",
+            "default": false,
+            "description": "Reducer rule: refuse an opening order whose dollar delta opposes held dollar delta on its underlying, including shares. Pure reductions and system exits are exempt; unknown/stale delta refuses with MISSING_VALUATION."
+          },
+          "no_counter_positions": {
+            "type": "boolean",
+            "default": false,
+            "description": "Server pre-trade gate against opposite held dollar delta in other live accounts. Only the ordering account setting counts. Archived, replay and sandbox accounts are excluded. Refusal is not journaled; replay and single-account servers have no other accounts."
           }
         },
         "required": [
@@ -16304,6 +16314,9 @@
                     "type": "null"
                   }
                 ]
+              },
+              "evidence": {
+                "$ref": "#/components/schemas/RuleEvidence"
               }
             },
             "required": [
@@ -18142,6 +18155,16 @@
                             "type": "null"
                           }
                         ]
+                      },
+                      "no_hedging": {
+                        "type": "boolean",
+                        "default": false,
+                        "description": "Reducer rule: refuse an opening order whose dollar delta opposes held dollar delta on its underlying, including shares. Pure reductions and system exits are exempt; unknown/stale delta refuses with MISSING_VALUATION."
+                      },
+                      "no_counter_positions": {
+                        "type": "boolean",
+                        "default": false,
+                        "description": "Server pre-trade gate against opposite held dollar delta in other live accounts. Only the ordering account setting counts. Archived, replay and sandbox accounts are excluded. Refusal is not journaled; replay and single-account servers have no other accounts."
                       }
                     },
                     "required": [],
@@ -19906,7 +19929,9 @@
               "TRADE_CONSISTENCY",
               "MIN_TRADES",
               "MIN_HOLD",
-              "MICROSCALPING"
+              "MICROSCALPING",
+              "HEDGING",
+              "COUNTER_POSITION"
             ]
           },
           "message": {
@@ -19941,6 +19966,9 @@
                 "type": "null"
               }
             ]
+          },
+          "evidence": {
+            "$ref": "#/components/schemas/RuleEvidence"
           }
         },
         "required": [
@@ -20761,6 +20789,16 @@
             "minimum": 0,
             "maximum": 100,
             "description": "Maximum share of attempt profit from positive net P&L of short closed option/share round trips. Set with microscalp_seconds; 0 disables, 1-100 enables. Evaluation only."
+          },
+          "no_hedging": {
+            "type": "boolean",
+            "default": false,
+            "description": "Reducer rule: refuse an opening order whose dollar delta opposes held dollar delta on its underlying, including shares. Pure reductions and system exits are exempt; unknown/stale delta refuses with MISSING_VALUATION."
+          },
+          "no_counter_positions": {
+            "type": "boolean",
+            "default": false,
+            "description": "Server pre-trade gate against opposite held dollar delta in other live accounts. Only the ordering account setting counts. Archived, replay and sandbox accounts are excluded. Refusal is not journaled; replay and single-account servers have no other accounts."
           }
         },
         "required": [
@@ -22823,6 +22861,25 @@
           "next_size",
           "history"
         ]
+      },
+      "RuleEvidence": {
+        "type": "object",
+        "properties": {
+          "underlying": {
+            "type": "string"
+          },
+          "order_dollar_delta": {
+            "type": "number"
+          },
+          "held_dollar_delta": {
+            "type": "number"
+          },
+          "other_account": {
+            "type": "string",
+            "description": "Other live account ID for COUNTER_POSITION."
+          }
+        },
+        "additionalProperties": false
       }
     }
   }

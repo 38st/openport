@@ -258,3 +258,12 @@ it("validates hold time and paired microscalping and shows percentage progress",
   const funded = customPlan({ ...form, phase: "funded" }, rules)
   expect("error" in funded ? null : funded.rules).toMatchObject({ min_hold_seconds: 60, microscalp_seconds: 0, microscalp_percent: 0 })
 })
+
+it("edits direction bans and retains them in funded plans", () => {
+  const form = { ...planForm({ initial_cash: "100000", rules }), no_hedging: "yes" as const, no_counter_positions: "yes" as const }
+  const result = customPlan(form, rules)
+  expect("error" in result ? result : result.rules).toMatchObject({ no_hedging: true, no_counter_positions: true })
+  const funded = customPlan({ ...form, phase: "funded" }, rules)
+  expect("error" in funded ? funded : funded.rules).toMatchObject({ no_hedging: true, no_counter_positions: true })
+  expect(planForm({ initial_cash: "100000", rules }).no_hedging).toBe("no")
+})

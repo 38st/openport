@@ -352,3 +352,13 @@ it("shows trade objectives and protective hold exceptions on Rules and the edito
     "Microscalp threshold (seconds)", "Microscalp profit at most %"])
     expect(editor).toContain(label)
 })
+
+it("explains direction bans and the server gate in Rules and the editor", () => {
+  const value: Account = { ...planned, rules: { ...planned.rules, no_hedging: true, no_counter_positions: true } }
+  const html = render(<RulesView />, value)
+  for (const text of ["No hedging", "No counter positions", "Only the ordering account", "Pure reductions", "sandbox"])
+    expect(html).toContain(text)
+  const editor = renderToStaticMarkup(<PlanEditor form={planForm({ initial_cash: "100000", rules: value.rules })} onChange={() => {}} />)
+  expect(editor).toContain("No hedging")
+  expect(editor).toContain("No counter positions")
+})

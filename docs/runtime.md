@@ -1466,3 +1466,7 @@ F29 journals `trade_consistency_percent` only when nonzero and evaluation `best_
 F30 adds `min_trades` only when nonzero and evaluation `closed_trades` only when nonzero under that rule. Counts derive from current-attempt reducer history; plans without it add no state or journal fields.
 
 F61 omits `min_hold_seconds`, `microscalp_seconds` and `microscalp_percent` at zero. Active microscalping records nonzero evaluation `short_profit` and a nondefault `first_stock_fill` attempt boundary; these derive from fills/closures and share fills, and reset with the attempt. Hold age is reconstructed from first opening fills, adding no timing state. Only opted-in OCO acceptance links its sibling before the hold check. Off journals, transaction hashes and replay/scenario revisions remain unchanged.
+
+### Direction gates
+
+The desk checks `no_counter_positions` on its single owner thread, using each live account session’s current held valuations. Main and named accounts share this gate; archived, replay and sandbox accounts do not participate. Submit, increased-size modify, share trade and playbook entry paths share the check, with dry-run evidence for previews. A refused order never enters the reducer journal. Later fills and recovery require no cross-account state. The `no_hedging` check instead lives in the deterministic reducer; both rules use the exposure check’s strict freshness policy for unknown delta. See [direction rules](paper-trading.md#direction-rules-f65).

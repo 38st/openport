@@ -38,6 +38,8 @@ export interface PlanForm extends SizeScalingForm {
   min_profitable_days: string
   profitable_day_profit: string
   day_end: string
+  no_hedging: "yes" | "no"
+  no_counter_positions: "yes" | "no"
   max_contracts_held: string
   require_stop_loss: "yes" | "no"
   max_trade_risk: string
@@ -82,6 +84,7 @@ export function planForm(plan: Pick<Plan, "initial_cash" | "rules">): PlanForm {
     min_trading_days: r.min_trading_days ? String(r.min_trading_days) : "",
     min_profitable_days: r.min_profitable_days ? String(r.min_profitable_days) : "",
     profitable_day_profit: r.profitable_day_profit ?? "", day_end: dayEnd(r),
+    no_hedging: r.no_hedging ? "yes" : "no", no_counter_positions: r.no_counter_positions ? "yes" : "no",
     max_contracts_held: r.max_contracts_held ? String(r.max_contracts_held) : "",
     require_stop_loss: r.require_stop_loss ? "yes" : "no", max_trade_risk: r.max_trade_risk ?? "",
     max_trade_risk_percent: r.max_trade_risk_percent ? String(r.max_trade_risk_percent) : "",
@@ -187,6 +190,7 @@ export function customPlan(form: PlanForm, base: AccountRules): { initial_cash: 
     min_trading_days: form.phase === "funded" ? 0 : count(form.min_trading_days),
     min_profitable_days: form.phase === "funded" ? 0 : count(form.min_profitable_days),
     profitable_day_profit: form.phase === "funded" ? null : amount(form.profitable_day_profit), day_end: form.day_end,
+    no_hedging: form.no_hedging === "yes", no_counter_positions: form.no_counter_positions === "yes",
     max_contracts_held: count(form.max_contracts_held), require_stop_loss: form.require_stop_loss === "yes",
     max_trade_risk: amount(form.max_trade_risk), max_trade_risk_percent: count(form.max_trade_risk_percent),
     time_limit_days: form.phase === "funded" ? 0 : count(form.time_limit_days), inactivity_days: count(form.inactivity_days), underlyings,
@@ -268,6 +272,8 @@ export function PlanEditor({ form, onChange, disabled }: { form: PlanForm; onCha
           <p className="text-[11px] text-muted">Each review starts a new period, whether it qualifies or not. Capital growth leaves profit unchanged and scales loss limits with account size.</p>
         </div>}
       </div>}
+      <Field label="No hedging" hint="Opening delta cannot oppose this account’s held direction; reductions and exits remain available.">{choice("no_hedging", [["no", "Off"], ["yes", "On"]])}</Field>
+      <Field label="No counter positions" hint="Server checks other live accounts. Set this on every account you trade.">{choice("no_counter_positions", [["no", "Off"], ["yes", "On"]])}</Field>
       <Field label="Maximum contracts held" hint="Held options plus working entries; shares excluded. Blank for none.">{text("max_contracts_held", "none")}</Field>
       <Field label="Stop-loss required">{choice("require_stop_loss", [["no", "Optional"], ["yes", "Required on every entry"]])}</Field>
       <Field label="Maximum trade risk" hint="Dollars before fees. Blank for none.">{text("max_trade_risk", "none")}</Field>

@@ -128,6 +128,8 @@ export interface AccountRules {
   /** Portfolio margin's implied-volatility shock, in points up and down. */
   pm_vol_shock?: number
   /** Held options plus working opening contracts, excluding shares; 0 disables. */
+  no_hedging?: boolean
+  no_counter_positions?: boolean
   max_contracts_held?: number
   require_stop_loss?: boolean
   /** Per-order risk before fees; null/zero disables. */
@@ -149,8 +151,9 @@ export type DailyLossBasis = "equity" | "balance" | "higher" | "peak"
  * absent on older servers and null when a check has none.
  */
 /** Codes include PLAYBOOK_TIME_STOP, PLAYBOOK_TRAILING_STOP, PLAYBOOK_DTE_STOP and PLAYBOOK_DAYS_IN_TRADE_STOP for automatic entry/exit cancellations; older runs use USER_CANCEL. */
-export type PlanRuleReason = "TRADE_CONSISTENCY" | "MIN_TRADES" | "MIN_HOLD" | "MICROSCALPING"
-export interface Decision { code: PlanRuleReason | string; message: string; actual?: number | null; limit?: number | null; scope?: string | null }
+export type PlanRuleReason = "HEDGING" | "COUNTER_POSITION" | "TRADE_CONSISTENCY" | "MIN_TRADES" | "MIN_HOLD" | "MICROSCALPING"
+export interface RuleEvidence { underlying: string; order_dollar_delta: number; held_dollar_delta: number; other_account?: string }
+export interface Decision { evidence?: RuleEvidence; code: PlanRuleReason | string; message: string; actual?: number | null; limit?: number | null; scope?: string | null }
 /** `requirement` is `short_requirement` under a name that fits portfolio margin too; absent on older servers. */
 export interface BuyingPower { available: Money; reserved: Money; short_requirement: Money; requirement?: Money }
 /**

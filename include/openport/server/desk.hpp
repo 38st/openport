@@ -138,6 +138,11 @@ class Desk {
   [[nodiscard]] bool recorded_input(const TradingCommand& command) const;
   void record_command(const TradingCommand& command, md::Timestamp driver_time);
   void price_stock_command(TradingCommand& command, md::Timestamp driver_time);
+  [[nodiscard]] trading::Decision counter_position_gate(const PaperAccount& account,
+      const std::map<std::string, double>& direction, md::Timestamp time) const;
+  [[nodiscard]] trading::Decision opening_gate(const PaperAccount& account, const trading::OrderRequest& order,
+      md::Timestamp time, const trading::PreviewMarket& market = {},
+      const std::map<std::string, trading::Quantity>& preceding = {}) const;
   /// Re-executes a resumed run's recorded inputs up to its next boundary.
   void replay_recorded();
   /// Stops every account of a resumed run whose inputs no longer match its recording.

@@ -4278,9 +4278,13 @@ TEST(PaperAccounts, CreationSelectsAndValidatesFeeSchedules) {
     json rules{{"profit_target", nullptr}, {"max_drawdown", nullptr}, {"drawdown_mode", "intraday"},
                {"buy_only", false}, {"buying_power", true}, {"expiry_cutoff_seconds", 0},
                {"fees", {{"open", "0.50"}}}};
+    rules["no_hedging"] = true; rules["no_counter_positions"] = true;
     const auto custom = write(engine, "POST", "/api/accounts", {{"name", "Custom"}, {"initial_cash", "50000"}, {"rules", rules}});
     ASSERT_EQ(custom.status, 201) << custom.body;
     const auto custom_id = json::parse(custom.body)["account"]["id"].get<std::string>();
+    const auto direction_rules = read(engine, "/api/account?account=" + custom_id)["rules"];
+    EXPECT_EQ(direction_rules["no_hedging"], true);
+    EXPECT_EQ(direction_rules["no_counter_positions"], true);
     EXPECT_EQ(read(engine, "/api/account?account=" + custom_id)["rules"]["fees"]["open"], "0.50");
     const auto expect_invalid = [&](int status, const char* code) {
       const auto response = write(engine, "POST", "/api/accounts", {{"name", "Bad"}, {"initial_cash", "50000"}, {"rules", rules}});
@@ -4428,6 +4432,38 @@ TEST(PaperAvailability, EquityPagesKeepEqualTimeSamplesAndUnpagedReads) {
   engine.stop();
 }
 }  // namespace
+
+TEST_F(PaperEngine, DirectionRulesRoundTripAndHedgingPreviewEvidence) {
+  seed();
+  auto rules = read(*engine, "/api/account")["rules"];
+  rules["plan"] = "Directions"; rules["no_hedging"] = true; rules["no_counter_positions"] = true;
+  const auto reset = [&](const json& r) {
+    return write(*engine, "POST", "/api/account/reset", {{"reason", "directions"}, {"initial_cash", "100000"}, {"rules", r}});
+  };
+  ASSERT_EQ(reset(rules).status, 200);
+  auto account = read(*engine, "/api/account");
+  EXPECT_EQ(account["rules"]["no_hedging"], true);
+  EXPECT_EQ(account["rules"]["no_counter_positions"], true);
+  ASSERT_EQ(write(*engine, "POST", "/api/orders", order(market, "long", "4.20")).status, 201);
+  auto reverse = order(market, "reverse", "4.00");
+  reverse["side"] = "sell"; reverse["quantity"] = 2;
+  const auto preview = write(*engine, "POST", "/api/orders/preview", reverse);
+  ASSERT_EQ(preview.status, 200) << preview.body;
+  const auto reason = json::parse(preview.body)["reason"];
+  EXPECT_EQ(reason["code"], "HEDGING");
+  EXPECT_EQ(reason["evidence"]["underlying"], "SPX");
+  EXPECT_LT(reason["evidence"]["order_dollar_delta"].get<double>(), 0);
+  EXPECT_GT(reason["evidence"]["held_dollar_delta"].get<double>(), 0);
+  const auto refused = write(*engine, "POST", "/api/orders", reverse);
+  ASSERT_EQ(refused.status, 422) << refused.body;
+  EXPECT_EQ(json::parse(refused.body)["error"]["evidence"], reason["evidence"]);
+  test::capture_contract("direction-rules", "POST", "/api/orders/preview", preview);
+  test::capture_contract("direction-rules", "POST", "/api/orders", refused);
+  for (const auto* key : {"no_hedging", "no_counter_positions"}) {
+    auto bad = rules; bad[key] = 1;
+    expect_error(reset(bad), 400, "INVALID_REQUEST");
+  }
+}
 
 TEST_F(PaperEngine, HeldContractRulesAndRefusalEvidence) {
   seed();

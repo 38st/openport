@@ -769,8 +769,10 @@ TEST(Backtest, CustomStopAndRiskRules) {
     return server::parse_backtest({{"playbook", "batch"}, {"plan", {{"initial_cash", "10000"}, {"rules", rules}}},
                                   {"days", {{{"file", file.string()}}}}}, catalogue(), {}, {}, false);
   };
-  const json rules{{"profit_target", "100"}, {"require_stop_loss", true}, {"max_trade_risk", "123.456789"}, {"max_trade_risk_percent", 10}, {"trade_consistency_percent", 40}, {"min_trades", 12}, {"min_hold_seconds", 60}, {"microscalp_seconds", 30}, {"microscalp_percent", 25}};
+  const json rules{{"profit_target", "100"}, {"no_hedging", true}, {"no_counter_positions", true}, {"require_stop_loss", true}, {"max_trade_risk", "123.456789"}, {"max_trade_risk_percent", 10}, {"trade_consistency_percent", 40}, {"min_trades", 12}, {"min_hold_seconds", 60}, {"microscalp_seconds", 30}, {"microscalp_percent", 25}};
   const auto result = parse(rules);
+  EXPECT_TRUE(result.config.rules.no_hedging);
+  EXPECT_TRUE(result.config.rules.no_counter_positions);
   EXPECT_TRUE(result.config.rules.require_stop_loss);
   EXPECT_EQ(result.config.rules.max_trade_risk, Money::parse("123.456789"));
   EXPECT_EQ(result.config.rules.max_trade_risk_percent, 10);
@@ -782,7 +784,7 @@ TEST(Backtest, CustomStopAndRiskRules) {
   for (const auto& [key, value] : std::vector<std::pair<std::string, json>>{
       {"min_hold_seconds", 3601}, {"min_hold_seconds", 1.5}, {"microscalp_seconds", 0}, {"microscalp_percent", 101}, {"min_trades", 10001}, {"min_trades", 1.5}, {"trade_consistency_percent", 101}, {"trade_consistency_percent", 1.5},
       {"max_trade_risk", "-1"}, {"max_trade_risk", 100}, {"max_trade_risk_percent", 101},
-      {"max_trade_risk_percent", 1.5}, {"require_stop_loss", 1}}) {
+      {"max_trade_risk_percent", 1.5}, {"require_stop_loss", 1}, {"no_hedging", 1}, {"no_counter_positions", "true"}}) {
     auto invalid = rules; invalid[key] = value;
     EXPECT_THROW((void)parse(invalid), std::exception);
   }

@@ -42,6 +42,104 @@ server::TradingReply command(server::Desk& desk, server::TradingCommand request,
   if (!result) throw std::runtime_error("Desk did not complete command");
   return *result;
 }
+TEST(Desk, CounterPositionsGatePreviewsChangesChainsAndIgnoresArchivedAccounts) {
+  test::RecordingFile file;
+  test::ScriptedMarket market;
+  server::Desk::Options options;
+  options.paper_journal = file.directory / "paper.jsonl";
+  options.paper_accounts = file.directory / "accounts";
+  options.paper.rules.no_counter_positions = true;
+  options.paper.limits.aggregate = {1e9, 1e9};
+  options.paper.limits.per_underlying = {1e9, 1e9};
+  server::Desk desk("test", {}, {{"SPX"}}, options);
+  desk.start_trading();
+  server::TradingCommand create;
+  create.kind = server::TradingCommand::Kind::CreateAccount;
+  create.name = "Other"; create.initial_cash = Money::parse("100000");
+  ASSERT_EQ(command(desk, create, market.time, market.time).account, "other");
+  desk.replay_batch(market_batch(market), market.time);
+  server::TradingCommand entry;
+  entry.order = market.limit("resting", 1, "4.50", trading::Side::Sell);
+  const auto resting = command(desk, entry, market.time, market.time);
+  ASSERT_TRUE(resting.decision.ok()) << resting.decision.message;
+  entry.account = "other"; entry.order = market.market("long");
+  ASSERT_TRUE(command(desk, entry, market.time, market.time).decision.ok());
+  entry.account.clear(); entry.order = market.market("opposite", 1, trading::Side::Sell);
+  const auto count = desk.trading_view()->snapshot->recent_orders.size();
+  const auto refused = command(desk, entry, market.time, market.time);
+  EXPECT_EQ(refused.decision.code, trading::Reason::COUNTER_POSITION);
+  ASSERT_TRUE(refused.decision.evidence);
+  EXPECT_EQ(refused.decision.evidence->other_account, "other");
+  EXPECT_LT(refused.decision.evidence->order_dollar_delta, 0);
+  EXPECT_GT(refused.decision.evidence->held_dollar_delta, 0);
+  EXPECT_EQ(desk.trading_view()->snapshot->recent_orders.size(), count);
+  entry.kind = server::TradingCommand::Kind::Preview;
+  auto preview = command(desk, entry, market.time, market.time);
+  ASSERT_TRUE(preview.preview);
+  EXPECT_EQ(preview.preview->decision.code, trading::Reason::COUNTER_POSITION);
+  server::TradingCommand change;
+  change.kind = server::TradingCommand::Kind::Modify;
+  change.order_id = *resting.order_id; change.change.quantity = 2;
+  EXPECT_EQ(command(desk, change, market.time, market.time).decision.code, trading::Reason::COUNTER_POSITION);
+  change.kind = server::TradingCommand::Kind::PreviewChange;
+  preview = command(desk, change, market.time, market.time);
+  ASSERT_TRUE(preview.preview);
+  EXPECT_EQ(preview.preview->decision.code, trading::Reason::COUNTER_POSITION);
+  entry.kind = server::TradingCommand::Kind::Submit;
+  entry.order = market.market("chain");
+  entry.order.then = {market.market("child", 2, trading::Side::Sell)};
+  EXPECT_EQ(command(desk, entry, market.time, market.time).decision.code, trading::Reason::COUNTER_POSITION);
+  // An opposite order that only reduces is exempt.
+  change.kind = server::TradingCommand::Kind::Cancel;
+  ASSERT_TRUE(command(desk, change, market.time, market.time).decision.ok());
+  entry.order = market.market("same-direction");
+  ASSERT_TRUE(command(desk, entry, market.time, market.time).decision.ok());
+  entry.order = market.market("reduce", 1, trading::Side::Sell);
+  ASSERT_TRUE(command(desk, entry, market.time, market.time).decision.ok());
+  server::TradingCommand archive;
+  archive.kind = server::TradingCommand::Kind::UpdateAccount;
+  archive.account = "other"; archive.archived = true;
+  ASSERT_TRUE(command(desk, archive, market.time, market.time).error_code.empty());
+  entry.order = market.market("archived-ignored", 1, trading::Side::Sell);
+  ASSERT_TRUE(command(desk, entry, market.time, market.time).decision.ok());
+  archive.archived = false;
+  ASSERT_TRUE(command(desk, archive, market.time, market.time).error_code.empty());
+  // Only the ordering account's setting counts.
+  entry.account = "other"; entry.order = market.market("unguarded");
+  ASSERT_TRUE(command(desk, entry, market.time, market.time).decision.ok());
+  desk.stop();
+}
+
+TEST(Desk, CounterPositionsIncludeShareEntriesAndAllowShareReductions) {
+  test::RecordingFile file;
+  test::ScriptedMarket market;
+  server::Desk::Options options;
+  options.paper_accounts = file.directory / "accounts";
+  options.paper.rules.no_counter_positions = true;
+  server::Desk desk("test", {}, {{"SPY"}}, options);
+  desk.start_trading();
+  server::TradingCommand create;
+  create.kind = server::TradingCommand::Kind::CreateAccount;
+  create.name = "Other"; create.initial_cash = Money::parse("100000");
+  ASSERT_EQ(command(desk, create, market.time, market.time).account, "other");
+  desk.replay_batch({md::UnderlyingQuote{"SPY", market.time, 500, 500, 500}, md::SnapshotComplete{"SPY", market.time}}, market.time);
+  server::TradingCommand stock;
+  stock.kind = server::TradingCommand::Kind::TradeStock;
+  stock.symbol = "SPY"; stock.quantity = 10;
+  ASSERT_TRUE(command(desk, stock, market.time, market.time).decision.ok());
+  stock.account = "other";
+  ASSERT_TRUE(command(desk, stock, market.time, market.time).decision.ok());
+  stock.account.clear(); stock.quantity = -11;
+  EXPECT_EQ(command(desk, stock, market.time, market.time).decision.code, trading::Reason::COUNTER_POSITION);
+  stock.kind = server::TradingCommand::Kind::PreviewStock;
+  const auto preview = command(desk, stock, market.time, market.time);
+  ASSERT_TRUE(preview.stock_preview);
+  EXPECT_EQ(preview.stock_preview->decision.code, trading::Reason::COUNTER_POSITION);
+  stock.kind = server::TradingCommand::Kind::TradeStock; stock.quantity = -10;
+  EXPECT_TRUE(command(desk, stock, market.time, market.time).decision.ok());
+  desk.stop();
+}
+
 TEST(Desk, DemoAmSettlementUsesFirstExpiryOpeningPrintAndLiveKeepsManualImport) {
   for (const auto* provider : {"demo", "live"}) {
     for (const bool manual : {false, true}) {

@@ -104,6 +104,8 @@ export const dayLockNotice = "The plan's daily loss limit locked trading until t
 export function tradeRuleFacts(r: AccountRules): string[] {
   return [
     ...(r.min_hold_seconds ? [`Hold at least ${r.min_hold_seconds}s before user reductions; protective exits and flatten remain available`] : []),
+    ...(r.no_hedging ? ["No opening hedges against this account’s held direction"] : []),
+    ...(r.no_counter_positions ? ["No counter positions against other live accounts (server gate)"] : []),
     ...(r.max_contracts_held ? [`At most ${r.max_contracts_held} option contracts held or opening`] : []),
     ...(r.require_stop_loss ? ["Stop-loss required on every entry"] : []),
     ...(r.max_trade_risk && Number(r.max_trade_risk) > 0 ? [`Trade risk at most ${formatMoney(r.max_trade_risk)} before fees`] : []),

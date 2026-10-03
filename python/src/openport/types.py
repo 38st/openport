@@ -6,7 +6,23 @@ Unknown fields are preserved. Money and identifiers stay strings, not floats.
 from typing import Any, Literal, TypedDict
 
 JSON = dict[str, Any]
-PlanRuleReason = Literal["TRADE_CONSISTENCY", "MIN_TRADES", "MIN_HOLD", "MICROSCALPING"]
+PlanRuleReason = Literal["HEDGING", "COUNTER_POSITION", "TRADE_CONSISTENCY", "MIN_TRADES", "MIN_HOLD", "MICROSCALPING"]
+
+
+class RuleEvidence(TypedDict, total=False):
+    underlying: str
+    order_dollar_delta: float
+    held_dollar_delta: float
+    other_account: str
+
+
+class Decision(TypedDict, total=False):
+    code: str
+    message: str
+    actual: float | None
+    limit: float | None
+    scope: str | None
+    evidence: RuleEvidence
 
 
 class EvaluationObjective(TypedDict):
@@ -273,6 +289,8 @@ class AccountRules(TypedDict, total=False):
     microscalp_percent: int
     min_trades: int
     trade_consistency_percent: int
+    no_hedging: bool
+    no_counter_positions: bool
     max_contracts_held: int
     require_stop_loss: bool
     max_trade_risk: str | None
@@ -485,7 +503,7 @@ class OrderPreview(TypedDict):
     next_walk: WalkStep | None
     account_version: str
     decision: str
-    reason: JSON | None
+    reason: Decision | None
     buying_power: JSON
     max_loss: str | None
     max_units: int | None
@@ -511,7 +529,7 @@ class StockPreview(TypedDict):
     account_version: str
     simulated: bool
     decision: str
-    reason: JSON | None
+    reason: Decision | None
     price: str | None
     cost: str | None
     current: JSON
@@ -521,7 +539,7 @@ class StockPreview(TypedDict):
 class FlattenPreview(TypedDict):
     account_version: str
     decision: str
-    reason: JSON | None
+    reason: Decision | None
     cancelled_orders: list[str]
     orders: list[JSON]
     fills: list[JSON]

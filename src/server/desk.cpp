@@ -1446,6 +1446,55 @@ void Desk::update_trading(const std::vector<md::Event>& batch,
 void Desk::apply_command(PendingCommand& pending, md::Timestamp market_time, md::Timestamp driver_time) {
   apply_command(pending, market_time, driver_time, false);
 }
+Decision Desk::counter_position_gate(const PaperAccount& account, const std::map<std::string, double>& direction,
+                                     md::Timestamp time) const {
+  if (!account.session->config().rules.no_counter_positions || options_.replay || sandbox_ids_.contains(account.id)) return {};
+  for (const auto& [underlying, delta] : direction) {
+    if (delta == 0) continue;
+    for (const auto& other : accounts_) {
+      if (other.id == account.id || other.archived || !other.session || sandbox_ids_.contains(other.id)) continue;
+      const auto held = other.session->held_dollar_delta(underlying, time);
+      if (!held) return {Reason::MISSING_VALUATION, "Fresh held valuations required for account " + other.id +
+          " on " + underlying, {}, {}, underlying};
+      if (*held != 0 && (*held > 0) != (delta > 0))
+        return {Reason::COUNTER_POSITION, "Opening " + underlying + " dollar delta " + std::to_string(delta) +
+            " opposes account " + other.id + " held dollar delta " + std::to_string(*held), delta, *held, underlying,
+            RuleEvidence{underlying, delta, *held, other.id}};
+    }
+  }
+  return {};
+}
+Decision Desk::opening_gate(const PaperAccount& account, const OrderRequest& order, md::Timestamp time,
+                            const PreviewMarket& market, const std::map<std::string, Quantity>& preceding) const {
+  const auto& session = *account.session;
+  const bool counter = session.config().rules.no_counter_positions && !options_.replay && !sandbox_ids_.contains(account.id) &&
+      std::any_of(accounts_.begin(), accounts_.end(), [&](const auto& other) {
+        return other.id != account.id && !other.archived && other.session && !sandbox_ids_.contains(other.id);
+      });
+  if (!counter) return {};
+  const auto exposure = session.opening_order(order, time, market, preceding);
+  if (!exposure.decision.ok()) return exposure.decision;
+  if (exposure.opening) {
+    if (const auto d = counter_position_gate(account, exposure.dollar_delta, time); !d.ok()) return d;
+  }
+  // Chained entries are accepted with their parent, so take the same server gate
+  // now. Execution later remains entirely inside the deterministic reducer.
+  for (const auto& child : order.oco)
+    if (const auto d = opening_gate(account, child, time, market, preceding); !d.ok()) return d;
+  if (!order.then.empty()) {
+    auto after = preceding;
+    auto legs = order.legs;
+    if (legs.empty()) legs.push_back({order.symbol, order.side, 1});
+    for (const auto& leg : legs) {
+      const auto quantity = order.quantity * leg.ratio * (leg.side == Side::Buy ? 1 : -1);
+      if (__builtin_add_overflow(after[leg.symbol], quantity, &after[leg.symbol]))
+        return {Reason::ARITHMETIC_OVERFLOW, "Chained holdings overflow", {}, {}, {}};
+    }
+    for (const auto& child : order.then)
+      if (const auto d = opening_gate(account, child, time, market, after); !d.ok()) return d;
+  }
+  return {};
+}
 void Desk::apply_command(PendingCommand& pending, md::Timestamp market_time, md::Timestamp driver_time, bool input_recorded) {
   market_time_ = std::max(market_time_, market_time);
   TradingReply reply;
@@ -1533,19 +1582,38 @@ void Desk::apply_command(PendingCommand& pending, md::Timestamp market_time, md:
       }
       return rejection;
     };
+    const auto change_gate = [&](const PreviewMarket& market) -> Decision {
+      for (const auto& order : before->open_orders) {
+        if (order.id != c.order_id || !c.change.quantity || *c.change.quantity <= order.request.quantity ||
+            order.system || order.reduce_only || order.role != OrderRole::Normal) continue;
+        auto request = order.request;
+        request.quantity = *c.change.quantity - order.filled_quantity;
+        return opening_gate(*account, request, market_time_, market);
+      }
+      return {};
+    };
     try {
       CommandResult result;
       switch (c.kind) {
         case TradingCommand::Kind::Playbook: playbook_command(c, reply, driver_time); break;
         case TradingCommand::Kind::Preview:
         case TradingCommand::Kind::Submit: {
-          const auto rejection = submission_gate(c.order);
+          auto rejection = submission_gate(c.order);
           if (c.kind == TradingCommand::Kind::Preview) {
             std::map<std::string, double> vols;
             const auto symbols = order_symbols(c.order);
             const auto market = preview_market({symbols.begin(), symbols.end()}, vols);
+            if (rejection.ok()) rejection = opening_gate(*account, c.order, market_time_, market);
             reply.preview = session.preview(c.order, market_time_, c.floor_share, rejection, vols, market);
-          } else result = session.submit(c.order, market_time_, rejection);
+          } else {
+            // Retries keep the original response even if another account changed.
+            auto gate = opening_gate(*account, c.order, market_time_);
+            if (!gate.ok() && std::any_of(before->recent_orders.begin(), before->recent_orders.end(), [&](const auto& o) {
+                  return o.id >= before->evaluation.first_order && o.request == c.order;
+                })) gate = {};
+            if (!gate.ok()) result.decision = gate;  // No order or rejection enters the account journal.
+            else result = session.submit(c.order, market_time_, rejection);
+          }
           break;
         }
         case TradingCommand::Kind::WhatIf: {
@@ -1555,7 +1623,12 @@ void Desk::apply_command(PendingCommand& pending, md::Timestamp market_time, md:
           for (const auto& orders : c.candidates) {
             auto& gates = rejections.emplace_back();
             for (const auto& order : orders) {
-              gates.push_back(submission_gate(order));
+              auto gate = submission_gate(order);
+              std::map<std::string, double> ignored;
+              const auto names = order_symbols(order);
+              const auto inputs = preview_market({names.begin(), names.end()}, ignored);
+              if (gate.ok()) gate = opening_gate(*account, order, market_time_, inputs);
+              gates.push_back(std::move(gate));
               for (const auto& symbol : order_symbols(order)) symbols.insert(symbol);
             }
           }
@@ -1576,6 +1649,7 @@ void Desk::apply_command(PendingCommand& pending, md::Timestamp market_time, md:
             }
           std::map<std::string, double> vols;
           const auto market = preview_market(symbols, vols);
+          if (rejection.ok()) rejection = change_gate(market);
           reply.preview = session.preview_change(c.order_id, c.change, market_time_, c.floor_share, rejection, vols, market);
           // As for the change itself, an unknown or finished order is not found or in conflict.
           if (const auto code = reply.preview->decision.code; code == Reason::UNKNOWN_ORDER || code == Reason::ORDER_TERMINAL)
@@ -1590,7 +1664,9 @@ void Desk::apply_command(PendingCommand& pending, md::Timestamp market_time, md:
               const auto contract = session.contracts().find(order_symbols(order.request).front());
               if (contract != session.contracts().end()) rejection = acceptance(contract->second.underlying);
             }
-          result = session.modify(c.order_id, c.change, market_time_, rejection);
+          const auto gate = change_gate({});
+          if (!gate.ok()) result.decision = gate;
+          else result = session.modify(c.order_id, c.change, market_time_, rejection);
           break;
         }
         case TradingCommand::Kind::CancelAll:
@@ -1687,7 +1763,14 @@ void Desk::apply_command(PendingCommand& pending, md::Timestamp market_time, md:
         }
         case TradingCommand::Kind::TradeStock:
         case TradingCommand::Kind::PreviewStock: {
-          const auto gate = acceptance(c.symbol);
+          auto gate = acceptance(c.symbol);
+          Quantity held = 0;
+          for (const auto& stock : before->stocks) if (stock.position.symbol == c.symbol) held = stock.position.shares;
+          const bool valid_size = c.quantity != 0 && c.quantity >= -10'000'000 && c.quantity <= 10'000'000;
+          const bool reduces = valid_size && held != 0 && (held > 0) != (c.quantity > 0) &&
+              (held > 0 ? -c.quantity <= held : c.quantity <= -held);
+          if (gate.ok() && valid_size && !reduces && c.stock_price)
+            gate = counter_position_gate(*account, {{c.symbol, static_cast<double>(c.quantity) * c.stock_price->price.dollars()}}, market_time_);
           if (c.kind == TradingCommand::Kind::PreviewStock)
             reply.stock_preview = session.preview_trade_stock(c.symbol, c.quantity, market_time_, c.stock_price, gate);
           else if (!gate.ok()) result.decision = gate;

@@ -87,6 +87,7 @@ json rules_json(const AccountRules& r, Money initial_cash) {
           {"account_type", r.account_type == AccountType::Cash ? "cash" : r.account_type == AccountType::Ira ? "ira" : "margin"},
           {"house_margin_percent", r.house_margin_percent}, {"pm_vol_shock", r.pm_vol_shock},
           {"max_contracts_held", r.max_contracts_held},
+          {"no_hedging", r.no_hedging}, {"no_counter_positions", r.no_counter_positions},
           {"require_stop_loss", r.require_stop_loss}, {"max_trade_risk", positive(r.max_trade_risk)},
           {"max_trade_risk_percent", r.max_trade_risk_percent},
           {"expiry_cutoff_seconds", r.expiry_cutoff / md::kNanosPerSecond},
@@ -113,11 +114,18 @@ json scope_json(const std::string& scope) {
   return nullable(contract ? contract->underlying : scope);
 }
 /// A reason with its numeric evidence: how far a check was exceeded, and where.
+json rule_evidence_json(const RuleEvidence& e) {
+  json result{{"underlying", e.underlying}, {"order_dollar_delta", e.order_dollar_delta}, {"held_dollar_delta", e.held_dollar_delta}};
+  if (!e.other_account.empty()) result["other_account"] = e.other_account;
+  return result;
+}
 json decision_json(const Decision& d) {
   if (d.ok()) return nullptr;
-  return {{"code", to_string(d.code)}, {"message", d.message},
+  json result{{"code", to_string(d.code)}, {"message", d.message},
           {"actual", d.actual ? number(*d.actual) : json(nullptr)}, {"limit", d.limit ? number(*d.limit) : json(nullptr)},
           {"scope", scope_json(d.scope)}};
+  if (d.evidence) result["evidence"] = rule_evidence_json(*d.evidence);
+  return result;
 }
 json time_or_null(Timestamp time) { return time > 0 ? json(md::format_timestamp(time)) : json(nullptr); }
 json guardrails_json(const Guardrails& g) {
@@ -1640,7 +1648,7 @@ AccountRules parse_rules(const json& j) {
           "lock_at_start", "profit_basis", "daily_loss_limit", "daily_loss_basis", "daily_loss_action", "consistency_percent",
           "consistency_basis", "min_trading_days", "min_profitable_days", "profitable_day_profit", "day_end", "fees",
           "account_type", "house_margin_percent", "pm_vol_shock", "inside_fill_percent",
-          "min_hold_seconds", "microscalp_seconds", "microscalp_percent", "min_trades", "trade_consistency_percent", "max_contracts_held", "require_stop_loss", "max_trade_risk", "max_trade_risk_percent",
+          "min_hold_seconds", "microscalp_seconds", "microscalp_percent", "min_trades", "trade_consistency_percent", "max_contracts_held", "no_hedging", "no_counter_positions", "require_stop_loss", "max_trade_risk", "max_trade_risk_percent",
           "time_limit_days", "inactivity_days", "underlyings", "trading_start", "trading_end", "flat_time", "no_overnight", "scaling", "size_scaling"});
   if (j.contains("microscalp_seconds") != j.contains("microscalp_percent"))
     throw TradingError(Reason::INVALID_RULES, "Set microscalp_seconds and microscalp_percent together");
@@ -1682,6 +1690,8 @@ AccountRules parse_rules(const json& j) {
   if (has("profitable_day_profit")) rules.profitable_day_profit = decimal_field(j, "profitable_day_profit");
   if (has("day_end")) rules.day_end_minutes = clock_field(j, "day_end");
   if (j.contains("max_contracts_held")) rules.max_contracts_held = integer_field(j, "max_contracts_held");
+  if (j.contains("no_hedging")) rules.no_hedging = boolean_field(j, "no_hedging");
+  if (j.contains("no_counter_positions")) rules.no_counter_positions = boolean_field(j, "no_counter_positions");
   if (j.contains("require_stop_loss")) rules.require_stop_loss = boolean_field(j, "require_stop_loss");
   if (has("max_trade_risk")) rules.max_trade_risk = decimal_field(j, "max_trade_risk");
   if (j.contains("max_trade_risk_percent")) rules.max_trade_risk_percent = integer_field(j, "max_trade_risk_percent");
@@ -2302,10 +2312,11 @@ json attribution_json(const trading::Attribution& a) {
 ApiResponse api_error(int status, std::string code, std::string message, const Decision& evidence) {
   // Some reducer checks identify a single contract. The HTTP contract exposes
   // risk scope as the underlying, while the order itself carries the OSI.
-  return {status, json{{"error", {{"code", code}, {"message", message},
+  json error{{"code", code}, {"message", message},
       {"actual", evidence.actual ? number(*evidence.actual) : json(nullptr)},
-      {"limit", evidence.limit ? number(*evidence.limit) : json(nullptr)},
-      {"scope", scope_json(evidence.scope)}}}}.dump()};
+      {"limit", evidence.limit ? number(*evidence.limit) : json(nullptr)}, {"scope", scope_json(evidence.scope)}};
+  if (evidence.evidence) error["evidence"] = rule_evidence_json(*evidence.evidence);
+  return {status, json{{"error", std::move(error)}}.dump()};
 }
 json order_request_json(const OrderRequest& order) {
   json body{{"client_order_id", order.client_order_id}, {"type", order.type == OrderType::Limit ? "limit" : "market"},

@@ -2869,6 +2869,8 @@ opening orders and cancels working openings outside the plan window.
 | `INVALID_CONTRACT`, `UNKNOWN_CONTRACT` | Invalid/conflicting terms, or missing resolved definition |
 | `INVALID_ORDER`, `DUPLICATE_CLIENT_ID`, `INVALID_TICK` | Malformed order, a key reused with other terms, invalid price increment |
 | `INVALID_QUOTE`, `STALE_QUOTE`, `MISSING_VALUATION` | No executable book, stale/incomplete marks, missing/stale/invalid Greeks |
+| `HEDGING` | Opening dollar delta opposes held delta on the same underlying within this account (reducer rule) |
+| `COUNTER_POSITION` | Opening dollar delta opposes another live account on the same underlying (server gate; refusal is not journaled) |
 | `STOP_REQUIRED` | Entry has no protective bracket stop, or cancellation would remove a required stop from an open position |
 | `TRADE_CONSISTENCY` | Best profitable closed whole trade must fit the attempt-profit percentage limit |
 | `MIN_HOLD` | User reduction is too young; `actual` and `limit` are seconds, `scope` is the underlying in HTTP responses (the reducer identifies the option/share symbol) |
@@ -3602,3 +3604,39 @@ account's snapshots at input boundaries, without changing reducer commands or
 journal bytes. Saved-run comparisons and combined independent daily P&L do not
 share an account or its buying power, risk limits or drawdown floor. See
 [batch backtests](playbooks.md#batch-backtests) for retention, pins and deletion.
+
+### Direction rules (F65)
+
+Custom plans may set `no_hedging` and `no_counter_positions` (both default false).
+An order opens if any leg adds contracts or reverses beyond its holding; an order
+that purely reduces held positions is exempt. Share trades follow the same rule.
+Direction is the sign of dollar delta on one underlying: signed option quantity ×
+current valuation delta × contract multiplier × spot, plus signed shares × price.
+Compare the whole order's net delta, including closing legs, with held delta;
+working orders do not count as held positions. Zero delta on either side does not
+oppose a direction. Pure reductions and system exits are never refused by these rules.
+
+`no_hedging` runs in the deterministic reducer, on acceptance and execution,
+including changes and chained orders. An opening order opposing its own account's
+held delta refuses with `HEDGING`. Missing, invalid, future or stale valuations
+follow the exposure-limit policy (`MISSING_VALUATION`); unknown delta is never
+assumed zero. Normal quote, risk and account checks still apply.
+
+`no_counter_positions` is a **server pre-trade gate**, before submitting an order
+to its session. It compares opening delta with each other live main/named account
+on the same server, excluding archived, replay and sandbox accounts. Only the
+ordering account's setting counts: enable it on every account a trader uses.
+A single-account server or replay has no other accounts to check. Unknown held
+direction in a relevant other account refuses with `MISSING_VALUATION` too.
+The gate covers single/multi-leg entries, increased remaining order quantities,
+share entries, playbook entries and their previews. Chained entries take the gate
+when the chain is submitted. It observes holdings at acceptance, without reserving
+future cross-account direction or rechecking other accounts at a later fill.
+
+A `COUNTER_POSITION` refusal creates no order or refusal transaction in the
+account journal. Recovery never reads other accounts. Both direction reasons
+include `actual` (order dollar delta), `limit` (held dollar delta, a comparison
+rather than a cap), `scope` (underlying), and structured `evidence` with
+`underlying`, `order_dollar_delta`, `held_dollar_delta`, and, for a counter position,
+`other_account`. Messages show the same evidence in terminal tickets. Rule fields
+are journaled only when true; plans with both off retain their journal bytes and hashes.
