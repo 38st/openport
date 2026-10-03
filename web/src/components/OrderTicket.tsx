@@ -1,5 +1,6 @@
 import { useWalk } from "./WalkFields"
 import { FeeAmount } from "./FeeAmount"
+import { useJoinTrade } from "./JoinTradeField"
 import { useQuery } from "@tanstack/react-query"
 import { useEffect, useMemo, useRef, useState, type ReactNode } from "react"
 import { LiquidityWarning } from "./LiquidityWarning"
@@ -104,6 +105,7 @@ function TicketBody({ selection, quote, trading, onClose, variant, smile, surfac
   const sameSession = useTradingSession()
   const account = useAccount().data
   const portfolio = usePortfolio().data
+  const join = useJoinTrade(selection.underlying, portfolio?.strategies)
   const [side, setSide] = useState<Side>(sideFromCell(selection.cell))
   const underlying = underlyings.find((u) => u.symbol === selection.underlying)
   // Extended protection runs as simulator-managed limits overnight and in curb.
@@ -223,6 +225,7 @@ function TicketBody({ selection, quote, trading, onClose, variant, smile, surfac
     : marketability(side, type, limitPrice, quote)
   const draft: NewOrder | null = valid ? {
     client_order_id: "preview:single", symbol: selection.symbol, side, quantity: q,
+    ...(join.group ? { group: join.group } : {}),
     ...(type === "market" ? { type, time_in_force: effectiveTif as "ioc" | "exto" | "gtc_exto" | "gtd" } : { type, time_in_force: effectiveTif, limit_price: limitPrice }),
     ...(effectiveTif === "gtd" ? { good_till } : {}),
     ...(trigger ? { trigger } : {}), ...(bracket ? { bracket } : {}),
@@ -246,6 +249,7 @@ function TicketBody({ selection, quote, trading, onClose, variant, smile, surfac
     try {
       request.current ??= {
         client_order_id: crypto.randomUUID(), symbol: selection.symbol, side, quantity: q,
+        ...(join.group ? { group: join.group } : {}),
         ...(type === "market" ? { type, time_in_force: effectiveTif as "ioc" | "exto" | "gtc_exto" | "gtd" } : { type, time_in_force: effectiveTif, limit_price: limitPrice }),
         ...(effectiveTif === "gtd" ? { good_till } : {}),
         ...(trigger ? { trigger } : {}), ...(bracket ? { bracket } : {}),
@@ -362,6 +366,7 @@ function TicketBody({ selection, quote, trading, onClose, variant, smile, surfac
           </div>
         </div>}
         {walk.fields}
+        {join.fields}
         {rules?.fees ? <div className="trade-label col-span-2">Fees<div className="text-foreground">Itemized · see preview below</div></div>
           : serverFee == null ? <label className="trade-label col-span-2">Fee / contract ($, estimate)<input className="trade-input" inputMode="decimal" value={fee} placeholder="Not provided by server" onChange={(e) => setFee(e.target.value)} pattern="[0-9]+([.][0-9]+)?" /></label>
           : <div className="trade-label col-span-2">Fee / contract<div className="tabular text-foreground">{formatMoney(serverFee)}</div></div>}

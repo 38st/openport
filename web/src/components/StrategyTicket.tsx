@@ -1,5 +1,6 @@
 import { useWalk } from "./WalkFields"
 import { FeeAmount } from "./FeeAmount"
+import { useJoinTrade } from "./JoinTradeField"
 import { useQuery } from "@tanstack/react-query"
 import { useMemo, useRef, useState } from "react"
 import { LiquidityWarning } from "./LiquidityWarning"
@@ -84,7 +85,9 @@ function StrategyBody({ legs, onLegs, expiries, underlying, spot, trading, initi
   const refresh = useRefreshTrading()
   const sameSession = useTradingSession()
   const account = useAccount().data
-  const positions = usePortfolio().data?.positions
+  const portfolio = usePortfolio().data
+  const positions = portfolio?.positions
+  const join = useJoinTrade(underlying, portfolio?.strategies)
   const roots = legs.map((l) => l.symbol.slice(0, 6).trim())
   const tick = comboTickCents(roots)
   const quote = netQuote(legs)
@@ -179,6 +182,7 @@ function StrategyBody({ legs, onLegs, expiries, underlying, spot, trading, initi
 
   const draft: NewOrder | null = valid ? {
     client_order_id: "preview:strategy", legs: legs.map(({ symbol, side, ratio }) => ({ symbol, side, ratio })), quantity: q,
+    ...(join.group ? { group: join.group } : {}),
     ...(type === "market" ? { type, time_in_force: "ioc" as const } : { type, time_in_force: tif, limit_price: limitText }),
     ...(type === "limit" && tif === "gtd" ? { good_till } : {}),
     ...(walk.walk ? { walk: walk.walk } : {}),
@@ -224,6 +228,7 @@ function StrategyBody({ legs, onLegs, expiries, underlying, spot, trading, initi
     try {
       request.current ??= {
         client_order_id: crypto.randomUUID(), legs: legs.map(({ symbol, side, ratio }) => ({ symbol, side, ratio })), quantity: q,
+        ...(join.group ? { group: join.group } : {}),
         ...(type === "market" ? { type, time_in_force: "ioc" as const } : { type, time_in_force: tif, limit_price: limitText }),
         ...(type === "limit" && tif === "gtd" ? { good_till } : {}),
         ...(walk.walk ? { walk: walk.walk } : {}),
@@ -319,6 +324,7 @@ function StrategyBody({ legs, onLegs, expiries, underlying, spot, trading, initi
             </span>
           </div>}
           {walk.fields}
+          {join.fields}
           {exitable && <div className="col-span-2">{exits.fields}</div>}
         </fieldset>
         <LiquidityWarning modeled={!!(rules?.fill_latency_ms || rules?.impact_ticks)} impact={!!rules?.impact_ticks} market={type === "market"}

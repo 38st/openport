@@ -2785,6 +2785,10 @@ the order is marketable at the far side or will rest, and requests buying power 
 floor risk from the server preview. The web has no second copy of margin rules.
 Quoted premium estimates exclude slippage; the server preview includes the plan's
 slippage. Buy-only plans and decided attempts block submission with the reason.
+Both tickets offer **Join trade** when their underlying has an open whole trade,
+labelled by its held contracts and trade ID. **None** is the default; choosing a
+trade sends its `group` with the preview and the order. Joining at submission keeps
+the whole trade's earlier review, including its extremes, as described above.
 
 Strategy mode's **Templates** menu selects verticals, iron condors, iron butterflies,
 strangles, straddles, long call or put butterflies, calendars and diagonals. Delta
