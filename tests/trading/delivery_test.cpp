@@ -41,6 +41,45 @@ const MarkedStock* stock(const TradingSession& s, std::string_view symbol) {
 }
 double day_pnl(const TradingSession& s) { return (s.snapshot()->equity - s.snapshot()->start_of_day_equity).dollars(); }
 
+
+TEST(TradingDelivery, BuyOnlyPutExerciseRequiresLongSharesButExpiryStillDelivers) {
+  const auto put = *md::parse_osi("SPY260922P00520000");
+  for (const auto shares : {0, 99, 100, 150}) {
+    SCOPED_TRACE(shares);
+    Spy f; AccountRules rules; rules.buy_only = true;
+    TradingSession s(roomy(rules), f.time);
+    f.define(s, put); f.quote(s, put, "10", "10.20");
+    ASSERT_TRUE(s.submit(f.market("put", put, 1), f.time).decision.ok());
+    if (shares > 0) { ASSERT_TRUE(s.trade_stock("SPY", shares, f.time).decision.ok()); }
+    const auto result = s.exercise(put.osi_symbol(), 1, f.time);
+    if (shares < 100) {
+      EXPECT_EQ(result.decision.code, Reason::BUY_ONLY);
+      EXPECT_NE(result.decision.message.find("exercise would sell shares short"), std::string::npos);
+      EXPECT_EQ(s.snapshot()->positions[0].position.quantity, 1);
+      f.time = put.expiry_time();
+      ASSERT_TRUE(s.settle(put.osi_symbol(), m("510"), f.time).decision.ok());
+      ASSERT_NE(stock(s, "SPY"), nullptr);
+      EXPECT_EQ(stock(s, "SPY")->position.shares, shares - 100);
+    } else {
+      ASSERT_TRUE(result.decision.ok()) << result.decision.message;
+      EXPECT_TRUE(s.snapshot()->positions.empty());
+      if (shares == 100) { EXPECT_TRUE(s.snapshot()->stocks.empty()); }
+      else { ASSERT_NE(stock(s, "SPY"), nullptr); EXPECT_EQ(stock(s, "SPY")->position.shares, shares - 100); }
+    }
+  }
+}
+
+TEST(TradingDelivery, BuyOnlyPutExerciseRechecksSharesAfterASale) {
+  const auto put = *md::parse_osi("SPY261022P00520000");
+  Spy f; AccountRules rules; rules.buy_only = true;
+  TradingSession s(roomy(rules), f.time);
+  f.define(s, put); f.quote(s, put, "10", "10.20");
+  ASSERT_TRUE(s.submit(f.market("put", put, 1), f.time).decision.ok());
+  ASSERT_TRUE(s.trade_stock("SPY", 100, f.time).decision.ok());
+  ASSERT_TRUE(s.trade_stock("SPY", -1, f.time).decision.ok());
+  EXPECT_EQ(s.exercise(put.osi_symbol(), 1, f.time).decision.code, Reason::BUY_ONLY);
+}
+
 TEST(TradingDelivery, KillAllowsShareClosesAndFlattenButRejectsExercise) {
   const auto call = *md::parse_osi("SPY261022C00500000");
   for (const bool daily : {false, true}) {

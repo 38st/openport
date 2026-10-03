@@ -5683,6 +5683,10 @@ CommandResult TradingSession::exercise(const std::string& symbol, Quantity contr
     if (s.time >= contract.expiry_time()) return CommandResult{failure(Reason::EXPIRED, "The contract has expired; settlement exercises it"), {}, 0};
     if (const auto d = account_check(s); !d.ok()) return CommandResult{d, {}, 0};
     if (held(s, symbol) < contracts) return CommandResult{failure(Reason::INVALID_ORDER, "Exercise needs that many long contracts"), {}, 0};
+    // Stock trades execute synchronously: there are no working share sells to reserve.
+    if (s.config.rules.buy_only && contract.type == pricing::OptionType::Put &&
+        -delivered(contract, contracts) > std::max<Quantity>(0, shares_held(s, contract.underlying)))
+      return CommandResult{failure(Reason::BUY_ONLY, "This plan is buy-only: put exercise would sell shares short; hold enough long shares first"), {}, 0};
     if (const auto d = defined_risk_check(s, {{symbol, -contracts}},
                                           "Exercising this long would leave a short option uncovered; close the short first");
         !d.ok())

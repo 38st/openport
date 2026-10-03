@@ -3,12 +3,12 @@ import { QueryClient, QueryClientProvider } from "@tanstack/react-query"
 import { act } from "react"
 import { createRoot, type Root } from "react-dom/client"
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
-import { api } from "../api/client"
+import { api, ApiError } from "../api/client"
 import { waitForRender } from "../test/render"
 import { liveState, useLive } from "../api/live"
 import type { Position } from "../api/trading-types"
 import { account, portfolio, status } from "../test/trading-fixtures"
-import { AbandonDialog, ExerciseInstructionDialog, SettleDialog, TradeSharesDialog, shareEffect } from "./StockActions"
+import { AbandonDialog, ExerciseDialog, ExerciseInstructionDialog, SettleDialog, TradeSharesDialog, shareEffect } from "./StockActions"
 
 vi.mock("../api/live", async (original) => ({ ...await original<typeof import("../api/live")>(), useLive: vi.fn() }))
 
@@ -218,4 +218,21 @@ describe("trading shares", () => {
     await type(host.querySelector("input")!, "1.5")
     expect([...host.querySelectorAll("button")].find((b) => b.textContent?.startsWith("Buy "))!.disabled).toBe(true)
   })
+})
+
+
+it("shows the server's buy-only put exercise refusal", async () => {
+  const put = { ...portfolio.positions[0]!, symbol: "SPY   261022P00520000", underlying: "SPY", strike: 520, type: "put" } as Position
+  vi.mocked(useLive).mockReturnValue({ ...liveState(status, null, "open"), underlyings: [
+    { ...status.underlyings[0]!, symbol: "SPY", spot: 510 },
+  ] } as ReturnType<typeof useLive>)
+  const message = "This plan is buy-only: put exercise would sell shares short; hold enough long shares first"
+  vi.spyOn(api, "exercise").mockRejectedValue(new ApiError(422, message, "BUY_ONLY"))
+  const closed = vi.fn()
+  await act(async () => root.render(<QueryClientProvider client={new QueryClient()}>
+    <ExerciseDialog position={put} trading={status.trading!} onClose={closed} /></QueryClientProvider>))
+  await act(async () => [...host.querySelectorAll("button")].find((button) => button.textContent?.startsWith("Exercise "))!.click())
+  expect(host.textContent).toContain(message)
+  expect(host.textContent).toContain("BUY_ONLY")
+  expect(closed).not.toHaveBeenCalled()
 })

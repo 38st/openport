@@ -89,7 +89,7 @@ export function ruleText(account: Account, fee?: string, dailyLoss?: string) {
       Without a priced stop, including an underlying-price trigger, risk uses the bounded expiry payoff. Unbounded or unknown loss refuses. Stops can slip or remain unfilled.
     </> }] : []),
     { title: "Strategies", body: r.buy_only
-      ? "Buy-only and single-leg: open positions by buying calls or puts. A sell may only close contracts you already hold, counting your other working sells. Multi-leg orders are not available."
+      ? "Buy-only and single-leg: open positions by buying calls or puts. A sell may only close contracts you already hold, counting your other working sells. Multi-leg orders are not available. Put exercise must deliver against held long shares; exercise that would sell shares short is refused. Expiry auto-exercise and assignment still deliver shares."
       : r.defined_risk
         ? "Defined risk only: each short option needs a long of the same type on the same underlying that expires with it or later, so no position can lose without limit. Open spreads, condors and butterflies as one order from the Trade page's Strategy mode, or buy the long first; an order that would leave a short uncovered, now or once your open orders fill, is refused, and closing a short is always allowed."
         : r.account_type === "cash" ? "Cash account: buy options, write covered calls, or sell cash-secured puts."
