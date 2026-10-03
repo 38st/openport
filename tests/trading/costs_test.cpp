@@ -247,6 +247,30 @@ TEST(FeeSchedule, OpeningAndClosingContractsPayTheirOwnRatesAndEveryContractItsF
   EXPECT_FALSE(Json(flat.config().rules).contains("fees"));
 }
 
+TEST(FeeSchedule, ExitEquityChargesTheClosingScheduleWithAFreshCommissionCap) {
+  for (const auto side : {Side::Buy, Side::Sell}) {
+    for (const Quantity quantity : {3, 12}) {
+      ScriptedMarket market;
+      auto c = itemized();
+      c.initial_cash = m("10000");
+      c.rules.fees->close = m("1.25");
+      TradingSession session(c, market.time);
+      market.seed(session, "4.00", "4.20", 30);
+      ASSERT_TRUE(session.submit(market.market("open", quantity, side), market.time).decision.ok());
+      const auto snapshot = session.snapshot();
+      // A $20 spread per contract, opening fees, then closing commission (capped
+      // anew at $10) plus $0.10 clearing, $0.02 regulatory and $0.60 index fees.
+      EXPECT_EQ(snapshot->exit_equity, quantity == 3 ? m("9928.93") : m("9722.72"));
+      EXPECT_EQ(snapshot->equity - snapshot->exit_equity, quantity == 3 ? m("35.91") : m("138.64"));
+      EXPECT_FALSE(Json::parse(session.snapshot_json()).contains("exit_equity"));
+      const auto closing = side == Side::Buy ? Side::Sell : Side::Buy;
+      ASSERT_TRUE(session.submit(market.market("close", quantity, closing), market.time).decision.ok());
+      EXPECT_TRUE(session.snapshot()->positions.empty());
+      EXPECT_EQ(session.snapshot()->equity, snapshot->exit_equity);
+    }
+  }
+}
+
 TEST(FeeSchedule, CommissionStopsAtTheLegCapAcrossAnOrdersFills) {
   ScriptedMarket market;
   TradingSession session(itemized(), market.time);

@@ -1794,7 +1794,8 @@ so a plan without these rules keeps the journal bytes it had.
 **What liquidation costs.** A pass on marked equity liquidates at the bid or ask, which
 can leave less than the equity that passed. `TradingSnapshot::exit_equity` is what
 closing every position now with a market order at the displayed quotes, the account's
-slippage and impact would leave after fees (a long nobody bids for counts as nothing).
+slippage and impact would leave after fees, using the account's fee schedule when it
+has one (a long nobody bids for counts as nothing).
 The account view shows it, the cost against equity, and, once a decided attempt is
 flat, its equity then and the liquidation's cost against the decided equity.
 
