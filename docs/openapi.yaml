@@ -1468,7 +1468,7 @@
       ],
       "post": {
         "summary": "POST /api/account/reset",
-        "description": "Requires admin.",
+        "description": "Requires admin. The /api/replay mirror accepts replay or admin scope, affecting only its isolated account; live requires admin.",
         "x-scope": "admin",
         "responses": {
           "200": {
@@ -1542,7 +1542,7 @@
       ],
       "put": {
         "summary": "PUT /api/risk/limits",
-        "description": "Requires admin. 409 LIMITS_REVISION when expected_revision is not the current limits_revision; refetch GET /api/risk and retry.",
+        "description": "Requires admin. 409 LIMITS_REVISION when expected_revision is not the current limits_revision; refetch GET /api/risk and retry. The /api/replay mirror accepts replay or admin scope, affecting only its isolated account; live requires admin.",
         "x-scope": "admin",
         "responses": {
           "200": {
@@ -1579,7 +1579,7 @@
       ],
       "put": {
         "summary": "PUT /api/risk/guardrails",
-        "description": "Requires admin. 409 LIMITS_REVISION when expected_revision is not the current limits_revision; refetch GET /api/risk and retry.",
+        "description": "Requires admin. 409 LIMITS_REVISION when expected_revision is not the current limits_revision; refetch GET /api/risk and retry. The /api/replay mirror accepts replay or admin scope, affecting only its isolated account; live requires admin.",
         "x-scope": "admin",
         "responses": {
           "200": {
@@ -1616,7 +1616,7 @@
       ],
       "post": {
         "summary": "POST /api/risk/kill",
-        "description": "Requires admin.",
+        "description": "Requires admin. The /api/replay mirror accepts replay or admin scope, affecting only its isolated account; live requires admin.",
         "x-scope": "admin",
         "responses": {
           "200": {

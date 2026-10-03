@@ -340,9 +340,12 @@ std::optional<ApiResponse> check_api_write(const ApiRequest& request, const Writ
   const bool history_control = replay && path.starts_with("/history/") &&
       ((request.method == "POST" && path.ends_with("/verify")) ||
        (request.method == "DELETE" && path.substr(9).find('/') == std::string_view::npos));
+  const bool replay_settings = replay &&
+      ((request.method == "POST" && (path == "/account/reset" || path == "/risk/kill")) ||
+       (request.method == "PUT" && (path == "/risk/limits" || path == "/risk/guardrails")));
   const bool permitted = (create_sandbox && sandbox.empty()) || has("admin") || (read ? has("read") || !policy.require_token :
       ((path == "/replay" || history_control || path == "/backtests" || path.starts_with("/backtests/")) ? has("replay") :
-       trade && (replay ? has("replay") : has("trade:*") || has("trade:" + account))));
+       (replay_settings && has("replay")) || (trade && (replay ? has("replay") : has("trade:*") || has("trade:" + account)))));
   if (!permitted) return api_error(403, "SCOPE_REQUIRED", "Token does not permit this operation");
   if (access) *access = {has("admin") && !request.authorization.empty(), sandbox};
   if (actor) *actor = name;
