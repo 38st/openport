@@ -141,3 +141,18 @@ it("routes share trades and previews to the named live account or replay", async
     }))
   } finally { dataSource.set("live"); activeAccount.set("main") }
 })
+
+it("routes verification outside the selected account and authenticates JSON receipts", async () => {
+  const fetcher = vi.fn(async () => new Response(JSON.stringify({ status: "running", message: "Verifying" })))
+  vi.stubGlobal("fetch", fetcher)
+  writeToken.set("replay-token")
+  dataSource.set("history:other-run")
+  await api.verifyReplay("saved run", "token")
+  expect(fetcher).toHaveBeenLastCalledWith("/api/replay/history/saved%20run/verify", expect.objectContaining({ method: "POST", body: "{}",
+    headers: expect.objectContaining({ Authorization: "Bearer replay-token" }) }))
+  await api.replayVerification("saved run")
+  expect(fetcher).toHaveBeenLastCalledWith("/api/replay/history/saved%20run/verify", expect.objectContaining({ headers: expect.objectContaining({ Authorization: "Bearer replay-token" }) }))
+  fetcher.mockImplementation(async () => new Response(JSON.stringify({ error: { code: "VERIFICATION_UNAVAILABLE", message: "Verify again" } }), { status: 409 }))
+  await expect(api.downloadVerificationReceipt("saved run")).rejects.toMatchObject({ code: "VERIFICATION_UNAVAILABLE" })
+  expect(fetcher).toHaveBeenLastCalledWith("/api/replay/history/saved%20run/verify?format=receipt", { headers: { Accept: "application/json", Authorization: "Bearer replay-token" } })
+})

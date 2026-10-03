@@ -59,8 +59,8 @@ export function useReplayControls() {
   const busy = useRef(false)
   const mode = writeStatus.data?.write ?? trading?.write ?? "disabled"
   const blocked = mode === "disabled" || (mode === "token" && !token)
-  async function run(request: () => Promise<unknown>) {
-    if (busy.current || blocked) return
+  async function run(request: () => Promise<unknown>, read = false) {
+    if (busy.current || (!read && blocked)) return
     busy.current = true
     setPending(true)
     setError(undefined)
@@ -75,6 +75,8 @@ export function useReplayControls() {
     stop: () => run(() => api.stopReplay(mode)),
     start: (source: ReplaySource, speed: number, then: () => void, options?: ReplayStart) => run(async () => { await api.startReplay(source, speed, mode, options); then() }),
     resume: (id: string, speed: number, then: () => void) => run(async () => { await api.resumeReplay(id, speed, mode); then() }),
+    verify: (id: string, then: () => void) => run(async () => { await api.verifyReplay(id, mode); then() }),
+    receipt: (id: string) => run(() => api.downloadVerificationReceipt(id), true),
     remove: (id: string, then: () => void) => run(async () => { await api.deleteReplay(id, mode); then() }),
   }
 }
@@ -130,7 +132,7 @@ export function replayTitle(replay: ReplayState) {
  */
 export function ReplayView({ onNavigate }: { onNavigate?: (view: View) => void }) {
   const live = useLive()
-  const listing = useQuery({ queryKey: ["replay-listing"], queryFn: ({ signal }) => api.replay(signal), refetchInterval: 5_000 })
+  const listing = useQuery({ queryKey: ["replay-listing"], queryFn: ({ signal }) => api.replay(signal), refetchInterval: (query) => query.state.data?.history?.some((run) => run.verification?.status === "running") ? 1_000 : 5_000 })
   const controls = useReplayControls()
   const [speed, setSpeed] = useState(10)
   const plans = usePlans()
@@ -145,6 +147,7 @@ export function ReplayView({ onNavigate }: { onNavigate?: (view: View) => void }
     ...(scenario && seedMode !== "fresh" ? { seed: seedMode === "scenario" ? "scenario" : seed } : {}) })
   const badSeed = seedMode === "typed" && (!/^\d{1,20}$/.test(seed) || BigInt(seed || "0") > 18446744073709551615n)
   const replay = (live.source.startsWith("history:") ? null : live.replay) ?? listing.data?.replay ?? null
+  const verifying = listing.data?.history?.some((run) => run.verification?.status === "running") ?? false
   const recordings = listing.data?.recordings ?? []
   const demos = listing.data?.demos?.length ? listing.data.demos : listing.data?.demo ? [listing.data.demo] : []
   const started = () => { live.switchSource("replay"); void listing.refetch() }
@@ -253,10 +256,26 @@ export function ReplayView({ onNavigate }: { onNavigate?: (view: View) => void }
           <span>P&amp;L {run.pnl === null ? "—" : formatMoney(run.pnl)}{run.valuation_complete === false ? " (incomplete marks)" : ""}</span>
           {run.error && <span className="text-warn">{run.error}</span>}
           {run.interrupted && <Badge tone="warn">interrupted</Badge>}
-          <span className="ml-auto flex gap-2">{run.interrupted && <button type="button" className="trade-button" disabled={controls.blocked || controls.pending}
+          {(run.torn || run.truncated || run.mismatch) && <div className="w-full text-warn" role="alert">
+            <strong>{run.torn ? "Torn journal" : run.truncated ? "Truncated journal" : "Journal mismatch"}</strong>
+            {run.integrity_message && <p className="mt-1 break-all">{run.integrity_message}</p>}
+          </div>}
+          {run.verification && <div className="w-full space-y-1" role="status">
+            {run.verification.status !== "idle" && <Badge tone={run.verification.status === "passed" ? "positive" : run.verification.status === "failed" ? "warn" : "neutral"}>
+              {run.verification.status === "running" ? "Verifying" : `Verification ${run.verification.status}`}
+              {run.verification.status === "running" && run.verification.progress !== undefined ? ` · ${Math.round(run.verification.progress * 100)}%` : ""}
+            </Badge>}
+            <p className="whitespace-pre-line break-all text-muted">{run.verification.message}</p>
+          </div>}
+          <span className="ml-auto flex flex-wrap gap-2">
+            <button type="button" className="trade-button" disabled={!run.finished || controls.blocked || controls.pending || verifying}
+              onClick={() => void controls.verify(run.id, () => { void listing.refetch() })}>Verify</button>
+            {(run.verification?.status === "passed" || run.verification?.status === "failed") &&
+              <button type="button" className="trade-button" disabled={controls.pending} onClick={() => void controls.receipt(run.id)}>Download receipt</button>}
+            {run.interrupted && <button type="button" className="trade-button" disabled={controls.blocked || controls.pending || run.verification?.status === "running"}
             title="Replay its recorded orders and continue, paused where it stopped" onClick={() => void controls.resume(run.id, speed, started)}>Resume</button>}{(["journal", "dashboard"] as const).map((view) => <button key={view} type="button" className="trade-button" disabled={!!run.error}
             onClick={() => { live.switchSource(`history:${run.id}`); onNavigate?.(view) }}>Open {view}</button>)}
-            <button type="button" className="trade-button" disabled={controls.blocked || controls.pending} onClick={() => setDeleting(run.id)}>Delete</button></span>
+            <button type="button" className="trade-button" disabled={controls.blocked || controls.pending || run.verification?.status === "running"} onClick={() => setDeleting(run.id)}>Delete</button></span>
         </div>)}
       </div>}
     </Panel>
