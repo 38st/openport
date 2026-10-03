@@ -3,6 +3,12 @@
 #include <limits>
 
 namespace openport::server {
+std::string journal_warning(std::uint64_t bytes, std::uint64_t records, bool replay) {
+  if (bytes < kLargeJournalBytes && records < kLargeJournalRecords) return {};
+  return replay ? "Large replay journal: exact verification may be slow; compaction breaks exact run verification" :
+      "Large journal: stop openportd and consider --compact-journals after backing up";
+}
+
 std::shared_ptr<const TradingView> Engine::trading_view() const { return trading_view(kMainAccount); }
 
 std::shared_ptr<const TradingView> Engine::trading_view(std::string_view account) const {

@@ -102,6 +102,7 @@ function Dashboard({ trading }: { trading: TradingStatus }) {
           {e.enabled ? "New attempt" : "Start an evaluation"}
         </button>
       </PageHeader>
+      {data.journal_size && <p className="text-xs text-muted">Journal: {data.journal_size.bytes.toLocaleString()} bytes · {data.journal_size.records.toLocaleString()} records{data.journal_size.warning ? ` · ${data.journal_size.warning}` : ""}</p>}
 
       {e.status !== "active" && (
         <div role="status" className={`rounded-lg border p-4 ${e.status === "passed" ? "border-bullish/50 bg-bullish/5" : "border-bearish/50 bg-bearish/5"}`}>

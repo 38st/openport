@@ -678,6 +678,14 @@ json portfolio_json(const TradingView& view) {
           {"attribution", attribution_json(s.attribution)},
           {"liquidity_used", liquidity_used_json(view)}, {"closed", closed}, {"strategies", strategies}};
 }
+json damage_json(const std::optional<AccountDamage>& damage) {
+  if (!damage) return nullptr;
+  return {{"reason", damage->reason}, {"last_good_seq", damage->last_good_seq},
+          {"last_good_time", time_or_null(damage->last_good_time)}};
+}
+json journal_json(std::uint64_t bytes, std::uint64_t records, bool replay) {
+  return {{"bytes", bytes}, {"records", records}, {"warning", nullable(journal_warning(bytes, records, replay))}};
+}
 json account_json(const TradingView& view) {
   const auto& s = *view.snapshot;
   const auto& r = view.config.rules;
@@ -726,7 +734,8 @@ json account_json(const TradingView& view) {
                         {"final_equity", a.final_equity.str()}, {"status", status_name(a.status)},
                         {"decision", nullable(a.decision)},
                         {"decision_code", a.status == EvaluationStatus::Active ? json(nullptr) : json(to_string(a.decision_code))}});
-  return {{"account_version", std::to_string(s.account_version)}, {"time", md::format_timestamp(s.time)},
+  return {{"damaged", damage_json(view.damaged)}, {"journal_size", journal_json(view.journal_bytes, view.journal_transactions, view.run.has_value())},
+          {"account_version", std::to_string(s.account_version)}, {"time", md::format_timestamp(s.time)},
           {"rules", rules_json(r, view.config.initial_cash)}, {"breach", breach_json(view.breach)}, {"warnings", warnings_json(view.warnings)},
           {"guardrails", guardrails_json(view.config.guardrails)}, {"guardrail_state", guardrail_state_json(s)},
           {"evaluation", {
@@ -1106,7 +1115,7 @@ int reason_status(Reason reason) {
 ApiResponse command_response(const TradingCommand& command, const TradingReply& reply) {
   if (!reply.error_code.empty())
     return api_error(reply.error_code == "INVALID_REQUEST" ? 400 : reply.error_code == "ACCOUNT_PROTECTED" ? 403 :
-                     reply.error_code == "ACCOUNT_ARCHIVED" || reply.error_code == "ACCOUNT_NOT_EMPTY" ||
+                     reply.error_code == "ACCOUNT_DAMAGED" || reply.error_code == "ACCOUNT_ARCHIVED" || reply.error_code == "ACCOUNT_NOT_EMPTY" ||
                      reply.error_code == "LIMITS_REVISION" || reply.error_code == "ACCOUNTS_UNSUPPORTED" ? 409
                      : reply.error_code == "UNKNOWN_ACCOUNT" ? 404 : 503,
                      reply.error_code, reply.decision.message);
@@ -2101,6 +2110,8 @@ json accounts_json(const MetricsSource& source, const ApiAccess& access, bool ar
     const auto view = source.trading_view(account.id);
     list.push_back({{"id", account.id}, {"name", account.name}, {"archived", account.archived}, {"trading", trading_status_json(account.trading)},
                     {"equity", view && view->snapshot ? json(view->snapshot->equity.str()) : json(nullptr)}});
+    list.back()["damaged"] = damage_json(account.damaged);
+    list.back()["journal_size"] = journal_json(account.journal_bytes, account.journal_records, account.replay);
     if (account.sandbox_idle_seconds) list.back()["sandbox_idle_seconds"] = account.sandbox_idle_seconds;
   }
   return list;
@@ -2110,6 +2121,8 @@ json account_ticks_json(const EngineStatus& status) {
   for (const auto& account : status.accounts) {
     if (account.archived) continue;
     list.push_back({{"id", account.id}, {"name", account.name}, {"trading", trading_status_json(account.trading)}});
+    list.back()["damaged"] = damage_json(account.damaged);
+    list.back()["journal_size"] = journal_json(account.journal_bytes, account.journal_records, account.replay);
     if (account.sandbox_idle_seconds) list.back()["sandbox_idle_seconds"] = account.sandbox_idle_seconds;
   }
   return list;
@@ -2366,9 +2379,26 @@ std::optional<ApiResponse> paper_read(const ApiRequest& request, const MetricsSo
   std::string account = request.access.sandbox, status = "all", attempt = csv ? "all" : "current", from, to;
   std::optional<std::string> client_order_id;
   std::optional<Timestamp> since, until;
+  std::optional<std::uint64_t> limit;
+  Timestamp cursor_time = 0;
+  std::uint64_t cursor_ordinal = 0;
   bool valid_query = pairs.has_value(), archived = false;
   for (const auto& [key, value] : pairs.value_or(std::map<std::string, std::string>{})) {
-    if ((key == "from" || key == "to") && path == "/api/account/equity") {
+    if ((key == "limit" || key == "cursor") && path == "/api/account/equity") {
+      const auto positive = [](std::string_view text, auto& number) {
+        const auto [end, ec] = std::from_chars(text.data(), text.data() + text.size(), number);
+        return ec == std::errc{} && end == text.data() + text.size() && number > 0;
+      };
+      std::uint64_t count = 0;
+      if (key == "limit") {
+        if (!positive(value, count) || count > 2000) valid_query = false;
+        else limit = count;
+      } else {
+        const auto colon = value.find(':');
+        if (colon == std::string::npos || !positive(std::string_view(value).substr(0, colon), cursor_time) ||
+            !positive(std::string_view(value).substr(colon + 1), cursor_ordinal)) valid_query = false;
+      }
+    } else if ((key == "from" || key == "to") && path == "/api/account/equity") {
       const auto parsed = md::parse_datetime(value, md::Zone::Utc);
       if (!parsed || *parsed < 0) valid_query = false;
       else if (key == "from") since = parsed; else until = parsed;
@@ -2384,6 +2414,7 @@ std::optional<ApiResponse> paper_read(const ApiRequest& request, const MetricsSo
   }
   if (!from.empty() && !to.empty() && from > to) valid_query = false;
   if (since && until && *since > *until) valid_query = false;
+  if (cursor_time && !limit) valid_query = false;
   if (!valid_query) return api_error(400, "INVALID_REQUEST", "Unknown or invalid query parameter");
   if (path == "/api/plans") return ApiResponse{200, plans_json().dump()};
   if (path == "/api/accounts") return ApiResponse{200, json{{"accounts", accounts_json(source, request.access, archived)}}.dump()};
@@ -2400,15 +2431,29 @@ std::optional<ApiResponse> paper_read(const ApiRequest& request, const MetricsSo
         {"order", order_json(s.recent_orders[id - 1], *view)}}.dump()};
   }
   if (path == "/api/account/equity") {
-    json samples = json::array();
-    for (const auto& sample : view->equity_samples) {
-      if ((since && sample.time < *since) || (until && sample.time > *until)) continue;
+    json samples = json::array(), next = nullptr;
+    Timestamp previous = 0;
+    std::uint64_t ordinal = 0;
+    std::string last;
+    const auto first = std::lower_bound(view->equity_samples.begin(), view->equity_samples.end(), std::max(cursor_time, since.value_or(0)),
+        [](const EquitySample& sample, Timestamp time) { return sample.time < time; });
+    for (auto it = first; it != view->equity_samples.end(); ++it) {
+      const auto& sample = *it;
+      if (until && sample.time > *until) break;
+      ordinal = sample.time == previous ? ordinal + 1 : 1;
+      previous = sample.time;
+      if ((since && sample.time < *since) || (until && sample.time > *until) ||
+          sample.time < cursor_time || (sample.time == cursor_time && ordinal <= cursor_ordinal)) continue;
+      if (limit && samples.size() == *limit) { next = last; break; }
+      last = std::to_string(sample.time) + ":" + std::to_string(ordinal);
       samples.push_back({{"time", md::format_timestamp(sample.time)}, {"day", md::format_date(plan_trading_date(view->config.rules, sample.time))},
           {"attempt", sample.attempt}, {"equity", sample.equity.str()}, {"floor", money(sample.floor)}, {"peak", sample.peak.str()},
           {"target", money(sample.target)}, {"tomorrow_floor", money(sample.tomorrow_floor)},
           {"fill", sample.stock_fill ? json("s" + std::to_string(sample.stock_fill)) : sample.fill ? json(std::to_string(sample.fill)) : json(nullptr)}});
     }
-    return ApiResponse{200, json{{"samples", samples}, {"error", nullable(view->equity_error)}}.dump()};
+    return ApiResponse{200, json{{"samples", samples}, {"next", next}, {"error", nullable(view->equity_error)},
+        {"error_time", time_or_null(view->equity_error_time)}, {"error_market_time", time_or_null(view->equity_error_market_time)},
+        {"error_recovered", view->equity_error_recovered}}.dump()};
   }
   if (path == "/api/settlements") {
     json records = json::array();

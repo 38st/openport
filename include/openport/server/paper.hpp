@@ -91,11 +91,22 @@ struct RunIdentity {
   std::string date;       ///< The replayed session's New York date, YYYY-MM-DD.
 };
 
+struct AccountDamage {
+  std::string reason;
+  std::uint64_t last_good_seq = 0;
+  md::Timestamp last_good_time = 0;
+};
+inline constexpr std::uint64_t kLargeJournalBytes = 256ull * 1024 * 1024;
+inline constexpr std::uint64_t kLargeJournalRecords = 100'000;
+[[nodiscard]] std::string journal_warning(std::uint64_t bytes, std::uint64_t records, bool replay);
+
 /// The reducer snapshot and its pricing inputs are published together so HTTP
 /// readers never combine portfolio state with a different risk frame.
 struct TradingView {
   std::uint64_t journal_transactions = 0;
   std::string journal_head;
+  std::uint64_t journal_bytes = 0;
+  std::optional<AccountDamage> damaged;
   std::shared_ptr<const trading::TradingSnapshot> snapshot;
   trading::SessionConfig config;
   trading::Contracts contracts;
@@ -110,6 +121,8 @@ struct TradingView {
   std::vector<trading::RiskWarning> warnings;
   std::vector<EquitySample> equity_samples;
   std::string equity_error;
+  md::Timestamp equity_error_time = 0, equity_error_market_time = 0;
+  bool equity_error_recovered = false;
   std::string playbooks_json;  ///< Immutable catalogue and transient stages for this account.
   bool opening_settlement = false;  ///< This source settles AM options on the opening print.
   std::optional<RunIdentity> run;  ///< The replay run, for replay accounts.
@@ -179,6 +192,9 @@ struct AccountStatus {
   TradingStatus trading;
   std::int64_t sandbox_idle_seconds = 0;
   bool archived = false;
+  std::optional<AccountDamage> damaged = {};
+  std::uint64_t journal_bytes = 0, journal_records = 0;
+  bool replay = false;
 };
 
 struct TradingCommand {

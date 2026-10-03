@@ -75,7 +75,7 @@ export interface MarketSession {
 }
 
 /** One paper account, as status and ticks list them. */
-export interface AccountBrief { id: string; name: string; trading: TradingStatus; sandbox_idle_seconds?: number }
+export interface AccountBrief { damaged?: import("./trading-types").AccountDamage | null; journal_size?: import("./trading-types").JournalSize; id: string; name: string; trading: TradingStatus; sandbox_idle_seconds?: number }
 
 export interface MarketHalt {
   level: number
@@ -401,7 +401,12 @@ export interface VerificationRun {
   plan: string
   recorded_journal?: RunJournal
 }
+export interface VerificationCost {
+  estimated_seconds: number
+  warning: string | null
+}
 export interface RunVerification {
+  cost?: VerificationCost
   status: "idle" | "running" | "passed" | "failed"
   message: string
   progress?: number
@@ -419,6 +424,8 @@ export interface RunJournal {
   bytes: number
 }
 export interface ReplayHistory extends ReplayState {
+  journal_size?: import("./trading-types").JournalSize
+  verification_cost?: VerificationCost
   verification?: RunVerification
   journal?: RunJournal
   journal_found?: RunJournal

@@ -5,6 +5,7 @@ import { useAccount } from "./api/trading"
 import type { Summary } from "./api/types"
 import { AlertWatcher, Toasts } from "./components/Alerts"
 import { WatchOnlyNotice, WriteAccess } from "./components/TradingControls"
+import { AccountStorageBanner } from "./components/AccountStorageBanner"
 import { Header } from "./components/Header"
 import { DemoPrompt } from "./components/DemoPrompt"
 import { CircuitBreakerBanner } from "./components/CircuitBreakerBanner"
@@ -36,6 +37,7 @@ export function App() {
   const queryClient = useQueryClient()
   const [menu, setMenu] = useState(false)
   const closeMenu = useCallback(() => setMenu(false), [])
+  const storage = live.accounts.find((account) => account.id === live.account)
   const symbols = (live.tick?.underlyings ?? live.status?.underlyings ?? []).map((u) => u.symbol)
   const symbol = route.symbol && symbols.includes(route.symbol) ? route.symbol : (symbols[0] ?? null)
   const version = symbol ? live.version(symbol) : 0
@@ -105,6 +107,7 @@ export function App() {
         <DemoPrompt onNavigate={(next) => navigate({ view: next })} />
         <Header symbol={symbol} onSymbol={(s) => navigate({ symbol: s, expiry: null })} onMenu={() => setMenu(true)} />
         <CircuitBreakerBanner />
+        <AccountStorageBanner damaged={storage?.damaged} journal={storage?.journal_size} reason={live.trading?.reason} />
         <UpdateNotice />
         <WatchOnlyNotice trading={live.trading} sandboxes={live.status?.sandboxes} onCreated={(id) => {
           live.switchSource("live")

@@ -407,3 +407,14 @@ def test_reload_tokens_uses_live_admin_route_even_from_replay(stub):
     assert result == {"names": ["operator"], "count": 1, "loaded_at": TIME}
     assert stub.requests[-1][0:2] == ("POST", "/api/tokens/reload")
     assert stub.requests[-1][3] == {}
+
+
+def test_equity_paging_keeps_account_and_range(stub):
+    client = Client(stub.url, "secret", "practice")
+    client.equity("2026-09-22T00:00:00Z", "2026-09-23T00:00:00Z", limit=2, cursor="123:2")
+    assert parse_qs(urlsplit(stub.requests[-1][1]).query) == {
+        "account": ["practice"], "from": ["2026-09-22T00:00:00Z"],
+        "to": ["2026-09-23T00:00:00Z"], "limit": ["2"], "cursor": ["123:2"],
+    }
+    client.equity()
+    assert parse_qs(urlsplit(stub.requests[-1][1]).query) == {"account": ["practice"]}

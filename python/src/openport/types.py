@@ -161,7 +161,24 @@ class AccountRules(TypedDict, total=False):
     fees: FeeSchedule
 
 
-class Account(TypedDict):
+class AccountDamage(TypedDict):
+    reason: str
+    last_good_seq: int
+    last_good_time: str | None
+
+
+class JournalSize(TypedDict):
+    bytes: int
+    records: int
+    warning: str | None
+
+
+class AccountStorage(TypedDict, total=False):
+    damaged: AccountDamage | None
+    journal_size: JournalSize
+
+
+class Account(AccountStorage):
     account_version: str
     time: str
     rules: AccountRules
@@ -325,7 +342,14 @@ class Accounts(TypedDict):
     accounts: list[JSON]
 
 
-class EquityHistory(TypedDict):
+class EquityPaging(TypedDict, total=False):
+    next: str | None
+    error_time: str | None
+    error_market_time: str | None
+    error_recovered: bool
+
+
+class EquityHistory(EquityPaging):
     samples: list[JSON]
     error: str | None
 

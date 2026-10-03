@@ -3693,4 +3693,94 @@ TEST(PaperStocks, SharesOpenThroughTheApiAtTheUnderlyingsPrice) {
   engine.stop();
 }
 
+TEST(PaperAvailability, DamagedMainAndNamedAccountsExposeOnlyTheVerifiedPrefix) {
+  const auto expect_error = [](const server::ApiResponse& response, int status, const std::string& code) {
+    EXPECT_EQ(response.status, status) << response.body;
+    EXPECT_EQ(json::parse(response.body)["error"]["code"], code);
+  };
+  for (const bool main : {false, true}) {
+    for (const bool torn : {false, true}) {
+      const auto path = paper_path();
+      const auto directory = path.parent_path();
+      struct Cleanup { std::filesystem::path path; ~Cleanup() { std::filesystem::remove_all(path); } } cleanup{directory};
+      const auto journal = main ? path : directory / "accounts" / "broken.jsonl";
+      std::filesystem::create_directories(journal.parent_path());
+      const auto contents = [&] { std::ifstream in(journal); std::ostringstream out; out << in.rdbuf(); return out.str(); };
+      test::ScriptedMarket market;
+      std::string good;
+      std::uint64_t seq = 0;
+      {
+        auto sink = trading::FileJournal::create(journal.string());
+        trading::TradingSession session({}, market.time, sink);
+        market.seed(session);
+        good = contents();
+        seq = sink->sequence();
+        market.next();
+        session.on_quotes({market.quote("4.10", "4.30", 2)}, {market.valuation()}, market.time);
+      }
+      const auto later = contents().substr(good.size());
+      const auto damaged = torn ? good + "torn" : good + "bad hash chain\n" + later;
+      { std::ofstream out(journal); out << damaged; }
+      auto options = paper_options();
+      options.paper_journal = path;
+      options.paper_accounts = directory / "accounts";
+      PaperProvider provider;
+      server::Engine engine(provider, {{"SPX"}}, options);
+      ASSERT_NO_THROW(engine.start());
+      const std::string query = main ? "" : "?account=broken";
+      const auto account = read(engine, "/api/account" + query);
+      ASSERT_TRUE(account.at("damaged").is_object());
+      EXPECT_EQ(account["damaged"]["last_good_seq"], seq);
+      EXPECT_NE(account["damaged"]["reason"].get<std::string>().find("--repair-journals"), std::string::npos);
+      EXPECT_EQ(account["journal_size"]["bytes"], damaged.size());
+      for (const auto* route : {"/api/portfolio", "/api/trades", "/api/fills", "/api/account/equity"})
+        EXPECT_EQ(server::handle_api({"GET", std::string(route) + query}, engine).status, 200);
+      const auto list = read(engine, "/api/accounts")["accounts"];
+      const auto id = main ? "main" : "broken";
+      const auto found = std::find_if(list.begin(), list.end(), [&](const auto& a) { return a.at("id") == id; });
+      ASSERT_NE(found, list.end());
+      EXPECT_EQ(found->at("damaged"), account["damaged"]);
+      EXPECT_FALSE(found->at("trading").at("enabled").template get<bool>());
+      expect_error(write(engine, "POST", "/api/risk/kill" + query, {{"action", "trip"}, {"reason", "test"}}), 409, "ACCOUNT_DAMAGED");
+      if (!main) {
+        expect_error(write(engine, "PATCH", "/api/accounts/broken", {{"name", "rename"}}), 409, "ACCOUNT_DAMAGED");
+        expect_error(write(engine, "DELETE", "/api/accounts/broken", nullptr), 409, "ACCOUNT_DAMAGED");
+      }
+      provider.sink->publish(md::UnderlyingQuote{"SPX", market.time, 5000, 5000, 5000});
+      EXPECT_EQ(read(engine, "/api/account" + query)["time"], account["time"]);
+      engine.stop();
+      EXPECT_EQ(contents(), damaged);
+    }
+  }
+}
+TEST(PaperAvailability, EquityPagesKeepEqualTimeSamplesAndUnpagedReads) {
+  const auto path = paper_path();
+  struct Cleanup { std::filesystem::path path; ~Cleanup() { std::filesystem::remove_all(path); } } cleanup{path.parent_path()};
+  const auto time = md::new_york_to_utc({2026, 9, 22}, 10, 0);
+  {
+    server::EquityStore store(path.string() + ".equity.csv");
+    for (std::uint64_t fill = 1; fill <= 5; ++fill)
+      store.append({time, 1, Money::parse("100000"), {}, Money::parse("100000"), {}, {}, fill});
+    store.append({time + md::kNanosPerMinute, 1, Money::parse("100001"), {}, Money::parse("100001"), {}, {}, 0});
+  }
+  auto options = paper_options(); options.paper_journal = path;
+  PaperProvider provider; server::Engine engine(provider, {{"SPX"}}, options); engine.start();
+  const auto all = read(engine, "/api/account/equity");
+  ASSERT_EQ(all["samples"].size(), 6u);
+  EXPECT_EQ(all["next"], nullptr);
+  json collected = json::array();
+  std::string cursor;
+  for (int page = 0; page < 3; ++page) {
+    const auto response = read(engine, "/api/account/equity?limit=2" + (cursor.empty() ? "" : "&cursor=" + cursor));
+    ASSERT_EQ(response["samples"].size(), 2u);
+    for (const auto& sample : response["samples"]) collected.push_back(sample);
+    cursor = response["next"].is_null() ? "" : response["next"].get<std::string>();
+  }
+  EXPECT_TRUE(cursor.empty());
+  EXPECT_EQ(collected, all["samples"]);
+  EXPECT_EQ(read(engine, "/api/account/equity?limit=2&from=" + md::format_timestamp(time + md::kNanosPerMinute))["samples"].size(), 1u);
+  for (const auto* query : {"limit=0", "limit=2001", "limit=-1", "cursor=bad&limit=2", "cursor=1:1", "limit=2&cursor=1:0"})
+    EXPECT_EQ(server::handle_api({"GET", std::string("/api/account/equity?") + query}, engine).status, 400);
+  engine.stop();
+}
 }  // namespace

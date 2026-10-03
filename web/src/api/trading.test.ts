@@ -167,3 +167,14 @@ it("routes verification outside the selected account and authenticates JSON rece
    expect(fetcher).toHaveBeenLastCalledWith("/api/tokens/reload", expect.objectContaining({ method: "POST", body: "{}",
      headers: expect.objectContaining({ Authorization: "Bearer admin-token" }) }))
  })
+
+it("collects equity pages without dropping samples at equal market times", async () => {
+  const fetcher = vi.fn().mockResolvedValueOnce(new Response(JSON.stringify({ samples: [{ time: "same", fill: "1" }], error: null, next: "123:1" })))
+    .mockResolvedValueOnce(new Response(JSON.stringify({ samples: [{ time: "same", fill: "2" }], error: "equity: failed", error_time: "2026-09-22T14:00:00Z", error_recovered: true, next: null })))
+  vi.stubGlobal("fetch", fetcher)
+  const result = await api.equity()
+  expect(result.samples.map((sample) => sample.fill)).toEqual(["1", "2"])
+  expect(result.error_recovered).toBe(true)
+  expect(String(fetcher.mock.calls[0]![0])).toContain("limit=2000")
+  expect(String(fetcher.mock.calls[1]![0])).toContain("cursor=123%3A1")
+})

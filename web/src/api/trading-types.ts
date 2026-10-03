@@ -267,7 +267,20 @@ export interface RiskWarning {
   actual: number | null
   limit: number | null
 }
+export interface AccountDamage {
+  reason: string
+  last_good_seq: number
+  last_good_time: string | null
+}
+export interface JournalSize {
+  bytes: number
+  records: number
+  warning: string | null
+}
 export interface Account {
+  damaged?: AccountDamage | null
+  journal_size?: JournalSize
+  verification_cost?: import("./types").VerificationCost
   verification?: RunVerification
   journal?: RunJournal
   journal_found?: RunJournal
@@ -888,7 +901,7 @@ export interface SubmitOrderResponse extends OrderResponse { fills: Fill[] }
 /** `time_in_force` switches a resting limit order between DAY and GTC; absent from older servers' accepted fields. */
 export interface OrderChange { quantity?: number; limit_price?: Money; trigger_level?: Money; time_in_force?: "day" | "gtc"; walk?: Walk | null }
 export interface CancelAllResponse { account_version: string; cancelled_orders: string[] }
-export interface AccountListItem { id: string; name: string; archived?: boolean; sandbox_idle_seconds?: number; trading: TradingStatus; equity: Money | null }
+export interface AccountListItem { damaged?: AccountDamage | null; journal_size?: JournalSize; id: string; name: string; archived?: boolean; sandbox_idle_seconds?: number; trading: TradingStatus; equity: Money | null }
 export interface AccountsResponse { accounts: AccountListItem[] }
 export type CreateAccountRequest = { name: string; copy_settings_from?: string; fill_model?: FillModel; fee_model?: FeeModel } & MarginModel & ({ plan: string } | { initial_cash: Money; rules: AccountRulesInput })
 export interface CreateAccountResponse { account: { id: string; name: string; account_version: string; plan: string | null; plan_id?: string | null; equity: Money } }
@@ -1123,7 +1136,14 @@ export interface EquitySample {
   tomorrow_floor: Money | null
   fill: string | null
 }
-export interface EquityHistory { samples: EquitySample[]; error: string | null }
+export interface EquityHistory {
+  samples: EquitySample[]
+  error: string | null
+  error_time?: string | null
+  error_market_time?: string | null
+  error_recovered?: boolean
+  next?: string | null
+}
 
 export interface UpdateAccountRequest { name?: string; archived?: boolean }
 export interface UpdateAccountResponse { account: { id: string; name: string; archived: boolean } }

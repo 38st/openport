@@ -186,8 +186,11 @@ class Client:
             "underlying": underlying, "benchmark": benchmark, "days": _list(days), "iv": iv, "range": range,
             "steps": steps, "betas": ",".join(f"{symbol}:{beta}" for symbol, beta in betas.items()) if betas else None})
 
-    def equity(self, start: str | None = None, end: str | None = None) -> EquityHistory:
-        return self._request("GET", "/account/equity", scoped=True, params={"from": start, "to": end})
+    def equity(self, start: str | None = None, end: str | None = None, *,
+               limit: int | None = None, cursor: str | None = None) -> EquityHistory:
+        """Equity samples, optionally paged (1..2000); pass next as cursor with the same filters."""
+        return self._request("GET", "/account/equity", scoped=True,
+                             params={"from": start, "to": end, "limit": limit, "cursor": cursor})
 
     def plans(self) -> Plans:
         return self._request("GET", "/plans")

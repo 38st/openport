@@ -254,6 +254,10 @@ export function ReplayView({ onNavigate }: { onNavigate?: (view: View) => void }
           <span>{run.date} · {run.start_at || "open"} · {run.plan_name ?? run.plan}{run.plan_id ? ` · ${run.plan_id}` : ""}</span>
           <Badge tone={run.result === "pass" ? "positive" : run.result === "fail" ? "warn" : "neutral"}>{run.result}</Badge>
           <span>P&amp;L {run.pnl === null ? "—" : formatMoney(run.pnl)}{run.valuation_complete === false ? " (incomplete marks)" : ""}</span>
+          {run.journal_size && <span>{size(run.journal_size.bytes)} journal · {run.journal_size.records.toLocaleString()} records</span>}
+          {run.journal_size?.warning && <p className="w-full text-warn">{run.journal_size.warning}</p>}
+          {run.verification_cost && <p className="w-full text-muted">Verification estimate: about {run.verification_cost.estimated_seconds} seconds or more.
+            {run.verification_cost.warning && <span className="text-warn"> {run.verification_cost.warning}</span>}</p>}
           {run.error && <span className="text-warn">{run.error}</span>}
           {run.interrupted && <Badge tone="warn">interrupted</Badge>}
           {(run.torn || run.truncated || run.mismatch) && <div className="w-full text-warn" role="alert">

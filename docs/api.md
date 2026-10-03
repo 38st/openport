@@ -202,3 +202,33 @@ Playbook definitions optionally accept `conditions.technical`, `vix`, `gap` and
 [Playbook rules](playbooks.md) specify strict validation, indicator history and exit
 semantics. Pinned backtest definitions retain these optional fields; old reports
 remain readable. Adherence rule keys are extended only for configured exits.
+
+Operational storage fields: `/api/accounts`, `/api/account` and status `accounts[]`
+include `damaged: null | {reason, last_good_seq, last_good_time}` and
+`journal_size: {bytes, records, warning}`. Damaged accounts keep their last verified
+portfolio, fills and trades visible and refuse writes with 409 `ACCOUNT_DAMAGED`.
+Zero sequence/null time means no verified record. Stop the server for
+`--repair-journals --dry-run`; torn suffixes can be repaired, while mid-file damage
+requires a verified backup. Low disk errors identify a filesystem device and
+directory basename, available bytes and the 64 MiB reserve in the trading reason.
+
+`GET /api/account/equity?limit=2000&cursor=...` pages equity history. `limit` must be
+1–2000; `cursor` requires a limit and is the preceding response's opaque `next`.
+Keep the same account and inclusive `from`/`to` filters while paging. Equal-time
+samples (including combo fills) are distinct. `next: null` ends the range; omit
+`limit` for the original unpaged response. These parameters also work under
+`/api/replay/` and `/api/replay/history/{run_id}/`. This is a live history, not a
+snapshot token: appends may appear and retention can remove old samples between
+requests. Equity storage retains `error` as string/null and adds `error_time`
+(wall UTC), `error_market_time` (nullable sample UTC) and `error_recovered`.
+Later successful storage keeps the last error and timestamp while marking it
+recovered; that error history lasts for the running process.
+
+Journal warnings begin at 256 MiB or 100,000 verified records. Live accounts
+suggest offline `--compact-journals`; replay warnings note that compaction breaks
+exact run verification. Replay history adds `journal_size` and
+`verification_cost: {estimated_seconds, warning}`; verification responses add
+`cost` in the same shape. Estimates use the slower of 10 MiB/s or 2,000 records/s,
+with a minimum of one second; warnings begin at 30 seconds. They are estimates,
+not bounds: recording generation, analytics and hardware can take longer.
+The terminal displays the warning before the trader presses Verify.

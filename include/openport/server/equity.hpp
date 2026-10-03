@@ -34,15 +34,22 @@ struct EquitySample {
 /// attempt and at most 90 days / 100,000 samples of earlier attempts. Storage failures never throw.
 class EquityStore {
  public:
-  explicit EquityStore(std::filesystem::path file);
+  explicit EquityStore(std::filesystem::path file, bool read_only = false);
   void append(const EquitySample& sample) noexcept;
   [[nodiscard]] const std::vector<EquitySample>& samples() const { return samples_; }
   [[nodiscard]] const std::string& error() const { return error_; }
+  [[nodiscard]] md::Timestamp error_time() const { return error_time_; }
+  [[nodiscard]] md::Timestamp error_market_time() const { return error_market_time_; }
+  [[nodiscard]] bool error_recovered() const { return error_recovered_; }
  private:
   void compact();
+  void fail(std::string message, md::Timestamp market_time = 0);
   std::filesystem::path file_;
   std::vector<EquitySample> samples_;
   std::size_t lines_ = 0;
   std::string error_;
+  md::Timestamp error_time_ = 0, error_market_time_ = 0;
+  bool error_recovered_ = false;
+  bool read_only_ = false;
 };
 }  // namespace openport::server

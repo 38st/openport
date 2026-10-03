@@ -151,7 +151,17 @@ export const api = {
     })) }),
   previewChange: (id: string, change: OrderChange, mode: WriteMode, floor_share = 0.5) =>
     write<OrderPreview>(scoped(`/api/orders/${encodeURIComponent(id)}/preview`), "POST", mode, { ...change, floor_share }),
-  equity: (signal?: AbortSignal) => get<EquityHistory>(scoped("/api/account/equity"), signal),
+  equity: async (signal?: AbortSignal): Promise<EquityHistory> => {
+    const base = scoped("/api/account/equity")
+    const path = `${base}${base.includes("?") ? "&" : "?"}limit=2000`
+    let page = await get<EquityHistory>(path, signal)
+    const samples = [...page.samples]
+    while (page.next) {
+      page = await get<EquityHistory>(`${path}&cursor=${encodeURIComponent(page.next)}`, signal)
+      samples.push(...page.samples)
+    }
+    return { ...page, samples }
+  },
   updateGuardrails: (expected_revision: string, guardrails: Guardrails, mode: WriteMode) => write<Risk>(scoped("/api/risk/guardrails"), "PUT", mode, { expected_revision, guardrails }),
   portfolio: (signal?: AbortSignal) => get<Portfolio>(scoped("/api/portfolio"), signal),
   orders: (status: "open" | "all" = "all", signal?: AbortSignal) => get<OrdersResponse>(scoped(`/api/orders?status=${status}`), signal),

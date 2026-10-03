@@ -311,6 +311,7 @@ special opening quotation; live providers keep manual imports.
 
 - [x] Technical, VIX and gap playbook entries; trailing, DTE, trading-day and debit exits (F52, part 1)
 - [ ] Backtest comparison/combination, per-day evaluation rows and saved-run retention (F52, next part)
+- [x] Operational robustness (F68): damaged-account reads, repair inspection, storage diagnostics and equity paging
 
 - [x] F72: held-size close tickets, confirmed cancellations with persistent results,
       fresh finished runs in the switcher, held-strategy gamma and vega, and sizing labels
@@ -441,3 +442,10 @@ special opening quotation; live providers keep manual imports.
       beta weighting to SPY or SPX, and probability cones with odds of reaching a price by a date
 - [x] F46: fills inside the bid/ask spread and walking limits, with midpoint fills,
       market-time steps, editable caps, previews and durable order history
+
+- **Operational robustness (F68):** filesystem diagnostics with free bytes and
+  a 64 MiB reserve; damaged accounts remain readable at their verified prefix;
+  repair dry-run and single-file modes; timestamped equity storage errors and
+  recovery status; journal size and verification estimates/warnings; equity
+  paging in live, replay and archived accounts; indexed recording end lookup
+  and replay control queue shutdown.
