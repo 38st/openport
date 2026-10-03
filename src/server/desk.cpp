@@ -33,6 +33,7 @@ void sync_directory(const std::filesystem::path& path) {
 }
 
 void save_account_file(const std::filesystem::path& path, const std::string& text) {
+  check_storage_space(path, text.size());
   const auto temporary = path.string() + ".tmp";
   const int fd = ::open(temporary.c_str(), O_WRONLY | O_CREAT | O_TRUNC, 0600);
   if (fd < 0) throw TradingError(Reason::JOURNAL_IO, "Cannot write account metadata");
@@ -497,11 +498,26 @@ void Desk::start_trading() {
       std::optional<JournalRecovery> recovery;
       if (!file.empty() && options_.resume && file == options_.paper_journal)
         journal = resuming_journal(*options_.resume, FileJournal::resume(file.string(), journal_options(options_)));
-      else if (!file.empty()) std::tie(journal, recovery) = open_journal(file, journal_options(options_));
+      else if (!file.empty()) {
+        try { std::tie(journal, recovery) = open_journal(file, journal_options(options_)); }
+        catch (const TradingError& error) {
+          if (!options_.run_input.empty() || (error.code() != Reason::JOURNAL_CORRUPT &&
+              !std::string_view(error.what()).starts_with("Torn journal suffix"))) throw;
+          std::tie(journal, recovery) = FileJournal::inspect(file.string());
+          if (recovery->damage.empty()) throw;
+          const auto hint = recovery->truncated_final_line
+              ? "; stop openportd and run --repair-journals --dry-run, then --repair-journals"
+              : "; stop openportd and restore a verified backup; --repair-journals --dry-run diagnoses damage but cannot cut mid-file damage";
+          account.damaged = AccountDamage{recovery->damage + hint, recovery->records.size(),
+              recovery->records.empty() ? 0 : recovery->records.back().time};
+          account.failure = "ACCOUNT_DAMAGED: " + account.damaged->reason;
+        }
+      }
       account.journal = journal;
       if (recovery && !options_.run_input.empty())
         throw TradingError(Reason::JOURNAL_CORRUPT, "A reproducible run needs a new journal; select an unused --paper-journal path");
-      if (recovery) account.session = std::make_unique<TradingSession>(TradingSession::recover(*recovery, journal));
+      if (account.damaged && recovery->records.empty()) account.session = std::make_unique<TradingSession>(options_.paper, 0);
+      else if (recovery) account.session = std::make_unique<TradingSession>(TradingSession::recover(*recovery, account.damaged ? nullptr : journal));
       else if (seed) account.session = std::make_unique<TradingSession>(options_.paper, 0, journal, options_.initial_actor);
       else {
         // Its create stopped before the first record. Removing the file while its
@@ -512,11 +528,13 @@ void Desk::start_trading() {
         if (std::filesystem::is_regular_file(named, ignored)) std::filesystem::remove(named, ignored);
         return false;
       }
-      if (!file.empty()) account.equity = std::make_unique<EquityStore>(file.string() + ".equity.csv");
+      if (!file.empty()) account.equity = std::make_unique<EquityStore>(file.string() + ".equity.csv", account.damaged.has_value());
       account.session->set_actor("system");
       account.sampled_snapshot = account.session->snapshot();
     } catch (const TradingError& error) {
       account.failure = std::string(to_string(error.code())) + ": " + error.what();
+    } catch (const std::filesystem::filesystem_error& error) {
+      account.failure = "JOURNAL_IO: " + error.code().message();
     } catch (const std::exception& error) {
       account.failure = std::string("JOURNAL_IO: ") + error.what();
     }
@@ -526,12 +544,12 @@ void Desk::start_trading() {
   open(accounts_.back(), options_.paper_journal, true);
   if (options_.sandboxes) {
     if (!accounts_.back().session) throw std::runtime_error("Sandbox startup requires the main journal writer lock");
-    std::filesystem::remove_all(options_.paper_journal.parent_path() / "sandboxes");
+    if (!accounts_.back().damaged) std::filesystem::remove_all(options_.paper_journal.parent_path() / "sandboxes");
   }
   std::error_code ec;
   if (!options_.paper_accounts.empty() && std::filesystem::is_directory(options_.paper_accounts, ec)) {
     const auto deleted = options_.paper_accounts / "deleted";
-    if (accounts_.front().session && std::filesystem::is_directory(deleted))
+    if (accounts_.front().session && !accounts_.front().damaged && std::filesystem::is_directory(deleted))
       for (const auto& entry : std::filesystem::directory_iterator(deleted))
         if (entry.is_directory() && account_id(entry.path().filename().string()))
           retain_deleted_files(options_.paper_accounts, entry.path().filename().string());
@@ -557,10 +575,10 @@ void Desk::start_trading() {
       if (const auto quote = account.session->quote(symbol))
         observations_[symbol] = std::max(observations_[symbol], quote->observation);
   }
-  breaker_storage_ = !options_.replay && !options_.paper_journal.empty() && accounts_.front().session != nullptr;
+  breaker_storage_ = !options_.replay && !options_.paper_journal.empty() && accounts_.front().session != nullptr && !accounts_.front().damaged;
   load_circuit_breaker();
   publish_circuit_breaker();
-  if (accounts_.front().session) {
+  if (accounts_.front().session && !accounts_.front().damaged) {
     try {
       const auto file = options_.paper_journal.empty() ? std::filesystem::path{} : options_.paper_journal.parent_path() / (options_.replay ? options_.paper_journal.stem().string() + ".playbooks.json" : "playbooks.json");
       playbooks_ = std::make_shared<Playbooks>(file, options_.initial_playbooks.empty() ? nlohmann::json(nullptr) : nlohmann::json::parse(options_.initial_playbooks));
@@ -665,7 +683,7 @@ void Desk::create_account(const TradingCommand& c, TradingReply& reply) {
       validate_guardrails(config.guardrails);
     }
     auto [journal, recovery] = open_journal(file, journal_options(options_));
-    if (recovery) throw TradingError(Reason::JOURNAL_CORRUPT, "An account journal already exists at " + file.string());
+    if (recovery) throw TradingError(Reason::JOURNAL_CORRUPT, "An account journal already exists");
     created = journal;
     save_account_file(named, account.name + '\n');
     account.journal = journal;
@@ -675,6 +693,10 @@ void Desk::create_account(const TradingCommand& c, TradingReply& reply) {
   } catch (const TradingError& error) {
     discard();
     reply.decision = {error.code(), error.what(), {}, {}, {}};
+    return;
+  } catch (const std::filesystem::filesystem_error& error) {
+    discard();
+    reply.decision = {Reason::JOURNAL_IO, error.code().message(), {}, {}, {}};
     return;
   } catch (const std::exception& error) {
     discard();
@@ -740,6 +762,8 @@ void Desk::manage_account(const TradingCommand& c, TradingReply& reply) {
       publish_trading();
     }
     reply.account = id;
+  } catch (const std::filesystem::filesystem_error& error) {
+    refuse("TRADING_UNAVAILABLE", error.code().message());
   } catch (const std::exception& error) {
     refuse("TRADING_UNAVAILABLE", error.what());
   }
@@ -802,8 +826,10 @@ void Desk::publish_trading() {
       view->replay_start = options_.replay_start;
       view->replay_end = options_.replay_end;
       view->snapshot = session.snapshot();
+      view->damaged = account.damaged;
       if (account.journal) {
         view->journal_transactions = account.journal->sequence();
+        view->journal_bytes = account.journal->bytes();
         view->journal_head = account.journal->head();
       }
       if (playbooks_) {
@@ -815,7 +841,7 @@ void Desk::publish_trading() {
       }
       // An idle account's publication is as of the feed's market time, not its last
       // transaction: batches that change nothing are not transactions.
-      if (!account.archived && market_time_ > view->snapshot->time) {
+      if (!account.archived && !account.damaged && market_time_ > view->snapshot->time) {
         auto clocked = std::make_shared<trading::TradingSnapshot>(*view->snapshot);
         clocked->time = market_time_;
         view->snapshot = std::move(clocked);
@@ -849,10 +875,26 @@ void Desk::publish_trading() {
         if (const auto variance = close_variance(metrics(underlying))) vols[underlying] = *variance;
       view->breach = session.breach(vols);
       view->warnings = session.warnings(vols, dividends_);
-      if (!account.archived) sample_equity(account);
+      if (!account.archived && account.failure.empty()) sample_equity(account);
       if (account.equity) {
         view->equity_samples = account.equity->samples();
         view->equity_error = account.equity->error();
+        view->equity_error_time = account.equity->error_time();
+        view->equity_error_market_time = account.equity->error_market_time();
+        view->equity_error_recovered = account.equity->error_recovered();
+        if (account.damaged) {
+          const auto& snapshot = *view->snapshot;
+          std::erase_if(view->equity_samples, [&](const auto& sample) { return sample.time >= snapshot.time; });
+          if (snapshot.time > 0 && snapshot.valuation_complete) {
+            const auto& rules = view->config.rules;
+            EquitySample last{snapshot.time, snapshot.evaluation.attempt, snapshot.equity, {}, snapshot.evaluation.peak, {}, {}, 0};
+            if (rules.max_drawdown > Money{}) last.floor = snapshot.evaluation.floor;
+            if (rules.profit_target > Money{}) last.target = snapshot.evaluation.starting_balance + rules.profit_target;
+            if (rules.max_drawdown > Money{} && rules.drawdown_mode == DrawdownMode::EndOfDay)
+              last.tomorrow_floor = evaluation_tomorrow_floor(snapshot.evaluation, rules, snapshot.equity);
+            view->equity_samples.push_back(last);
+          }
+        }
       }
     }
     TradingStatus status;
@@ -873,8 +915,8 @@ void Desk::publish_trading() {
       }
     }
     statuses.push_back({account.id, account.name, std::move(status),
-        sandbox_ids_.contains(account.id) ? options_.sandboxes->idle().count() : 0, account.archived});
-    if (view && !account.archived && publication_sink_) {
+        sandbox_ids_.contains(account.id) ? options_.sandboxes->idle().count() : 0, account.archived, account.damaged, view ? view->journal_bytes : 0, view ? view->journal_transactions : 0, options_.replay});
+    if (view && !account.archived && !account.damaged && publication_sink_) {
       // Delivery observers cannot invalidate an already committed transaction.
       try { publication_sink_(account.id, *view); } catch (...) {}
     }
@@ -1369,7 +1411,10 @@ void Desk::apply_command(PendingCommand& pending, md::Timestamp market_time, md:
   // Driver 4 records the command before its first transaction.
   if (!input_recorded && inputs_first() && recorded_input(c)) record_command(c, driver_time);
   auto* account = c.kind == TradingCommand::Kind::CreateAccount ? nullptr : find_account(c.account);
-  if (c.kind == TradingCommand::Kind::UpdateAccount || c.kind == TradingCommand::Kind::DeleteAccount) {
+  if (account && account->damaged) {
+    reply.error_code = "ACCOUNT_DAMAGED";
+    reply.decision.message = account->damaged->reason;
+  } else if (c.kind == TradingCommand::Kind::UpdateAccount || c.kind == TradingCommand::Kind::DeleteAccount) {
     manage_account(c, reply);
     account = find_account(c.account);
   } else if (c.kind == TradingCommand::Kind::CreateAccount || c.kind == TradingCommand::Kind::CreateSandbox) {

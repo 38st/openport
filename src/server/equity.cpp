@@ -125,13 +125,25 @@ std::vector<EquitySample> read_equity_history(const std::filesystem::path& file,
         if (samples.empty() || sample.time >= samples.back().time) samples.push_back(std::move(sample));
       } catch (const std::exception&) { error = "equity: ignored an invalid row"; }
     }
-  } catch (const std::exception& e) { error = std::string("equity: ") + e.what(); }
+    if (input.bad()) throw std::runtime_error("cannot read equity history");
+  } catch (const std::filesystem::filesystem_error& e) { error = "equity: " + e.code().message(); }
+  catch (const std::exception& e) { error = std::string("equity: ") + e.what(); }
   return samples;
 }
-EquityStore::EquityStore(std::filesystem::path file) : file_(std::move(file)) {
+EquityStore::EquityStore(std::filesystem::path file, bool read_only) : file_(std::move(file)), read_only_(read_only) {
   samples_ = read_equity_history(file_, error_);
-  try { compact(); }
-  catch (const std::exception& e) { error_ = std::string("equity: ") + e.what(); }
+  if (!error_.empty()) fail(error_);
+  if (read_only) return;
+  try {
+    if (!samples_.empty()) { compact(); if (!error_.empty()) error_recovered_ = true; }
+  }
+  catch (const std::exception& e) { fail(e.what()); }
+}
+void EquityStore::fail(std::string message, md::Timestamp market_time) {
+  error_ = message.starts_with("equity: ") ? std::move(message) : "equity: " + message;
+  error_time_ = md::now();
+  error_market_time_ = market_time;
+  error_recovered_ = false;
 }
 void EquityStore::compact() {
   if (samples_.empty()) return;
@@ -145,18 +157,23 @@ void EquityStore::compact() {
     return false;
   });
   const auto temporary = file_.string() + ".tmp";
+  std::uint64_t bytes = 0;
+  for (const auto& sample : samples_) bytes += line(sample).size();
+  trading::check_storage_space(file_, bytes);
   std::ofstream out(temporary, std::ios::trunc);
   if (!out) throw std::runtime_error("cannot compact equity history");
   for (const auto& sample : samples_) out << line(sample);
   out.flush();
   if (!out) throw std::runtime_error("cannot flush equity history");
   out.close();
-  std::filesystem::rename(temporary, file_);
+  std::error_code ec;
+  std::filesystem::rename(temporary, file_, ec);
+  if (ec) throw std::runtime_error("cannot replace equity history: " + ec.message());
   lines_ = samples_.size();
 }
 void EquityStore::append(const EquitySample& sample) noexcept {
   try {
-    if (sample.time <= 0 || sample.attempt == 0) return;
+    if (read_only_ || sample.time <= 0 || sample.attempt == 0) return;
     if (!samples_.empty()) {
       const auto& last = samples_.back();
       if (sample.time < last.time) return;
@@ -172,12 +189,19 @@ void EquityStore::append(const EquitySample& sample) noexcept {
     }
     const bool reset = !samples_.empty() && samples_.back().attempt != sample.attempt;
     samples_.push_back(sample);
+    if (!error_.empty() && !error_recovered_) {
+      compact();
+      error_recovered_ = true;
+      return;
+    }
+    const auto row = line(sample);
+    trading::check_storage_space(file_, row.size());
     std::ofstream out(file_, std::ios::app);
-    out << line(sample);
+    out << row;
     out.flush();
     if (!out) throw std::runtime_error("cannot append equity history");
     ++lines_;
     if (reset || lines_ % 4096 == 0) compact();
-  } catch (const std::exception& e) { error_ = std::string("equity: ") + e.what(); }
+  } catch (const std::exception& e) { fail(e.what(), sample.time); }
 }
 }  // namespace openport::server

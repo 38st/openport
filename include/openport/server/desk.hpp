@@ -126,6 +126,7 @@ class Desk {
     std::shared_ptr<const trading::TradingSnapshot> sampled_snapshot;
     std::shared_ptr<trading::Journal> journal;
     bool archived = false;
+    std::optional<AccountDamage> damaged = {};
   };
   PaperAccount* find_account(std::string_view id);
   void create_account(const TradingCommand& command, TradingReply& reply);

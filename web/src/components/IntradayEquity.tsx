@@ -13,7 +13,7 @@ const clock = new Intl.DateTimeFormat("en-US", { hour: "numeric", minute: "2-dig
 export function IntradayEquity({ account }: { account: Account }) {
   const { accountScope, trading } = useLive()
   const history = useQuery({ queryKey: ["trading", accountScope, "equity", trading?.account_version], queryFn: ({ signal }) => api.equity(signal),
-    enabled: !!trading?.enabled, refetchInterval: 30_000, retry: false })
+    enabled: !!trading?.enabled || !!account.damaged, refetchInterval: 30_000, retry: false })
   const [selected, setSelected] = useState("")
   const day = selected || account.evaluation.day
   const samples = history.data?.samples ?? []
@@ -21,7 +21,7 @@ export function IntradayEquity({ account }: { account: Account }) {
   const chart = intradayEquity(samples, day, day === account.evaluation.day ? account.evaluation.attempt : undefined)
   return <Panel title="Intraday equity" actions={<label className="text-xs text-muted">Day <select aria-label="Equity day" className="trade-input" value={day} onChange={(event) => setSelected(event.target.value)}>{days.map((date) => <option key={date}>{date}</option>)}</select></label>}>
     <TradingError error={history.error} />
-    {history.data?.error && <p className="text-xs text-warn">Equity history storage: {history.data.error}</p>}
+    {history.data?.error && <p className="text-xs text-warn">Equity history storage: {history.data.error}{history.data.error_time ? ` · ${history.data.error_time}` : ""}{history.data.error_market_time ? ` · market ${history.data.error_market_time}` : ""}{history.data.error_recovered ? " · storage recovered" : " · storage not recovered"}</p>}
     {chart.series.length ? <LineChart {...chart} height={280} marginLeft={70} formatX={(x) => clock.format(x)} formatY={money} />
       : <p className="py-8 text-center text-sm text-muted">{history.isLoading ? "Loading equity history…" : "No persisted equity samples for this day."}</p>}
     <p className="mt-2 text-[11px] text-muted">Paper account equity · one-minute market-time marks and fills. Gaps remain where marks were unavailable or the server was down. Dashed lines show the plan floor, target and, for end-of-day plans, tomorrow's floor if the day closed now.</p>

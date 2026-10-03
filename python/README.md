@@ -174,3 +174,11 @@ tools can omit `account`. Explicit account selections remain scope checked. Othe
 MCP writes require an account, and replay controls require `main`. Named-token
 administrators can call `Client.reload_tokens()` to reload `--token-file` without
 restarting; the response contains names, count and load time, never secrets.
+
+`client.equity(start, end, limit=2000, cursor=page["next"])` optionally pages
+history; omit limit for the full range. Continue with the same filters until
+`next` is null. Live, replay and history clients use the same method. Responses
+keep `error` as string/null and add failure wall/market timestamps and
+`error_recovered`. `account()` and account listings expose a nullable `damaged`
+object with the last verified sequence/time and recovery instructions; a damaged
+account remains readable and refuses writes with `ACCOUNT_DAMAGED`.

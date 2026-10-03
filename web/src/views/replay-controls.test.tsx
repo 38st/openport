@@ -290,3 +290,18 @@ it("shows verification conflicts without changing the selected account", async (
   expect(host.textContent).toContain("Already verifying another run")
   expect(switchSource).not.toHaveBeenCalled()
 })
+
+it("shows journal size and the long verification warning before Verify", async () => {
+  const next = { ...listing, history: listing.history!.map((run) => ({ ...run,
+    journal_size: { bytes: 300 * 1024 * 1024, records: 123456, warning: "Compaction breaks exact run verification" },
+    verification_cost: { estimated_seconds: 61, warning: "Long verification; hardware can take longer" } })) }
+  client.setQueryData(["replay-listing"], next)
+  vi.mocked(api.replay).mockResolvedValue(next)
+  const verify = vi.spyOn(api, "verifyReplay")
+  await render()
+  expect(host.textContent).toContain("123,456 records")
+  expect(host.textContent).toContain("about 61 seconds")
+  expect(host.textContent).toContain("Long verification")
+  expect(host.textContent).toContain("Compaction breaks exact")
+  expect(verify).not.toHaveBeenCalled()
+})

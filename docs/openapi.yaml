@@ -400,7 +400,7 @@
       ],
       "get": {
         "summary": "GET /api/account",
-        "description": "Read the current publication.",
+        "description": "Read the current publication. Damaged journals remain readable at their verified prefix; damaged reports reason/last_good_seq/last_good_time. Writes return 409 ACCOUNT_DAMAGED. Journal size and warnings are included.",
         "x-scope": "read",
         "responses": {
           "200": {
@@ -770,7 +770,7 @@
     "/api/accounts": {
       "get": {
         "summary": "GET /api/accounts",
-        "description": "Lists active accounts. archived=true includes frozen accounts; each entry reports archived.",
+        "description": "Lists active accounts. archived=true includes frozen accounts; each entry reports archived. Damaged journals remain readable at their verified prefix; damaged reports reason/last_good_seq/last_good_time. Writes return 409 ACCOUNT_DAMAGED. Journal size and warnings are included.",
         "x-scope": "read",
         "responses": {
           "200": {
@@ -849,11 +849,30 @@
           "schema": {
             "type": "string"
           }
+        },
+        {
+          "name": "limit",
+          "in": "query",
+          "required": false,
+          "schema": {
+            "type": "integer",
+            "minimum": 1,
+            "maximum": 2000
+          }
+        },
+        {
+          "name": "cursor",
+          "in": "query",
+          "required": false,
+          "description": "Opaque next from preceding page; requires limit and the same account/from/to filters. Distinguishes equal-time samples.",
+          "schema": {
+            "type": "string"
+          }
         }
       ],
       "get": {
         "summary": "GET /api/account/equity",
-        "description": "Read the current publication.",
+        "description": "Equity samples in inclusive from/to UTC range. Omit limit for all, or use limit=1..2000 then cursor=next. Live history: concurrent retention may remove older samples. Storage errors include times and recovery state.",
         "x-scope": "read",
         "responses": {
           "200": {
@@ -2663,11 +2682,30 @@
           "schema": {
             "type": "string"
           }
+        },
+        {
+          "name": "limit",
+          "in": "query",
+          "required": false,
+          "schema": {
+            "type": "integer",
+            "minimum": 1,
+            "maximum": 2000
+          }
+        },
+        {
+          "name": "cursor",
+          "in": "query",
+          "required": false,
+          "description": "Opaque next from preceding page; requires limit and the same account/from/to filters. Distinguishes equal-time samples.",
+          "schema": {
+            "type": "string"
+          }
         }
       ],
       "get": {
         "summary": "GET /api/account/equity",
-        "description": "Read the current publication.",
+        "description": "Equity samples in inclusive from/to UTC range. Omit limit for all, or use limit=1..2000 then cursor=next. Live history: concurrent retention may remove older samples. Storage errors include times and recovery state.",
         "x-scope": "read",
         "responses": {
           "200": {
@@ -4563,7 +4601,7 @@
     },
     "responses": {
       "Error": {
-        "description": "Failure with a stable reason code and optional evidence. 400 invalid request or INVALID_RULES; 403 authentication/scope; 404 missing resource; 409 conflict (a client ID reused with other terms, a stale limits revision LIMITS_REVISION, a server that keeps a single account ACCOUNTS_UNSUPPORTED); 422 simulator rejection (including ACCOUNT_TYPE for cash/IRA restrictions); 503 inbox full or unavailable. Orders may retry using identical client_order_id and terms. Account lifecycle: 403 ACCOUNT_PROTECTED; 404 UNKNOWN_ACCOUNT; 409 ACCOUNT_ARCHIVED or ACCOUNT_NOT_EMPTY.",
+        "description": "Failure with a stable reason code and optional evidence. 400 invalid request or INVALID_RULES; 403 authentication/scope; 404 missing resource; 409 conflict (a client ID reused with other terms, a stale limits revision LIMITS_REVISION, a server that keeps a single account ACCOUNTS_UNSUPPORTED); 422 simulator rejection (including ACCOUNT_TYPE for cash/IRA restrictions); 503 inbox full or unavailable. Orders may retry using identical client_order_id and terms. Account lifecycle: 403 ACCOUNT_PROTECTED; 404 UNKNOWN_ACCOUNT; 409 ACCOUNT_ARCHIVED or ACCOUNT_NOT_EMPTY. Damaged account writes: 409 ACCOUNT_DAMAGED; stop the server and diagnose with --repair-journals --dry-run, or restore a verified backup for mid-file damage.",
         "content": {
           "application/json": {
             "schema": {
@@ -5111,6 +5149,19 @@
             "type": "integer",
             "minimum": 1,
             "description": "Present only for a visible sandbox account; idle lifetime in seconds."
+          },
+          "damaged": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/AccountDamage"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "journal_size": {
+            "$ref": "#/components/schemas/JournalSize"
           }
         },
         "required": [
@@ -6788,6 +6839,12 @@
           },
           "verification": {
             "$ref": "#/components/schemas/RunVerification"
+          },
+          "verification_cost": {
+            "$ref": "#/components/schemas/VerificationCost"
+          },
+          "journal_size": {
+            "$ref": "#/components/schemas/JournalSize"
           }
         },
         "required": [
@@ -9704,6 +9761,22 @@
           },
           "verification": {
             "$ref": "#/components/schemas/RunVerification"
+          },
+          "damaged": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/AccountDamage"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "journal_size": {
+            "$ref": "#/components/schemas/JournalSize"
+          },
+          "verification_cost": {
+            "$ref": "#/components/schemas/VerificationCost"
           }
         },
         "required": [
@@ -13163,6 +13236,19 @@
           "archived": {
             "type": "boolean",
             "description": "Frozen and omitted from ordinary lists and status ticks."
+          },
+          "damaged": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/AccountDamage"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "journal_size": {
+            "$ref": "#/components/schemas/JournalSize"
           }
         },
         "required": [
@@ -14895,12 +14981,46 @@
                 "type": "null"
               }
             ]
+          },
+          "next": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "error_time": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "error_market_time": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "error_recovered": {
+            "type": "boolean"
           }
         },
         "required": [
           "samples",
           "error"
-        ]
+        ],
+        "description": "error remains string/null; error_time is the last observed failure wall time, error_market_time its sample time if known, error_recovered whether storage has since succeeded. Error history lasts for the running process. next is an opaque cursor or null; omit limit for all matching samples."
       },
       "Error": {
         "type": "object",
@@ -19572,6 +19692,9 @@
           },
           "run": {
             "$ref": "#/components/schemas/VerificationRun"
+          },
+          "cost": {
+            "$ref": "#/components/schemas/VerificationCost"
           }
         },
         "required": [
@@ -19719,6 +19842,87 @@
           "count",
           "names"
         ]
+      },
+      "AccountDamage": {
+        "type": "object",
+        "properties": {
+          "reason": {
+            "type": "string"
+          },
+          "last_good_seq": {
+            "type": "integer",
+            "minimum": 0
+          },
+          "last_good_time": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          }
+        },
+        "required": [
+          "reason",
+          "last_good_seq",
+          "last_good_time"
+        ],
+        "description": "Read-only verified prefix of a damaged journal. All writes return 409 ACCOUNT_DAMAGED. Null time/zero sequence means no verified transaction. Recovery never modifies the file."
+      },
+      "JournalSize": {
+        "type": "object",
+        "properties": {
+          "bytes": {
+            "type": "integer",
+            "minimum": 0
+          },
+          "records": {
+            "type": "integer",
+            "minimum": 0
+          },
+          "warning": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          }
+        },
+        "required": [
+          "bytes",
+          "records",
+          "warning"
+        ],
+        "description": "File bytes and verified records. Warning at 256 MiB or 100,000 records. Live accounts suggest offline compaction; replay compaction breaks exact verification."
+      },
+      "VerificationCost": {
+        "type": "object",
+        "properties": {
+          "estimated_seconds": {
+            "type": "integer",
+            "minimum": 1
+          },
+          "warning": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          }
+        },
+        "required": [
+          "estimated_seconds",
+          "warning"
+        ],
+        "description": "Coarse estimate from 10 MiB/s of journal or 2,000 transactions/s, whichever is slower, minimum one second. Hardware and input generation may take longer. Warning at 30 seconds."
       }
     }
   }

@@ -25,7 +25,7 @@ export function sameAccountPlaceholder<T>(data: T | undefined, key: readonly unk
 }
 function useOptions() {
   const { trading, accountScope } = useLive()
-  return tradingQueries(accountScope, trading?.account_version, trading?.enabled === true)
+  return tradingQueries(accountScope, trading?.account_version, trading?.enabled === true || trading?.reason?.startsWith("ACCOUNT_DAMAGED:") === true)
 }
 export function useTradingQueries() {
   const options = useOptions()

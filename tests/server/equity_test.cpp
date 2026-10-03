@@ -153,5 +153,28 @@ TEST(EquityStore, ShareChangesAreSampledAndEightColumnHistoryStillLoads) {
   EXPECT_EQ(recovered.samples().back().stock_fill, 2U);
   EXPECT_TRUE(recovered.error().empty());
 }
+TEST(EquityStore, StorageErrorKeepsFailureTimesAndRecoversRetainedSamples) {
+  Directory directory;
+  const auto file = directory.path / "blocked";
+  std::filesystem::create_directory(file);
+  EquityStore store(file);
+  const auto time = md::new_york_to_utc({2026, 9, 22}, 10, 0);
+  const auto before = md::now();
+  store.append({time, 1, m("10000"), {}, m("10000"), {}, {}, 0});
+  ASSERT_FALSE(store.error().empty());
+  const auto failed_at = store.error_time();
+  EXPECT_GE(failed_at, before);
+  EXPECT_LE(failed_at, md::now());
+  EXPECT_EQ(store.error_market_time(), time);
+  EXPECT_FALSE(store.error_recovered());
+  std::filesystem::remove(file);
+  store.append({time + md::kNanosPerMinute, 1, m("10001"), {}, m("10001"), {}, {}, 0});
+  EXPECT_TRUE(store.error_recovered());
+  EXPECT_EQ(store.error_time(), failed_at);
+  EXPECT_EQ(store.error_market_time(), time);
+  EXPECT_FALSE(store.error().empty());
+  EXPECT_EQ(EquityStore(file).samples().size(), 2u);
+}
+
 }
 }

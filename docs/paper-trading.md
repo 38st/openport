@@ -2314,8 +2314,8 @@ waits for another append or a boundary. Compaction and repair still sync fully.
 A transaction that would leave less than 64 MiB free on the disk is refused. The
 error names the filesystem device and directory basename, free bytes and the
 67,108,864-byte reserve without exposing an absolute path. Thus a
-full disk stops trading without tearing the journal. If a write is torn anyway, resume
-refuses the journal until, with openportd stopped, `openportd --repair-journals` cuts
+full disk stops trading without tearing the journal. If a write is torn anyway, writable resume
+refuses the journal (live accounts remain readable at the verified prefix) until, with openportd stopped, `openportd --repair-journals` cuts
 the torn last line off it and each account journal beside it, keeping the original as
 `FILE.torn-YYYYMMDDTHHMMSSZ`; damage before the last line is reported and left alone.
 
@@ -2430,6 +2430,7 @@ compilers/architectures, although recovery restores the recorded doubles.
 | `INVALID_SETTLEMENT`, `ALREADY_SETTLED` | Invalid/premature settlement or already settled OSI |
 | `UNKNOWN_ORDER`, `ORDER_TERMINAL` | Invalid cancellation target or already finished order |
 | `INVALID_LIMITS`, `INVALID_TIME`, `INVALID_SCENARIO`, `INVALID_REASON` | Invalid control/configuration input |
+| `ACCOUNT_DAMAGED` | Read-only verified prefix; diagnose with `--repair-journals --dry-run`; restore a verified backup for mid-file damage |
 | `JOURNAL_IO`, `JOURNAL_CORRUPT` | Persistence stop condition or invalid/tampered recovery chain/schema |
 | `JOURNAL_LOCKED` | Journal already owned by another writer; analytics remain available |
 | `EVALUATION_CLOSED` | The attempt passed or failed; reset to trade again |
@@ -3090,3 +3091,22 @@ JSON errors, write protection, restart recovery, AM/PM settlement, named account
 replays. Socket tests cover asynchronous POST/DELETE responses and shutdown of pending
 commands. A dividend feed, trade-through matching and portfolio
 margin remain outside v1.
+
+Damaged main and named journals load a frozen read-only account at the last
+verified transaction, without changing the journal or compacting its equity
+sidecar. Account/status responses include `damaged` with the reason and last good
+sequence/time. All account writes, including rename, archive and delete, return
+409 `ACCOUNT_DAMAGED`. The terminal keeps portfolio, trades, fills and equity
+readable and shows recovery instructions. A damaged first record exposes an empty
+read-only account with sequence zero; its configured opening balance is not a
+verified balance. Mid-file hash/JSON damage is never automatically removed.
+Equity samples at/after the damaged boundary are discarded from the view and the
+last verified marked equity is shown instead.
+
+At 256 MiB or 100,000 verified records, `journal_size.warning` suggests backing
+up and compacting live journals with the server stopped. Replay journals warn
+that compaction prevents exact re-verification. Equity sidecars and replay
+metadata also check the 64 MiB reserve before writing. Equity errors include the
+failure wall time, sample market time and whether storage recovered; a successful
+retry rewrites retained in-memory samples before marking recovery. The terminal
+pages equity history in batches of 2,000; unpaged API reads remain available.
