@@ -250,10 +250,12 @@ TEST_F(Sandboxes, OmittedAccountUsesOwnSandboxOnReadsAndWrites) {
     EXPECT_EQ(implicit.body, explicit_account.body) << path;
     EXPECT_NE(implicit.status, 403) << path;
   }
-  const auto result = send(request("POST", "/api/orders/cancel", token(own)));
+  const auto own_version = source->desk->trading_view(id(own))->snapshot->account_version;
+  const auto main_version = source->desk->trading_view("main")->snapshot->account_version;
+  const auto result = send(request("PUT", "/api/days/2026-09-22/note", token(own), R"({"plan":"Practice","review":"Own account"})"));
   EXPECT_EQ(result.status, 200) << result.body;
-  EXPECT_EQ(source->desk->trading_view(id(own))->snapshot->account_version, 2U);
-  EXPECT_EQ(source->desk->trading_view("main")->snapshot->account_version, 1U);
+  EXPECT_EQ(source->desk->trading_view(id(own))->snapshot->account_version, own_version + 1);
+  EXPECT_EQ(source->desk->trading_view("main")->snapshot->account_version, main_version);
   for (const auto& [query, expected] : std::vector<std::pair<std::string, int>>{
       {"?status=open", 200}, {"?status=open&%61ccount=main", 403},
       {"?account=", 400}, {"?account=main&%61ccount=main", 400}}) {
