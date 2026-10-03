@@ -45,7 +45,7 @@ pass (over 23 passes) and the Cboe comparison on live data during the session, a
 2026-09-24. [How the numbers are made](docs/methods.md).
 
 No market open, or no data? The **demo market** plays simulated trading days you can
-trade: nineteen scenarios, including SPX, SPY, QQQ, XSP, NDX, RUT and VIX options,
+trade: twenty scenarios, including SPX, SPY, QQQ, XSP, NDX, RUT and VIX options,
 from a reversal or a selloff to an afternoon waterfall, a pin into the close or a
 position held overnight and over a
 weekend, each run on a fresh or repeatable seed, with generated prices labelled as

@@ -44,6 +44,18 @@ describe("the circuit breaker banner", () => {
     expect(html).not.toContain("resumes at")
   })
 
+  it("identifies authored halts without a fictitious fall and explains missing references", () => {
+    const html = render({ ...breaker, level: 0, halts: [{ ...breaker.halts[0]!, level: 0, reference: 0, price: 0 }] })
+    expect(html).toContain("halted market-wide by the scenario")
+    expect(html).toContain("Trading resumes at 10:15 ET.")
+    expect(html).not.toContain("NaN")
+    expect(render({ ...breaker, halts: [...breaker.halts,
+      { ...breaker.halts[0]!, level: 0, reference: 0, price: 0, end: "2026-09-22T14:30:00Z" }] }))
+      .toContain("Trading resumes at 10:30 ET.")
+    expect(render({ ...breaker, active: false, previous_close: null, inactive_reason: "MISSING_PREVIOUS_CLOSE" }))
+      .toContain("Circuit breaker inactive: waiting for SPX previous close.")
+  })
+
   it("disappears when ticks end a halt and stays hidden for missing or inactive state", () => {
     const tick: Tick = { type: "tick", feed: status.feed, underlyings: status.underlyings, engine: status.engine,
       circuit_breaker: { ...breaker, active: false, halts: [{ ...breaker.halts[0]!, active: false }] } }
