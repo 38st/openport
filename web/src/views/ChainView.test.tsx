@@ -4,13 +4,14 @@ import { act } from "react"
 import { createRoot } from "react-dom/client"
 import { expect, it, vi } from "vitest"
 import { liveState, useLive } from "../api/live"
-import { chain, portfolio, quote, selection, status, summary } from "../test/trading-fixtures"
+import { account, chain, portfolio, quote, selection, status, summary } from "../test/trading-fixtures"
 import { ChainView } from "./ChainView"
 
 vi.mock("../api/live", async (original) => ({ ...await original<typeof import("../api/live")>(), useLive: vi.fn() }))
 vi.mock("../components/PriceChart", () => ({ PriceChart: () => null }))
 const held = vi.hoisted(() => ({ data: undefined as unknown }))
-vi.mock("../api/trading", () => ({ usePortfolio: () => held }))
+const planned = vi.hoisted(() => ({ data: undefined as unknown }))
+vi.mock("../api/trading", () => ({ usePortfolio: () => held, useAccount: () => planned }))
 
 it("toggles liquidity columns independently of Greeks", async () => {
   vi.stubGlobal("IS_REACT_ACT_ENVIRONMENT", true)
@@ -70,5 +71,24 @@ it("marks quotes paper orders cannot fill on, and the displayed size the account
     held.data = undefined
     client.clear()
     vi.unstubAllGlobals()
+  }
+})
+
+it("marks a non-whitelisted underlying above the chain", async () => {
+  vi.stubGlobal("IS_REACT_ACT_ENVIRONMENT", true)
+  vi.mocked(useLive).mockReturnValue(liveState(status, null, "open"))
+  planned.data = { ...account, rules: { ...account.rules, underlyings: ["SPY"] } }
+  const client = new QueryClient({ defaultOptions: { queries: { retry: false, staleTime: Infinity, gcTime: Infinity } } })
+  client.setQueryData(["summary", "SPX", 1], summary)
+  client.setQueryData(["chain", "SPX", selection.expiry.id, .05, 1], chain)
+  const host = document.createElement("div")
+  const root = createRoot(host)
+  try {
+    await act(async () => root.render(<QueryClientProvider client={client}><ChainView symbol="SPX" expiry={selection.expiry.id} onExpiry={() => {}} /></QueryClientProvider>))
+    expect(host.textContent).toContain("INSTRUMENT_NOT_ALLOWED: SPX")
+    expect(host.textContent).toContain("closing orders still work")
+  } finally {
+    await act(async () => root.unmount())
+    planned.data = undefined; client.clear(); vi.unstubAllGlobals()
   }
 })

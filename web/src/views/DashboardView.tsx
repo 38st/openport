@@ -18,7 +18,7 @@ import { timestampET } from "../lib/freshness"
 import { attributionParts } from "../lib/attribution"
 import { contractLabel, formatDuration } from "../lib/journal"
 import { offeredPlans, unlockedFundedPlan } from "../lib/payouts"
-import { clockText, dailyLossBasisText, dailyLossShare, dayEnd, decisionLabel, objectiveLabels, objectiveValue } from "../lib/plan-rules"
+import { clockText, dailyLossBasisText, dailyLossShare, dayEnd, decisionLabel, objectiveLabels, objectiveValue, timeRuleNotices } from "../lib/plan-rules"
 import { useRoute } from "../lib/route"
 import { compareMoney, formatMoney, ratio, signedMoney, subtractMoney } from "../lib/trading"
 
@@ -123,6 +123,7 @@ function Dashboard({ trading }: { trading: TradingStatus }) {
         </div>
       )}
       <DecisionPositionsNotice account={data} portfolio={portfolio.data} />
+      {timeRuleNotices(e, r).map((notice) => <p key={notice} role="status" className="rounded-lg border border-warn/50 bg-warn/5 p-4 text-sm">{notice}</p>)}
       {locked && (
         <div role="status" className="rounded-lg border border-warn/50 bg-warn/5 p-4">
           <div className="font-medium text-warn">Trading locked until the next trading day</div>
@@ -137,7 +138,7 @@ function Dashboard({ trading }: { trading: TradingStatus }) {
             and a trailing drawdown, with results tracked below.</p>
         </div>
       )}
-      {!e.marked && <p role="status" className="text-xs text-warn">Some positions have no mark yet; rules wait for fully marked equity.</p>}
+      {!e.marked && <p role="status" className="text-xs text-warn">Some positions have no mark yet; equity rules wait for fully marked equity. Calendar deadlines still apply.</p>}
       <RiskWarnings warnings={data.warnings} />
       <AutoPlaybookIndicator />
       <StagedOrders />

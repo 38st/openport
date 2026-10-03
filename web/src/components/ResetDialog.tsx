@@ -5,7 +5,7 @@ import type { FeeModel, FillModel, Plan, TradingStatus } from "../api/trading-ty
 import { FillModelPicker } from "./FillModelPicker"
 import { FeeModelPicker } from "./FeeModelPicker"
 import { lockReason, offeredPlans, payoutRuleFacts } from "../lib/payouts"
-import { dailyLossFact, dayEndFact, drawdownFact, objectiveFacts, targetFact, tradeRuleFacts } from "../lib/plan-rules"
+import { dailyLossFact, dayEndFact, drawdownFact, objectiveFacts, targetFact, timeRuleFacts, tradeRuleFacts } from "../lib/plan-rules"
 import { formatMoney } from "../lib/trading"
 import { useWriteToken } from "../lib/write-token"
 import { Dialog } from "./Dialog"
@@ -25,6 +25,7 @@ export function planFacts(plan: Pick<Plan, "initial_cash" | "rules">): string[] 
     ...(dailyLoss ? [dailyLoss] : []),
     ...objectiveFacts(r),
     ...tradeRuleFacts(r),
+    ...timeRuleFacts(r),
     r.buy_only ? "Buy-only, single leg" : r.defined_risk ? "Defined risk only" : "Any strategy",
     ...(r.buying_power ? ["Buying power enforced"] : []),
     ...marginFacts(r),
