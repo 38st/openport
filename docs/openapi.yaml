@@ -4087,6 +4087,139 @@
     },
     "/api/replay/stocks/trade/preview": {
       "$ref": "#/paths/~1api~1stocks~1trade~1preview"
+    },
+    "/api/alerts": {
+      "parameters": [
+        {
+          "$ref": "#/components/parameters/account"
+        }
+      ],
+      "get": {
+        "summary": "GET /api/alerts",
+        "description": "The account's alerts, oldest first. Read the current publication.",
+        "x-scope": "read",
+        "responses": {
+          "200": {
+            "description": "Success",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/AlertsResponse"
+                }
+              }
+            }
+          },
+          "default": {
+            "$ref": "#/components/responses/Error"
+          }
+        }
+      },
+      "post": {
+        "summary": "POST /api/alerts",
+        "description": "Paper trading only. Requires trade:ACCOUNT (or trade:*) for live accounts; replay scope for replay accounts. Creates an alert, checked after each market batch and at once; the server's notification channels receive each live-account firing (replays and sandboxes do not forward externally) as the alert event. 400 for malformed terms, 404 for an unregistered contract, 422 INVALID_ALERT past 100 alerts.",
+        "x-scope": "trade",
+        "responses": {
+          "201": {
+            "description": "Success",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/AlertResponse"
+                }
+              }
+            }
+          },
+          "default": {
+            "$ref": "#/components/responses/Error"
+          }
+        },
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/AlertRequest"
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/alerts/{id}": {
+      "parameters": [
+        {
+          "$ref": "#/components/parameters/account"
+        },
+        {
+          "name": "id",
+          "in": "path",
+          "required": true,
+          "schema": {
+            "type": "string"
+          }
+        }
+      ],
+      "delete": {
+        "summary": "DELETE /api/alerts/{id}",
+        "description": "Paper trading only. Requires trade:ACCOUNT (or trade:*) for live accounts; replay scope for replay accounts. 404 UNKNOWN_ALERT for an unknown ID.",
+        "x-scope": "trade",
+        "responses": {
+          "200": {
+            "description": "Success",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/AlertDeleted"
+                }
+              }
+            }
+          },
+          "default": {
+            "$ref": "#/components/responses/Error"
+          }
+        }
+      }
+    },
+    "/api/replay/alerts": {
+      "$ref": "#/paths/~1api~1alerts"
+    },
+    "/api/replay/alerts/{id}": {
+      "$ref": "#/paths/~1api~1alerts~1{id}"
+    },
+    "/api/replay/history/{run_id}/alerts": {
+      "parameters": [
+        {
+          "name": "run_id",
+          "in": "path",
+          "required": true,
+          "schema": {
+            "type": "string"
+          }
+        },
+        {
+          "$ref": "#/components/parameters/account"
+        }
+      ],
+      "get": {
+        "summary": "GET /api/alerts",
+        "description": "The account's alerts, oldest first. Read the current publication.",
+        "x-scope": "read",
+        "responses": {
+          "200": {
+            "description": "Success",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/AlertsResponse"
+                }
+              }
+            }
+          },
+          "default": {
+            "$ref": "#/components/responses/Error"
+          }
+        }
+      }
     }
   },
   "components": {
@@ -16303,6 +16436,10 @@
           {
             "const": "feed_stalled",
             "type": "string"
+          },
+          {
+            "const": "alert",
+            "type": "string"
           }
         ]
       },
@@ -17929,6 +18066,267 @@
           "current",
           "after"
         ]
+      },
+      "AlertRequest": {
+        "type": "object",
+        "description": "What to watch and when to fire. contract: bid, ask, mark, iv (vol points), delta, gamma, theta or vega of symbol, a registered OSI. spread: the net mark per unit of legs (buys add, sells subtract). underlying: price, iv30, iv7 or term_ratio of symbol. account: equity, day_pnl, unrealised, floor_room, buying_power, dollar_delta, vega or theta. level is inclusive and may be negative. A one-shot alert fires once; repeat fires again each time the condition returns after lapsing.",
+        "properties": {
+          "label": {
+            "type": "string",
+            "maxLength": 100
+          },
+          "scope": {
+            "anyOf": [
+              {
+                "const": "contract",
+                "type": "string"
+              },
+              {
+                "const": "spread",
+                "type": "string"
+              },
+              {
+                "const": "underlying",
+                "type": "string"
+              },
+              {
+                "const": "account",
+                "type": "string"
+              }
+            ]
+          },
+          "metric": {
+            "type": "string"
+          },
+          "symbol": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "legs": {
+            "anyOf": [
+              {
+                "type": "array",
+                "items": {
+                  "$ref": "#/components/schemas/OrderLeg"
+                },
+                "minItems": 2,
+                "maxItems": 4
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "direction": {
+            "anyOf": [
+              {
+                "const": "at_or_below",
+                "type": "string"
+              },
+              {
+                "const": "at_or_above",
+                "type": "string"
+              }
+            ]
+          },
+          "level": {
+            "$ref": "#/components/schemas/Money"
+          },
+          "repeat": {
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "scope",
+          "metric",
+          "direction",
+          "level"
+        ],
+        "additionalProperties": false
+      },
+      "Alert": {
+        "type": "object",
+        "properties": {
+          "id": {
+            "type": "string"
+          },
+          "label": {
+            "type": "string"
+          },
+          "scope": {
+            "anyOf": [
+              {
+                "const": "contract",
+                "type": "string"
+              },
+              {
+                "const": "spread",
+                "type": "string"
+              },
+              {
+                "const": "underlying",
+                "type": "string"
+              },
+              {
+                "const": "account",
+                "type": "string"
+              }
+            ]
+          },
+          "metric": {
+            "type": "string"
+          },
+          "symbol": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "legs": {
+            "anyOf": [
+              {
+                "type": "array",
+                "items": {
+                  "$ref": "#/components/schemas/OrderLeg"
+                }
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "direction": {
+            "anyOf": [
+              {
+                "const": "at_or_below",
+                "type": "string"
+              },
+              {
+                "const": "at_or_above",
+                "type": "string"
+              }
+            ]
+          },
+          "level": {
+            "$ref": "#/components/schemas/Money"
+          },
+          "repeat": {
+            "type": "boolean"
+          },
+          "created_at": {
+            "type": "string"
+          },
+          "actor": {
+            "type": "string"
+          },
+          "armed": {
+            "type": "boolean",
+            "description": "Waiting for its condition; false once a one-shot alert fired, or while a repeating one's condition still holds"
+          },
+          "fired": {
+            "type": "number",
+            "minimum": 0
+          },
+          "fired_at": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "value": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/Money"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          }
+        },
+        "required": [
+          "id",
+          "label",
+          "scope",
+          "metric",
+          "symbol",
+          "legs",
+          "direction",
+          "level",
+          "repeat",
+          "created_at",
+          "actor",
+          "armed",
+          "fired",
+          "fired_at",
+          "value"
+        ],
+        "additionalProperties": false
+      },
+      "AlertsResponse": {
+        "type": "object",
+        "properties": {
+          "account_version": {
+            "type": "string"
+          },
+          "alerts": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/Alert"
+            }
+          }
+        },
+        "required": [
+          "account_version",
+          "alerts"
+        ],
+        "additionalProperties": false
+      },
+      "AlertResponse": {
+        "type": "object",
+        "properties": {
+          "account_version": {
+            "type": "string"
+          },
+          "alert": {
+            "$ref": "#/components/schemas/Alert"
+          }
+        },
+        "required": [
+          "account_version",
+          "alert"
+        ],
+        "additionalProperties": false
+      },
+      "AlertDeleted": {
+        "type": "object",
+        "properties": {
+          "account_version": {
+            "type": "string"
+          },
+          "deleted": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "account_version",
+          "deleted"
+        ],
+        "additionalProperties": false
       }
     }
   }

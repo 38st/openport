@@ -131,7 +131,8 @@ class Stub:
             return 200, "account,account_version,provider,prices,new_york_date,id,order_id,actor,symbol\n"
         name = {"account": "Account", "portfolio": "Portfolio", "orders": "OrdersResponse", "fills": "FillsResponse",
                 "risk": "Risk", "profile": "RiskProfile", "trades": "TradesResponse", "plans": "PlansResponse", "accounts": "AccountsResponse",
-                "equity": "EquityHistory", "close": "ClosePositionsResponse", "cancel": "CancelAllResponse"}.get(path.rsplit("/", 1)[-1])
+                "equity": "EquityHistory", "close": "ClosePositionsResponse", "cancel": "CancelAllResponse",
+                "alerts": "AlertsResponse"}.get(path.rsplit("/", 1)[-1])
         if name:
             value = shaped(name)
             if name == "AccountsResponse":

@@ -176,7 +176,7 @@ struct TradingCommand {
   /// Recorded runs keep a kind's number: new kinds append.
   enum class Kind { Submit, Cancel, Limits, Trip, Reset, Settle, ResetAccount, Payout, Modify, CancelAll, ClosePositions, CreateAccount, Annotate,
                     Exercise, CloseStock, DayNote, Preview, Guardrails, Playbook, CreateSandbox, PreviewChange, WhatIf, PreviewClose,
-                    Abandon, ExerciseInstruction, Group, Ungroup, TradeStock, PreviewStock };
+                    Abandon, ExerciseInstruction, Group, Ungroup, TradeStock, PreviewStock, CreateAlert, DeleteAlert };
   Kind kind = Kind::Submit;
   std::string actor = "unknown";
   trading::OrderRequest order;
@@ -217,6 +217,8 @@ struct TradingCommand {
   /// ExerciseInstruction: instruct that `symbol` is not exercised at expiry, or withdraw it.
   bool do_not_exercise = false;
   trading::FlattenPricing close_pricing;
+  trading::AlertSpec alert = {};    ///< CreateAlert: what to watch.
+  std::uint64_t alert_id = 0;       ///< DeleteAlert: the alert.
 };
 
 /// Previews and dry runs: answered from a private copy of the account, never recorded.
@@ -229,6 +231,7 @@ struct TradingReply {
   trading::Decision decision;
   std::string error_code;  ///< Transport/revision errors outside reducer Reasons.
   std::optional<trading::OrderId> order_id;
+  std::optional<std::uint64_t> alert_id;  ///< CreateAlert: the new alert.
   std::shared_ptr<const TradingView> view;
   std::vector<trading::OrderId> cancelled_orders;
   std::vector<trading::OrderId> created_orders;  ///< Orders the command added, in sequence.

@@ -445,7 +445,7 @@ TEST(WebPolicy, NamedTokensEnforceEveryRouteFamilyAndAccount) {
     EXPECT_FALSE(check("GET", path, "owner-secret"));
   }
   const std::vector<std::pair<std::string, std::string>> trades = {
-      {"POST", "/orders"}, {"POST", "/orders/preview"}, {"PUT", "/orders/1"}, {"DELETE", "/orders/1"},
+      {"POST", "/alerts"}, {"DELETE", "/alerts/1"}, {"POST", "/orders"}, {"POST", "/orders/preview"}, {"PUT", "/orders/1"}, {"DELETE", "/orders/1"},
       {"POST", "/orders/cancel"}, {"POST", "/positions/close"}, {"POST", "/positions/exercise"},
       {"POST", "/stocks/close"}, {"POST", "/stocks/trade"}, {"POST", "/stocks/trade/preview"}, {"POST", "/positions/abandon"}, {"POST", "/positions/instruction"},
       {"PUT", "/trades/1/note"}, {"PUT", "/days/2026-09-22/note"},

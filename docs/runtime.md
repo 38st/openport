@@ -765,7 +765,7 @@ they never advance the trading reducer's market time.
 
 Sandbox tokens use `read` and `trade:ACCOUNT` scopes, with reads restricted to the
 account and the simulated market. They permit orders, previews, cancels, flatten,
-exercise, stock closure, notes and tags. They cannot change limits, guardrails,
+exercise, stock closure, alerts, notes and tags. They cannot change limits, guardrails,
 kill switches, plans, playbook definitions or notification settings, create normal
 accounts, reset accounts, run replays or backtests, or access another account.
 Public API reads, account listings and WebSocket ticks omit sandboxes. Only their
@@ -1059,7 +1059,7 @@ Example configuration (replace the placeholders locally):
     {"id": "discord", "type": "discord", "url": "https://discord.com/api/webhooks/ID/TOKEN"},
     {"id": "telegram", "type": "telegram", "token": "BOT_TOKEN", "chat_id": "CHAT_ID"},
     {"id": "phone", "type": "ntfy", "url": "https://ntfy.sh/YOUR_PRIVATE_TOPIC",
-     "events": ["floor", "assignment", "exercise", "playbook_ready", "feed_stalled"],
+     "events": ["floor", "assignment", "exercise", "playbook_ready", "feed_stalled", "alert"],
      "floor_distance": "500.00", "enabled": true}
   ]
 }
@@ -1085,8 +1085,9 @@ channels with the default filters and distance:
 | `OPENPORT_NOTIFY_TELEGRAM_TOKEN`, `OPENPORT_NOTIFY_TELEGRAM_CHAT_ID` | `telegram` |
 | `OPENPORT_NOTIFY_NTFY_URL` | `ntfy` |
 
-All eight events are enabled by default: `fill`, `order_rejected`, `floor`,
-`rule_trip`, `assignment`, `exercise`, `playbook_ready` and `feed_stalled`. An empty
+All nine events are enabled by default: `fill`, `order_rejected`, `floor`,
+`rule_trip`, `assignment`, `exercise`, `playbook_ready`, `feed_stalled` and `alert`
+(each firing of an [account alert](paper-trading.md#account-alerts)). An empty
 `events` array filters all automatic messages. Tests bypass event filters but require
 an enabled channel. `floor_distance` defaults to $500 and compares fixed-point
 `breach.room`, inclusive; missing floor room or incomplete valuation does not alert.
@@ -1098,7 +1099,12 @@ intervals, or an explicit stale/stopped state. Recovery rearms the feed warning.
 Only accounts on the live engine send. Historical fills and deliveries loaded at
 startup are ignored. Replay, demo, drill and backtest engines never attach delivery,
 including when the main provider is a replay. Browser price alerts and dividends
-remain in the terminal; this external event set does not forward them.
+remain in the terminal; this external event set does not forward them. To have a price
+reach you off-screen, set it as an account alert on the underlying instead. Alerts can be
+tried offline: in a replay or demo day they fire in the terminal and are recorded in
+the journal for run verification. The delivery tests exercise every channel with a
+fake HTTP transport, without network access. On a live engine, a channel's test button
+checks its configured delivery path.
 
 The default queue holds 256 deliveries, including a request in flight; configure
 1–10,000 with `queue_capacity`. A full queue drops new deliveries and counts them

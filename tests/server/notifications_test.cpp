@@ -305,6 +305,61 @@ TEST(Notifications, ObservesNewAccountEventsOnceAndSkipsRecoveredHistory) {
   for (const auto& call : h.http->calls) kinds.insert(json::parse(call.body).at("event").get<std::string>());
   EXPECT_EQ(kinds, (std::multiset<std::string>{"fill", "order_rejected", "rule_trip", "rule_trip", "assignment", "exercise", "playbook_ready"}));
 }
+TEST(Notifications, ForwardsEachAlertFiringOnce) {
+  // F44: alerts the server keeps fire off-screen through the channels.
+  Harness h;
+  auto snapshot = std::make_shared<trading::TradingSnapshot>();
+  trading::Alert alert;
+  alert.id = 7;
+  alert.spec.label = "Vol spike";
+  alert.spec.condition = {trading::AlertScope::Underlying, "iv30", "SPX", {}, trading::TriggerDirection::AtOrAbove, Money::parse("25")};
+  alert.fired = 1;  // fired before observation began: history
+  snapshot->alerts.push_back(alert);
+  h.notifications->observe("main", view(snapshot));
+  snapshot = std::make_shared<trading::TradingSnapshot>(*snapshot);
+  snapshot->alerts[0].fired = 2;
+  snapshot->alerts[0].value = Money::parse("26.5");
+  auto added = alert;
+  added.id = 8;
+  added.fired = 0;
+  snapshot->alerts.push_back(added);
+  h.notifications->observe("main", view(snapshot));
+  h.notifications->observe("main", view(snapshot));
+  h.drain();
+  ASSERT_EQ(h.http->calls.size(), 1U);
+  const auto body = json::parse(h.http->calls[0].body);
+  EXPECT_EQ(body["event"], "alert");
+  EXPECT_EQ(body["details"]["alert_id"], "7");
+  EXPECT_EQ(body["details"]["value"], "26.50");
+  EXPECT_NE(body["message"].get<std::string>().find("Vol spike: SPX iv30 at or above 25.00 (now 26.50)"), std::string::npos);
+  snapshot = std::make_shared<trading::TradingSnapshot>(*snapshot);
+  snapshot->alerts[1].fired = 1;  // a newly created alert can fire immediately
+  h.notifications->observe("main", view(snapshot));
+  h.drain();
+  ASSERT_EQ(h.http->calls.size(), 2U);
+  EXPECT_EQ(json::parse(h.http->calls[1].body)["details"]["alert_id"], "8");
+  EXPECT_EQ(h.notifications->test("phone"), 202);
+  h.drain();
+  ASSERT_EQ(h.http->calls.size(), 3U);
+  EXPECT_EQ(json::parse(h.http->calls[2].body)["event"], "test");
+}
+TEST(Notifications, AlertFilterUsesEveryExistingChannelWithoutNetwork) {
+  for (const std::string type : {"webhook", "discord", "telegram", "ntfy"}) {
+    auto config = channel(type);
+    config["events"] = {"alert"};
+    Harness h(json::array({config}));
+    h.emit("fill");
+    EXPECT_FALSE(h.notifications->deliver_one());
+    h.emit("alert");
+    EXPECT_TRUE(h.notifications->deliver_one());
+    ASSERT_EQ(h.http->calls.size(), 1U);
+    EXPECT_NE(h.http->calls[0].body.find("alert"), std::string::npos);
+    EXPECT_EQ(h.notifications->test("phone"), 202);
+    h.drain();
+    ASSERT_EQ(h.http->calls.size(), 2U);
+    EXPECT_NE(h.http->calls[1].body.find("test"), std::string::npos);
+  }
+}
 TEST(Notifications, ExpiryDeliveriesDistinguishShortAssignmentFromLongExercise) {
   Harness h;
   auto snapshot = std::make_shared<trading::TradingSnapshot>();

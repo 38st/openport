@@ -108,6 +108,94 @@ class PaperEngine : public testing::Test {
   std::unique_ptr<server::Engine> engine;
 };
 
+TEST_F(PaperEngine, AlertsWatchUntradedContractsAndUnderlyingStudiesAndKeepAccountScope) {
+  // Named accounts require durable journals; the ordinary fixture is memory-only.
+  engine.reset();
+  const auto path = paper_path();
+  auto options = paper_options();
+  options.paper_journal = path.string();
+  options.paper_accounts = path.parent_path() / "accounts";
+  engine = std::make_unique<server::Engine>(provider, md::Subscription{{"SPX"}}, options);
+  engine->start();
+  ASSERT_TRUE(wait_for([&] { return engine->trading_view() != nullptr; }));
+  seed();
+  const json contract = {{"scope", "contract"}, {"metric", "bid"}, {"symbol", market.symbol()},
+                         {"direction", "at_or_above"}, {"level", "4.50"}, {"label", "Bid up"}, {"repeat", true}};
+  auto response = write(*engine, "POST", "/api/alerts", contract);
+  ASSERT_EQ(response.status, 201) << response.body;
+  auto alert = json::parse(response.body).at("alert");
+  EXPECT_EQ(alert["id"], "1");
+  EXPECT_TRUE(alert["armed"]);
+  EXPECT_EQ(alert["fired"], 0);
+  EXPECT_TRUE(alert["fired_at"].is_null());
+  EXPECT_TRUE(read(*engine, "/api/orders")["orders"].empty());
+  market.next();
+  quote("4.50", "4.70");
+  engine->synchronize().get();
+  alert = read(*engine, "/api/alerts")["alerts"][0];
+  EXPECT_EQ(alert["fired"], 1);
+  EXPECT_EQ(alert["value"], "4.50");
+  EXPECT_FALSE(alert["armed"]);
+  EXPECT_EQ(alert["fired_at"], md::format_timestamp(market.time));
+
+  auto put = *md::parse_osi("SPXW261022P05000000");
+  provider.sink->publish(md::ContractDefinition{1, put});
+  provider.sink->publish(md::OptionQuote{1, market.time, 3, 3.2, 10, 10});
+  engine->synchronize().get();
+  response = write(*engine, "POST", "/api/alerts", {{"scope", "spread"}, {"metric", "mark"},
+      {"legs", {{{"symbol", market.symbol()}, {"side", "buy"}, {"ratio", 1}},
+                {{"symbol", put.osi_symbol()}, {"side", "sell"}, {"ratio", 2}}}},
+      {"direction", "at_or_below"}, {"level", "0"}});
+  ASSERT_EQ(response.status, 201) << response.body;
+  EXPECT_EQ(json::parse(response.body)["alert"]["value"], "-1.60");
+  response = write(*engine, "POST", "/api/alerts", {{"scope", "underlying"}, {"metric", "iv30"}, {"symbol", "SPX"},
+                                                   {"direction", "at_or_above"}, {"level", "0"}});
+  ASSERT_EQ(response.status, 201) << response.body;
+  // This small chain cannot bracket a 30-day tenor; unavailable is not zero.
+  EXPECT_EQ(json::parse(response.body)["alert"]["fired"], 0);
+  response = write(*engine, "POST", "/api/alerts", {{"scope", "underlying"}, {"metric", "price"}, {"symbol", "SPX"},
+                                                   {"direction", "at_or_above"}, {"level", "5000"}});
+  ASSERT_EQ(response.status, 201) << response.body;
+  EXPECT_EQ(json::parse(response.body)["alert"]["fired"], 1);
+  response = write(*engine, "POST", "/api/alerts", {{"scope", "account"}, {"metric", "equity"},
+                                                   {"direction", "at_or_above"}, {"level", "0"}});
+  ASSERT_EQ(response.status, 201) << response.body;
+  EXPECT_EQ(json::parse(response.body)["alert"]["value"], "100000.00");
+  response = write(*engine, "POST", "/api/accounts", {{"name", "Other"}, {"plan", "practice"}});
+  ASSERT_EQ(response.status, 201) << response.body;
+  const auto other = json::parse(response.body)["account"]["id"].get<std::string>();
+  EXPECT_TRUE(read(*engine, "/api/alerts?account=" + other)["alerts"].empty());
+  expect_error(write(*engine, "DELETE", "/api/alerts/1?account=" + other), 404, "UNKNOWN_ALERT");
+  response = write(*engine, "DELETE", "/api/alerts/1");
+  EXPECT_EQ(response.status, 200) << response.body;
+  EXPECT_EQ(json::parse(response.body)["deleted"], "1");
+  expect_error(write(*engine, "DELETE", "/api/alerts/1"), 404, "UNKNOWN_ALERT");
+  engine.reset();
+  std::filesystem::remove_all(path.parent_path());
+}
+
+TEST_F(PaperEngine, AlertsRejectMalformedBodiesAndRefuseUnknownContractsOrAFullBook) {
+  seed();
+  const json request = {{"scope", "account"}, {"metric", "day_pnl"}, {"direction", "at_or_below"}, {"level", "-500"}};
+  for (const auto& [field, value] : std::vector<std::pair<std::string, json>>{
+      {"scope", "portfolio"}, {"metric", "bid"}, {"symbol", "SPX"}, {"direction", "below"},
+      {"level", 500}, {"repeat", "true"}, {"label", std::string(101, 'x')}, {"extra", true}}) {
+    auto bad = request;
+    bad[field] = value;
+    expect_error(write(*engine, "POST", "/api/alerts", bad), 400, "INVALID_REQUEST");
+  }
+  auto missing = request;
+  missing.erase("level");
+  expect_error(write(*engine, "POST", "/api/alerts", missing), 400, "INVALID_REQUEST");
+  expect_error(write(*engine, "DELETE", "/api/alerts/0"), 404, "UNKNOWN_ALERT");
+  expect_error(write(*engine, "DELETE", "/api/alerts/not-an-id"), 400, "INVALID_REQUEST");
+  expect_error(write(*engine, "DELETE", "/api/alerts/1", json::object()), 400, "INVALID_REQUEST");
+  expect_error(write(*engine, "POST", "/api/alerts", {{"scope", "contract"}, {"metric", "bid"},
+      {"symbol", "SPXW  261022C09000000"}, {"direction", "at_or_above"}, {"level", "1"}}), 404, "UNKNOWN_CONTRACT");
+  for (int i = 0; i < 100; ++i) { ASSERT_EQ(write(*engine, "POST", "/api/alerts", request).status, 201); }
+  expect_error(write(*engine, "POST", "/api/alerts", request), 422, "INVALID_ALERT");
+}
+
 TEST_F(PaperEngine, PreviewIsPureEvenBeforeContractRegistration) {
   seed();
   // Analytics publish before the account's view of the same quotes; wait for both.
@@ -3252,6 +3340,10 @@ TEST_F(PaperEngine, ContractFixture) {
     test::capture_contract("paper", "GET", path, server::handle_api({"GET", path}, *engine));
   capture("PUT", "/api/trades/1/note", {{"note", "synthetic trade"}, {"tags", {"test"}}});
   capture("PUT", "/api/days/2026-09-22/note", {{"plan", "test"}, {"review", "test"}});
+  const auto created = capture("POST", "/api/alerts", {{"label", "test"}, {"scope", "contract"}, {"metric", "bid"},
+                                                       {"symbol", market.symbol()}, {"direction", "at_or_above"}, {"level", "9.00"}});
+  capture("GET", "/api/alerts");
+  capture("DELETE", "/api/alerts/" + created.at("alert").at("id").get<std::string>());
   capture("POST", "/api/positions/close/preview", json::object());
   capture("POST", "/api/positions/close", json::object());
   capture("POST", "/api/orders/cancel", json::object());

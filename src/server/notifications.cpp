@@ -12,7 +12,7 @@ using nlohmann::json;
 using trading::Money;
 using namespace std::chrono_literals;
 const std::set<std::string> kEvents = {"fill", "order_rejected", "floor", "rule_trip",
-    "assignment", "exercise", "playbook_ready", "feed_stalled"};
+    "assignment", "exercise", "playbook_ready", "feed_stalled", "alert"};
 [[noreturn]] void invalid() { throw std::runtime_error("Invalid notification configuration"); }
 void keys(const json& value, const std::set<std::string>& allowed) {
   if (!value.is_object()) invalid();
@@ -374,6 +374,20 @@ void Notifications::observe(std::string_view account, const TradingView& view) {
       if (closure.kind == trading::ClosureKind::Exercise || closure.kind == trading::ClosureKind::Assignment)
         emit(closure.kind == trading::ClosureKind::Assignment ? "assignment" : "exercise", closure.time,
             closure.symbol + ": closed " + std::to_string(closure.quantity) + " contracts; intrinsic value $" + closure.price.str() + " per unit.");
+    }
+    // Each time an alert fires, wherever the terminal is.
+    for (const auto& alert : current.alerts) {
+      std::uint64_t before = 0;
+      for (const auto& old : previous->alerts) if (old.id == alert.id) before = old.fired;
+      if (alert.fired <= before) continue;
+      const auto& c = alert.spec.condition;
+      const auto watched = c.scope == trading::AlertScope::Account ? std::string("account") : c.scope == trading::AlertScope::Spread
+          ? "spread" : c.symbol;
+      emit("alert", alert.fired_at, (alert.spec.label.empty() ? "Alert " + std::to_string(alert.id) : alert.spec.label) + ": " +
+          watched + " " + c.metric + (c.direction == trading::TriggerDirection::AtOrBelow ? " at or below " : " at or above ") +
+          c.level.str() + (alert.value ? " (now " + alert.value->str() + ")" : std::string()),
+          {{"alert_id", std::to_string(alert.id)}, {"metric", c.metric}, {"level", c.level.str()},
+           {"value", alert.value ? json(alert.value->str()) : json(nullptr)}});
     }
     // Expiry deliveries use Settlement closures; stock fills identify the option's side.
     for (std::size_t i = previous->stock_fills.size(); i < current.stock_fills.size(); ++i) {

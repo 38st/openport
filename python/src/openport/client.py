@@ -252,6 +252,17 @@ class Client:
         """Take each open round trip out of its whole trade."""
         return self._request("POST", "/trades/ungroup", {"trades": [str(t) for t in trade_ids]}, scoped=True)
 
+    def alerts(self) -> JSON:
+        return self._request("GET", "/alerts", scoped=True)
+
+    def create_alert(self, scope: str, metric: str, direction: str, level: str, **terms) -> JSON:
+        """terms: label, symbol, legs, repeat. See POST /api/alerts."""
+        return self._request("POST", "/alerts", {"scope": scope, "metric": metric, "direction": direction,
+                                                 "level": level, **terms}, scoped=True)
+
+    def delete_alert(self, alert_id: str) -> JSON:
+        return self._request("DELETE", "/alerts/" + quote(str(alert_id), safe=""), scoped=True)
+
     def day_note(self, day: str, plan: str = "", review: str = "") -> JSON:
         return self._request("PUT", "/days/" + quote(day, safe="") + "/note",
                              {"plan": plan, "review": review}, scoped=True)
