@@ -426,6 +426,60 @@ void consume_depth(Quantity& left, Quantity quantity) {
   if (__builtin_sub_overflow(left, quantity, &left))
     throw TradingError(Reason::ARITHMETIC_OVERFLOW, "Liquidity budget exceeds quantity range");
 }
+/// Strictly inside, at the configured fraction of the way to the far side.
+bool inside_reach(const State& s, Money near, Money far, Money limit) {
+  if (s.config.rules.inside_fill_percent == 0 || limit <= near || limit >= far) return false;
+  __extension__ using Wide = __int128;
+  return (static_cast<Wide>(limit.micros()) - near.micros()) * 100 >=
+      (static_cast<Wide>(far.micros()) - near.micros()) * s.config.rules.inside_fill_percent;
+}
+bool inside_single(const State& s, const Order& o) {
+  const auto& r = o.request;
+  if (s.config.rules.inside_fill_percent == 0 || !r.limit_price || r.trigger || multi_leg(r)) return false;
+  const auto book = s.books.find(r.symbol);
+  if (book == s.books.end() || !valid_quote(book->second.quote)) return false;
+  const auto& q = book->second.quote;
+  return r.side == Side::Buy ? inside_reach(s, *q.bid, *q.ask, *r.limit_price)
+                             : inside_reach(s, -*q.ask, -*q.bid, -*r.limit_price);
+}
+/// Allocate a net's improvement in proportion to each leg's spread. Round toward
+/// improvement in micro-dollars, then return excess through ratio-one legs. A
+/// ratio-only combo can improve on its limit by a few micro-dollars per unit.
+std::optional<std::vector<Money>> inside_combo(const State& s, const Order& o) {
+  const auto& r = o.request;
+  if (!r.limit_price || r.trigger || !multi_leg(r) || s.config.rules.inside_fill_percent == 0) return std::nullopt;
+  Money natural, width;
+  for (const auto& leg : r.legs) {
+    const auto book = s.books.find(leg.symbol);
+    if (book == s.books.end() || !valid_quote(book->second.quote)) return std::nullopt;
+    const auto& q = book->second.quote;
+    natural = natural + (leg.side == Side::Buy ? *q.ask : -*q.bid) * leg.ratio;
+    width = width + (*q.ask - *q.bid) * leg.ratio;
+  }
+  if (!inside_reach(s, natural - width, natural, *r.limit_price)) return std::nullopt;
+  const auto improvement = natural - *r.limit_price;
+  __extension__ using Wide = __int128;
+  std::vector<Money> given;
+  Money total;
+  for (const auto& leg : r.legs) {
+    const auto& q = s.books.at(leg.symbol).quote;
+    const auto share = (static_cast<Wide>(improvement.micros()) * (*q.ask - *q.bid).micros() + width.micros() - 1) / width.micros();
+    given.push_back(Money::from_micros(static_cast<std::int64_t>(share)));
+    total = total + given.back() * leg.ratio;
+  }
+  for (std::size_t i = 0; i < given.size() && total > improvement; ++i) {
+    if (r.legs[i].ratio != 1) continue;
+    const auto back = std::min(given[i], total - improvement);
+    given[i] = given[i] - back;
+    total = total - back;
+  }
+  for (std::size_t i = 0; i < given.size(); ++i) {
+    const auto& leg = r.legs[i];
+    const auto& q = s.books.at(leg.symbol).quote;
+    given[i] = leg.side == Side::Buy ? *q.ask - given[i] : *q.bid + given[i];
+  }
+  return given;
+}
 /// The book a fill on `side` takes, before it takes it: the quote as held and
 /// what is left of that side's budget.
 FillQuote fill_quote(const detail::Book& book, Side side) {
@@ -449,6 +503,7 @@ Money execution_price(const State& s, const std::string& symbol, Side side, std:
 }
 Money order_price(const State& s, const Order& o, const std::string& symbol, Side side,
                   std::optional<Money> limit = {}, Quantity offset = 0) {
+  if (inside_single(s, o)) return *o.request.limit_price;
   if (touch_stop(s, o)) {
     const auto& q = s.books.at(symbol).quote;
     return side == Side::Buy ? *q.ask : *q.bid;
@@ -503,6 +558,13 @@ struct ExecutionSlice {
 /// keep those prices separate so both the ledger and the net stay exact.
 std::vector<ExecutionSlice> combo_slices(const State& s, const Order& o, Quantity units) {
   std::vector<ExecutionSlice> slices;
+  if (const auto prices = inside_combo(s, o)) {
+    for (std::size_t i = 0; i < prices->size(); ++i) {
+      const auto& leg = o.request.legs[i];
+      slices.push_back({leg.symbol, leg.side, units * leg.ratio, (*prices)[i], false});
+    }
+    return slices;
+  }
   for (const auto& leg : o.request.legs) {
     if (given_away(s, o, leg)) {
       slices.push_back({leg.symbol, leg.side, units * leg.ratio, Money{}, true});
@@ -520,6 +582,14 @@ std::vector<ExecutionSlice> combo_slices(const State& s, const Order& o, Quantit
 }
 /// A multi-leg order's next executable net debit per unit.
 std::optional<Money> executable_net(const State& s, const Order& o) {
+  if (const auto prices = inside_combo(s, o)) {
+    Money net;
+    for (std::size_t i = 0; i < prices->size(); ++i) {
+      const auto& leg = o.request.legs[i];
+      net = net + (leg.side == Side::Buy ? (*prices)[i] : -(*prices)[i]) * leg.ratio;
+    }
+    return net;
+  }
   for (const auto& leg : o.request.legs) {
     const auto book = s.books.find(leg.symbol);
     if ((book == s.books.end() || !valid_quote(book->second.quote)) && !ask_only(s, o, leg)) return std::nullopt;
@@ -693,7 +763,8 @@ Use combo_use(const State& s, const Order& o, const MarginBook& book) {
     trade(after, leg.symbol, contracts, mark != s.marks.end() ? mark->second.price : Money{});
   }
   Money premium;
-  if (o.request.limit_price) premium = (*o.request.limit_price * 100) * units;
+  if (o.request.walk) premium = (o.request.walk->limit * 100) * units;
+  else if (o.request.limit_price) premium = (*o.request.limit_price * 100) * units;
   else for (const auto& leg : o.request.legs) {
     const auto cost = market_premium(s, leg.symbol, leg.side, units * leg.ratio);
     premium = leg.side == Side::Buy ? premium + cost : premium - cost;
@@ -766,14 +837,15 @@ PowerDetail buying_power(const State& s, OrderId focus = 0) {
         // ever close; they leave closing capacity to ordinary orders such as a manual close.
         use = {fees, false};
       } else {
-        Money premium = o.request.limit_price ? (*o.request.limit_price * 100) * remaining
+        Money premium = o.request.walk ? (o.request.walk->limit * 100) * remaining
+                        : o.request.limit_price ? (*o.request.limit_price * 100) * remaining
                                               : market_premium(s, symbol, o.request.side, remaining);
         if (buy && o.status == OrderStatus::Armed) {
           // An armed buy stop pays at least its level once the ask reaches it.
           const auto& t = *o.request.trigger;
           if (!o.request.limit_price && t.source == TriggerSource::Option && t.direction == TriggerDirection::AtOrAbove)
             premium = std::max(premium, (t.level * 100) * remaining);
-        } else if (buy && o.request.limit_price && s.config.rules.fill_latency_ms == 0) {
+        } else if (buy && o.request.limit_price && !o.request.walk && s.config.rules.fill_latency_ms == 0) {
           // A marketable buy limit pays the expected fill, not its limit; one below
           // the ask rests and pays its limit.
           const auto quoted = s.books.find(symbol);
@@ -831,7 +903,8 @@ ProjectedFill project_fill(State& after, const State& before, const OrderRequest
     }
   }
   if (request.limit_price) {
-    const auto limit_premium = (*request.limit_price * 100) * units * (legs.size() == 1 && request.side == Side::Sell ? -1 : 1);
+    const auto limit = request.walk ? request.walk->limit : *request.limit_price;
+    const auto limit_premium = (limit * 100) * units * (legs.size() == 1 && request.side == Side::Sell ? -1 : 1);
     auto account = after.ledger.account();
     account.cash = account.cash + result.premium - limit_premium;
     after.ledger = Ledger::restore(account, after.ledger.positions(), after.ledger.stocks());
@@ -1211,6 +1284,29 @@ void guardrail_fill(State& s, OrderId id, bool opening, Money realised_before, E
       (g.cooldown_loss > Money{} && s.ledger.account().realised - realised_before < -g.cooldown_loss))
     begin_cooldown(s, events);
 }
+/// Catch up every elapsed interval, retaining each scheduled step in history.
+/// Execution uses the current observation, never an invented intermediate quote.
+void walk_limits(State& s, Events& events) {
+  for (const auto id : open_ids(s)) {
+    for (;;) {
+      const auto next = next_walk(s.orders[id - 1]);
+      if (!next || next->time > s.time) break;
+      auto& o = s.orders.mut(id - 1);
+      if (!o.submitted) o.submitted = o.request;
+      OrderChangeRecord change;
+      change.time = next->time;
+      change.actor = "walk";
+      change.previous_quantity = o.request.quantity;
+      change.previous_limit_price = o.request.limit_price;
+      change.limit_price = next->price;
+      o.request.limit_price = next->price;
+      o.walked_at = next->time;
+      o.changes.push_back(change);
+      event(events, "order_walked", Json{{"order_id", id}, {"change", change}});
+      for (const auto& symbol : order_symbols(o.request)) s.walked.insert(symbol);
+    }
+  }
+}
 void advance(State& s, Timestamp time, Events& events) {
   if (time < 0 || time < s.time) throw TradingError(Reason::INVALID_TIME, "Market time must be nonnegative and monotone");
   s.time = time;
@@ -1231,6 +1327,7 @@ void advance(State& s, Timestamp time, Events& events) {
           ? failure(Reason::GTD_END, "The order reached its good_till timestamp")
           : failure(Reason::DAY_END, "The order's session ended"), events);
   }
+  walk_limits(s, events);
 }
 /// Short contracts no long covers, after the account's positions take `extra`
 /// (a projected order's signed contracts).
@@ -1331,6 +1428,26 @@ Decision exposure_check(const State& s, const Order& o, const Measures& snapshot
   const auto without = portfolio_risk(s.ledger, working, s.contracts, s.valuations, s.config.limits, s.time, snapshot.stock_prices);
   return check_exposure(snapshot.risk, without);
 }
+Decision walk_check(const Order& o, Money tick, Money cap_tick) {
+  const auto& r = o.request;
+  if (!r.walk) return {};
+  const auto& w = *r.walk;
+  const bool up = multi_leg(r) || r.side == Side::Buy;
+  if (r.type != OrderType::Limit || !r.limit_price || (r.tif != TimeInForce::Day && r.tif != TimeInForce::Gtc) ||
+      r.trigger || r.exits_only || o.role != OrderRole::Normal || o.system || o.reduce_only ||
+      w.step <= Money{} || w.seconds < 1 || w.seconds > 3600 || (!multi_leg(r) && w.limit <= Money{}) ||
+      (up ? w.limit < *r.limit_price : w.limit > *r.limit_price))
+    return failure(Reason::INVALID_ORDER, "A walk needs a DAY or GTC limit without a trigger or managed exit, a positive step, "
+                   "1 to 3600 seconds and a cap at least as aggressive as the current limit");
+  if (w.step.micros() % tick.micros() != 0 || w.limit.micros() % cap_tick.micros() != 0)
+    return failure(Reason::INVALID_TICK, "A walk's step and cap must be on the product tick");
+  __extension__ using Wide = __int128;
+  const auto distance = up ? static_cast<Wide>(w.limit.micros()) - r.limit_price->micros()
+                           : static_cast<Wide>(r.limit_price->micros()) - w.limit.micros();
+  if (distance > static_cast<Wide>(w.step.micros()) * 1000)
+    return failure(Reason::INVALID_ORDER, "A walk takes at most 1000 steps to its cap");
+  return {};
+}
 Decision account_check(const State& s, bool reducing = false) {
   if (s.kill && !reducing) return kill_decision(s);
   if (s.config.rules.evaluation() && s.evaluation.status != EvaluationStatus::Active)
@@ -1399,6 +1516,7 @@ Decision combo_check(const State& s, const Order& o, Stage stage) {
   }
   if (r.limit_price && r.limit_price->micros() % tick.micros() != 0)
     return failure(Reason::INVALID_TICK, "Net price is not a multiple of the legs' smallest tick");
+  if (const auto d = walk_check(o, tick, tick); !d.ok()) return d;
   // A conditional combo may also wait for another underlying, a study or the clock;
   // its exits watch only its own net or underlying.
   const auto trigger_ok = [](const std::optional<Trigger>& t, bool exit) {
@@ -1464,6 +1582,9 @@ Decision combo_check(const State& s, const Order& o, Stage stage) {
     return {Reason::PRICE_BAND, level ? "Net limit is outside the configured band around the trigger level"
                                       : "Net price is outside the configured band around the net mid",
             static_cast<double>(difference / 1'000'000), static_cast<double>(band / 1'000'000), first->underlying};
+  if (stage == Stage::Accept && r.walk &&
+      std::abs(static_cast<long double>(r.walk->limit.micros()) - middle.micros()) > band)
+    return failure(Reason::PRICE_BAND, "The walk cap is outside the configured band around the net mid");
   const auto snapshot = measure(s);
   if (!snapshot.valuation_complete) return failure(Reason::STALE_QUOTE, "All held positions need fresh marks before trading");
   if (!closing_only(s, o))
@@ -1526,6 +1647,10 @@ Decision order_check(const State& s, const Order& o, Stage stage = Stage::Accept
             static_cast<double>(s.config.limits.max_order_contracts), request.symbol};
   if (request.limit_price && request.limit_price->micros() % tick_size(c->second.root, *request.limit_price).micros() != 0)
     return failure(Reason::INVALID_TICK, "Limit price is not a positive multiple of the product tier tick");
+  if (request.walk) {
+    if (const auto d = walk_check(o, tick_size(c->second.root, Money{}), tick_size(c->second.root, request.walk->limit)); !d.ok())
+      return d;
+  }
   const auto positive = [](const std::optional<Trigger>& t) { return !t || valid_trigger(*t); };
   // An exit watches its own option or underlying; an order may watch more.
   const auto exit_ok = [&](const std::optional<ExitSpec>& e) {
@@ -1555,6 +1680,9 @@ Decision order_check(const State& s, const Order& o, Stage stage = Stage::Accept
   // A buy that only closes a short can take a quote that shows only an ask (ask_only_single).
   if (const auto d = quote_check(s, request.symbol); !d.ok() && !ask_only_single(s, o)) return d;
   const auto& quote = s.books.at(request.symbol).quote;
+  if (stage == Stage::Accept && request.walk) {
+    if (const auto d = price_check(s, quote, request.walk->limit); !d.ok()) return d;
+  }
   if (stage == Stage::Fill || !request.limit_price) {
     if (const auto d = price_check(s, quote, order_price(s, o, request.symbol, request.side, request.limit_price)); !d.ok()) return d;
   } else if (stage == Stage::Accept) {
@@ -1653,8 +1781,9 @@ void match_one(State& s, OrderId id, Events& events, std::optional<OrderId> inco
   const bool one_sided = ask_only_single(s, o);
   const bool given = one_sided && o.request.side == Side::Sell;
   if (!one_sided && !quote_check(s, o.request.symbol).ok()) return;
-  if (!given && !marketable(o, s.books.at(o.request.symbol).quote)) return;
-  if (s.config.rules.impact_ticks > 0 && o.request.limit_price && !given) {
+  const bool inside = inside_single(s, o);
+  if (!given && !inside && !marketable(o, s.books.at(o.request.symbol).quote)) return;
+  if (s.config.rules.impact_ticks > 0 && o.request.limit_price && !given && !inside) {
     const auto candidate = execution_price(s, o.request.symbol, o.request.side);
     if (o.request.side == Side::Buy ? candidate > *o.request.limit_price : candidate < *o.request.limit_price) return;
   }
@@ -1672,7 +1801,7 @@ void match_one(State& s, OrderId id, Events& events, std::optional<OrderId> inco
   const auto symbol = o.request.symbol;
   const auto side = o.request.side;
   const auto& book = s.books.at(symbol);
-  if (!given && !marketable(o, book.quote)) return;
+  if (!given && !inside && !marketable(o, book.quote)) return;
   const Money price = given ? Money{} : order_price(s, o, symbol, side, o.request.limit_price);
   const auto remaining_depth = side == Side::Buy ? book.ask_left : book.bid_left;
   const auto size = side == Side::Buy ? book.quote.ask_size : book.quote.bid_size;
@@ -1680,7 +1809,7 @@ void match_one(State& s, OrderId id, Events& events, std::optional<OrderId> inco
   const auto capacity = o.request.side == Side::Sell ? std::max<Quantity>(position, 0) : std::max<Quantity>(-position, 0);
   // A long given away needs no bid, so no displayed size limits it.
   const auto budget = given ? capacity
-      : s.config.rules.impact_ticks > 0 && !touch_stop(s, o) ? size - depth_used(size, remaining_depth) % size : remaining_depth;
+      : s.config.rules.impact_ticks > 0 && !touch_stop(s, o) && !inside ? size - depth_used(size, remaining_depth) % size : remaining_depth;
   const Quantity quantity = reducing ? std::min({o.remaining(), budget, capacity}) : std::min(o.remaining(), budget);
   if (quantity <= 0) return;
   decision = reducing ? Decision{} : price_check(s, book.quote, price);
@@ -1764,8 +1893,9 @@ void match_combo(State& s, OrderId id, Events& events, std::optional<OrderId> in
   const bool exit = kept_within(o);
   auto decision = exit ? system_check(s, o) : order_check(s, o, Stage::Fill);
   if (data_gap(decision.code)) return;
-  Quantity units = s.config.rules.impact_ticks > 0 && !touch_stop(s, o) ? 1 : o.remaining();
-  if (s.config.rules.impact_ticks == 0 || touch_stop(s, o)) for (const auto& leg : o.request.legs) {
+  const bool inside = inside_combo(s, o).has_value();
+  Quantity units = s.config.rules.impact_ticks > 0 && !touch_stop(s, o) && !inside ? 1 : o.remaining();
+  if (s.config.rules.impact_ticks == 0 || touch_stop(s, o) || inside) for (const auto& leg : o.request.legs) {
     if (given_away(s, o, leg)) continue;
     const auto& book = s.books.at(leg.symbol);
     units = std::min(units, (leg.side == Side::Buy ? book.ask_left : book.bid_left) / leg.ratio);
@@ -2365,22 +2495,23 @@ std::optional<OrderWait> waiting_for(const State& s, const Order& o, bool data_c
     const auto& book = s.books.at(r.symbol);
     const bool buy = r.side == Side::Buy;
     const bool given = !buy && ask_only_single(s, o);
-    if (!given && !marketable(o, book.quote))
+    const bool inside = inside_single(s, o);
+    if (!given && !inside && !marketable(o, book.quote))
       return wait("LIMIT", std::string(buy ? "The ask " : "The bid ") + (buy ? *book.quote.ask : *book.quote.bid).str() +
                   (buy ? " is above" : " is below") + " the limit " + r.limit_price->str());
-    if (impact && r.limit_price) {
+    if (impact && r.limit_price && !inside) {
       const auto next = execution_price(s, r.symbol, r.side);
       if (buy ? next > *r.limit_price : next < *r.limit_price)
         return wait("LIMIT", "The next simulated block's price " + next.str() + " is beyond the limit " + r.limit_price->str());
     }
-    if (!given && !impact && (buy ? book.ask_left : book.bid_left) <= 0)
+    if (!given && (!impact || inside) && (buy ? book.ask_left : book.bid_left) <= 0)
       return wait("DISPLAYED_SIZE", "Paper orders used this quote's displayed size; a new quote refreshes it");
   } else {
     const auto net = executable_net(s, o);
     if (!net) return wait("INVALID_QUOTE", "A leg has no executable quote");
     if (r.limit_price && *net > *r.limit_price)
       return wait("LIMIT", "The net at the far sides, " + net->str() + ", is worse than the limit " + r.limit_price->str());
-    if (!impact)
+    if (!impact || inside_combo(s, o))
       for (const auto& leg : r.legs) {
         if (given_away(s, o, leg)) continue;
         const auto& book = s.books.at(leg.symbol);
@@ -2783,6 +2914,8 @@ void change_terms(State& s, OrderId id, const OrderChange& change) {
   }
   if (change.trigger_level && order.request.trigger) order.request.trigger->level = *change.trigger_level;
   if (change.tif) order.request.tif = *change.tif;
+  if (change.walk) order.request.walk = *change.walk;
+  if (order.request.walk || change.walk) order.walked_at = s.time;
 }
 /// The account a preview starts from: the current one with the integration's newer
 /// market for contracts it may not hold yet, at the market time, its daily loss checked.
@@ -3210,6 +3343,10 @@ CommandResult change_order(State& s, OrderId id, const OrderChange& change, cons
   const auto& r = order.request;
   OrderChangeRecord record{s.time, s.actor, change.quantity, change.limit_price, change.trigger_level, r.quantity, r.limit_price,
                            r.trigger ? std::optional(r.trigger->level) : std::nullopt, {}};
+  if (change.walk) {
+    record.walk = change.walk;
+    record.previous_walk = r.walk;
+  }
   if (change.tif) {
     record.time_in_force = change.tif;
     record.previous_time_in_force = r.tif;
@@ -3224,6 +3361,8 @@ CommandResult change_order(State& s, OrderId id, const OrderChange& change, cons
   if (order.system || !resting)
     return refuse(failure(Reason::INVALID_ORDER, "Only resting orders change: DAY/GTC limit orders, armed orders and bracket exits"));
   if (change.empty()) return refuse(failure(Reason::INVALID_ORDER, "Give a new quantity, limit price, trigger level or time in force"));
+  if (change.walk && *change.walk && exit)
+    return refuse(failure(Reason::INVALID_ORDER, "Managed exits cannot walk"));
   if (change.quantity && order.reduce_only)
     return refuse(failure(Reason::INVALID_ORDER, "A reduce-only close's size follows its position; change its price instead"));
   // An exit may close part of what it protects, or all of it again, never more.
@@ -3249,6 +3388,8 @@ CommandResult change_order(State& s, OrderId id, const OrderChange& change, cons
   if (change.limit_price) order.request.limit_price = *change.limit_price;
   if (change.trigger_level) order.request.trigger->level = *change.trigger_level;
   if (change.tif) order.request.tif = *change.tif;
+  if (change.walk) order.request.walk = *change.walk;
+  if (order.request.walk || change.walk) order.walked_at = s.time;
   Decision decision;
   if (exit) {
     // Exits only ever reduce a position, so they skip the entry checks; their terms must still be valid.
@@ -3619,6 +3760,11 @@ struct TradingSession::Impl {
     next.actor = "system";
     monitor_loss(next, events);
     monitor_rules(next, events);
+    if (!next.walked.empty()) {
+      match_symbols(next, next.walked, events);
+      next.walked.clear();
+      check_triggers(next, events);
+    }
     detail::update_reviews(next);
     reindex(next);
     std::optional<Json> change;
@@ -3785,6 +3931,7 @@ std::vector<OrderWarning> order_warnings(const State& s, const OrderRequest& r) 
     exit.role = role;
     exit.request = r;
     exit.request.bracket.reset();
+    exit.request.walk.reset();
     exit.request.exits_only = false;
     exit.request.trigger = spec.trigger;
     exit.request.limit_price = spec.limit_price;
@@ -3870,8 +4017,10 @@ OrderPreview TradingSession::preview(const OrderRequest& request, Timestamp time
   if (!impl_->stopped) {
     State trial = before;
     try {
-      if (const auto placed = place(trial, request, time, rejection, ignored); placed.order_id)
+      if (const auto placed = place(trial, request, time, rejection, ignored); placed.order_id) {
         result.execution = executed(before, trial, *placed.order_id, std::move(result.execution));
+        result.next_walk = next_walk(trial.orders[*placed.order_id - 1]);
+      }
     } catch (const TradingError&) {}
   }
   // Each leg's quote: whether it can fill now, its displayed size on the leg's
@@ -3945,6 +4094,7 @@ OrderPreview TradingSession::preview_change(OrderId id, const OrderChange& chang
   result = std::move(projection.result);
   result.breach = breach_of(projection.projected, close_variances);
   result.execution = executed(before, trial, id, std::move(result.execution));
+  result.next_walk = next_walk(trial.orders[id - 1]);
   // Sizing counts the units the order could still work, its filled ones aside.
   const auto& order = before.orders.at(static_cast<std::size_t>(id - 1));
   if (impl_->stopped || kept_within(order) || order.request.exits_only) return result;
@@ -4370,6 +4520,9 @@ CommandResult TradingSession::on_quotes(const std::vector<QuoteObservation>& quo
     for (auto it = changed.begin(); it != changed.end();) {
       if (!usable(*it)) it = changed.erase(it); else ++it;
     }
+    for (const auto& symbol : s.walked)
+      if (usable(symbol)) changed.insert(symbol);
+    s.walked.clear();
     // Offered again, a quote's remaining displayed size can fill the orders that
     // a data gap held back when it was new.
     for (const auto id : open_ids(s)) {

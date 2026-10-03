@@ -2,6 +2,7 @@
 
 #include <algorithm>
 #include <cmath>
+#include <limits>
 #include <map>
 #include <set>
 
@@ -137,6 +138,29 @@ bool valid_trigger(const Trigger& t) {
   }
   return false;
 }
+std::optional<WalkStep> next_walk(const Order& o) {
+  if (!o.open() || !o.request.walk || !o.request.limit_price) return std::nullopt;
+  const auto& w = *o.request.walk;
+  const auto current = *o.request.limit_price;
+  const bool up = multi_leg(o.request) || o.request.side == Side::Buy;
+  if (w.seconds < 1 || w.seconds > 3600 || w.step <= Money{} || (up ? current >= w.limit : current <= w.limit))
+    return std::nullopt;
+  const auto interval = w.seconds * md::kNanosPerSecond;
+  const auto since = std::max(o.accepted_at, o.walked_at);
+  if (since > std::numeric_limits<Timestamp>::max() - interval) return std::nullopt;
+  if (o.day_end > 0 && since + interval >= o.day_end) return std::nullopt;
+  auto price = w.limit;
+  if (w.step < (up ? w.limit - current : current - w.limit)) price = up ? current + w.step : current - w.step;
+  if (!multi_leg(o.request)) {
+    const auto contract = md::parse_osi(o.request.symbol);
+    if (!contract) return std::nullopt;
+    const auto tick = tick_size(contract->root, price).micros();
+    if (const auto rest = price.micros() % tick; rest != 0)
+      price = Money::from_micros(price.micros() - rest + (up ? tick : 0));
+    price = up ? std::min(price, w.limit) : std::max(price, w.limit);
+  }
+  return WalkStep{since + interval, price};
+}
 bool valid_quote(const QuoteObservation& q) {
   return q.observation > 0 && q.bid && q.ask && *q.bid > Money{} && *q.ask >= *q.bid &&
          q.bid_size > 0 && q.ask_size > 0;
@@ -177,6 +201,7 @@ void validate_rules(const AccountRules& r) {
       (r.phase != Phase::Evaluation && r.phase != Phase::Funded) ||
       r.slippage_ticks < 0 || r.slippage_ticks > 10 ||
       r.fill_latency_ms < 0 || r.fill_latency_ms > 60'000 || r.impact_ticks < 0 || r.impact_ticks > 10 ||
+      r.inside_fill_percent < 0 || r.inside_fill_percent > 100 ||
       (r.margin != MarginMode::Strategy && r.margin != MarginMode::Portfolio) ||
       (r.account_type != AccountType::Margin && r.account_type != AccountType::Cash && r.account_type != AccountType::Ira) ||
       r.house_margin_percent < 0 || r.house_margin_percent > 400 || r.pm_vol_shock < 0 || r.pm_vol_shock > 50 ||
@@ -184,7 +209,7 @@ void validate_rules(const AccountRules& r) {
       (r.phase == Phase::Funded && (r.profit_target > Money{} || p.qualifying_days < 1)))
     throw TradingError(Reason::INVALID_RULES,
         "Rule amounts must be nonnegative, percentages 0-100, caps positive, the expiry cutoff under one day and the plan name "
-        "at most 64 bytes; slippage and impact are 0-10 ticks, fill latency is 0-60000 ms and margin is strategy or portfolio; "
+        "at most 64 bytes; slippage and impact are 0-10 ticks, inside fills 0-100%, fill latency is 0-60000 ms and margin is strategy or portfolio; "
         "house margin is 0-400%, the portfolio vol shock 0-50 points, and a cash or IRA account uses strategy margin and "
         "enforces buying power; a funded phase has no profit target and at least one qualifying day");
   if (r.drawdown_mode == DrawdownMode::Static && (r.lock_at_start || r.lock_balance > Money{}))

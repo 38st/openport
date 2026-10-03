@@ -1369,6 +1369,58 @@ TEST(ReproducibleRun, LockstepWaitsForTheConsumerAndRejectsBackwardAndPastEndTim
   replay.stop();
 }
 
+TEST(ReproducibleRun, WalkingChangesAndInsideFillsVerifyWithIdenticalBytes) {
+  test::RecordingFile file;
+  write_stream(file.path, true);
+  const test::ScriptedMarket market;
+  const json unchanged = trading::OrderChange{};
+  EXPECT_FALSE(unchanged.contains("walk"));
+  EXPECT_FALSE(unchanged.get<trading::OrderChange>().walk);
+  std::string golden;
+  for (int repeat = 0; repeat < 2; ++repeat) {
+    const auto journal = file.directory / ("walking-" + std::to_string(repeat) + ".jsonl");
+    {
+      md::RecordingReader reader(file.path);
+      server::Desk::Options options;
+      options.run_input = server::recording_input(file.path);
+      options.replay = true;
+      options.paper_journal = journal;
+      options.paper.rules.inside_fill_percent = 50;
+      server::Desk desk("replay (synthetic)", reader.header().capabilities, reader.header().subscription, options);
+      desk.start_trading();
+      providers::ReplayBatches batches(reader, reader.header().subscription);
+      int second = 0;
+      while (const auto batch = batches.next()) {
+        desk.replay_batch(batch->events, batch->received, batch->time);
+        if (second <= 2) {
+          server::TradingCommand request;
+          if (second == 0) {
+            request.order = market.limit("walking", 1, "99.50");
+            request.order.walk = trading::Walk{Money::parse("0.10"), 2, Money::parse("101.00")};
+          } else {
+            request.kind = server::TradingCommand::Kind::Modify;
+            request.order_id = 1;
+            request.change.walk.emplace(std::nullopt);
+            if (second == 2) request.change.walk.emplace(trading::Walk{Money::parse("0.20"), 1, Money::parse("102.00")});
+          }
+          const auto reply = command(desk, request, batch->time, batch->received);
+          ASSERT_TRUE(reply.decision.ok()) << reply.decision.message;
+        }
+        ++second;
+      }
+      const auto snapshot = desk.trading_view()->snapshot;
+      ASSERT_EQ(snapshot->recent_fills.size(), 1U);
+      EXPECT_EQ(snapshot->recent_fills.front().price, Money::parse("101.10"));
+      EXPECT_EQ(snapshot->recent_fills.front().time, market.time + 10 * md::kNanosPerSecond);
+      EXPECT_EQ(snapshot->recent_orders.front().changes.size(), 10U);
+      desk.stop();
+    }
+    if (repeat == 0) { golden = read_file(journal); } else { EXPECT_EQ(read_file(journal), golden); }
+    const auto verified = server::verify_run(journal);
+    EXPECT_TRUE(verified.matched) << verified.message;
+  }
+}
+
 TEST(ReproducibleRun, ConservativeFillsHaveIdenticalBytesAndPassCliVerification) {
   test::RecordingFile file;
   write_stream(file.path, true);

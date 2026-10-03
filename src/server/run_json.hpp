@@ -11,10 +11,12 @@ inline void to_json(nlohmann::json& j, const OrderChange& c) {
   j = nlohmann::json{{"quantity", c.quantity}, {"limit_price", c.limit_price}, {"trigger_level", c.trigger_level}};
   // Only a change of time in force records it, so other changes keep their bytes.
   if (c.tif) j["tif"] = *c.tif;
+  if (c.walk) j["walk"] = *c.walk;
 }
 inline void from_json(const nlohmann::json& j, OrderChange& c) {
   j.at("quantity").get_to(c.quantity); j.at("limit_price").get_to(c.limit_price); j.at("trigger_level").get_to(c.trigger_level);
   added_field(j, "tif", c.tif);
+  if (j.contains("walk")) c.walk.emplace(j.at("walk").get<std::optional<Walk>>());
 }
 NLOHMANN_DEFINE_TYPE_NON_INTRUSIVE(Dividend, symbol, ex_date, per_share)
 }
