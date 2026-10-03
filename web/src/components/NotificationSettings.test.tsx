@@ -42,7 +42,7 @@ describe("notification settings", () => {
     expect(host.textContent).toContain("HTTP_429")
     expect(host.textContent).toContain("3 delivered · 1 failed attempts · 2 dropped")
     expect(host.textContent).toContain("Queue: 1/256")
-    expect(host.querySelectorAll('input[type="checkbox"]')).toHaveLength(9)
+    expect(host.querySelectorAll('input[type="checkbox"]')).toHaveLength(10)
     expect(host.querySelector('input[type="password"]')).toBeNull()
     expect(button("Save filters").disabled).toBe(true)
   })

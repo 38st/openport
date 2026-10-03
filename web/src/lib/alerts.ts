@@ -1,5 +1,5 @@
 import { useSyncExternalStore } from "react"
-import type { DividendPaid, Fill, StockFill } from "../api/trading-types"
+import type { Alert, AlertScope, DividendPaid, Fill, OrderLeg, Position, StockFill } from "../api/trading-types"
 import { osiLabel } from "./journal"
 import { formatMoney, signedMoney } from "./trading"
 
@@ -99,4 +99,38 @@ export function newFills(fills: readonly Fill[], after: number): Fill[] {
 }
 export function newestFill(fills: readonly Fill[]): number {
   return fills.reduce((max, f) => Math.max(max, Number(f.id) || 0), 0)
+}
+
+/** The measures each account alert scope offers, as the server names them. */
+export const alertMetrics: Record<AlertScope, { value: string; label: string }[]> = {
+  contract: [{ value: "bid", label: "Bid" }, { value: "ask", label: "Ask" }, { value: "mark", label: "Mark" },
+    { value: "iv", label: "Implied volatility (vol points)" }, { value: "delta", label: "Delta" }, { value: "gamma", label: "Gamma" },
+    { value: "theta", label: "Theta" }, { value: "vega", label: "Vega" }],
+  spread: [{ value: "mark", label: "Net mark per unit" }],
+  underlying: [{ value: "price", label: "Price" }, { value: "iv30", label: "30-day IV" }, { value: "iv7", label: "7-day IV" },
+    { value: "term_ratio", label: "9d/30d IV ratio" }],
+  account: [{ value: "equity", label: "Equity" }, { value: "day_pnl", label: "Day P&L" }, { value: "unrealised", label: "Unrealised P&L" },
+    { value: "floor_room", label: "Room to the floor" }, { value: "buying_power", label: "Buying power" },
+    { value: "dollar_delta", label: "Dollar delta" }, { value: "vega", label: "Vega" }, { value: "theta", label: "Theta" }],
+}
+const metricLabel = (alert: Pick<Alert, "scope" | "metric">) =>
+  alertMetrics[alert.scope]?.find((m) => m.value === alert.metric)?.label.toLowerCase() ?? alert.metric
+/** "SPX 30-day iv ≥ 25.00", "account day p&l ≤ -500.00", "SPXW 261022C05000000 delta ≥ 0.60". */
+export function describeServerAlert(alert: Pick<Alert, "scope" | "metric" | "symbol" | "legs" | "direction" | "level">): string {
+  const what = alert.scope === "account" ? "account" : alert.scope === "spread" ? `spread (${alert.legs?.map((leg) => `${leg.side} ${leg.ratio} ${leg.symbol.replace(/\s+/g, " ")}`).join(", ") ?? ""})` : (alert.symbol ?? "").replace(/\s+/g, " ")
+  return `${what} ${metricLabel(alert)} ${alert.direction === "at_or_below" ? "≤" : "≥"} ${alert.level}`
+}
+export function serverAlertMessage(alert: Alert) {
+  return { title: alert.label || "Account alert", body: `${describeServerAlert(alert)}${alert.value != null ? `; now ${alert.value}` : ""}.` }
+}
+/** Alerts that fired since `before` (fired counts by ID); a new alert counts from zero. */
+export function firedAlerts(before: ReadonlyMap<string, number>, alerts: readonly Alert[]): Alert[] {
+  return alerts.filter((alert) => alert.fired > (before.get(alert.id) ?? 0))
+}
+/** The legs held on one underlying, in their smallest whole ratio, for a held-legs alert. */
+export function heldLegs(positions: readonly Pick<Position, "symbol" | "underlying" | "quantity">[], underlying: string): OrderLeg[] {
+  const held = positions.filter((p) => p.underlying === underlying && p.quantity !== 0)
+  const gcd = (a: number, b: number): number => (b === 0 ? a : gcd(b, a % b))
+  const unit = held.reduce((g, p) => gcd(g, Math.abs(p.quantity)), 0) || 1
+  return held.map((p) => ({ symbol: p.symbol, side: p.quantity > 0 ? "buy" as const : "sell" as const, ratio: Math.abs(p.quantity) / unit }))
 }

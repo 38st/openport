@@ -11,6 +11,7 @@ const events: { id: NotificationEvent; label: string }[] = [
   { id: "floor", label: "Near the floor" }, { id: "rule_trip", label: "Rule trips" },
   { id: "assignment", label: "Assignments" }, { id: "exercise", label: "Exercises" },
   { id: "playbook_ready", label: "Playbooks ready" }, { id: "feed_stalled", label: "Stalled feed" },
+  { id: "alert", label: "Account alerts" },
 ]
 
 function Channel({ channel, mode }: { channel: NotificationChannel; mode: WriteMode }) {

@@ -495,6 +495,39 @@ export type ExitSpec = { trigger: Trigger; limit_price?: Money } | { limit_price
 export interface Bracket { stop_loss?: ExitSpec; take_profit?: ExitSpec }
 /** One leg of a multi-leg order: `ratio` contracts per unit. */
 export interface OrderLeg { symbol: string; side: Side; ratio: number }
+/** What an account alert watches: a contract, a spread's net mark, an underlying or the account. */
+export type AlertScope = "contract" | "spread" | "underlying" | "account"
+export interface AlertRequest {
+  label?: string
+  scope: AlertScope
+  metric: string
+  symbol?: string | null
+  legs?: OrderLeg[] | null
+  direction: "at_or_below" | "at_or_above"
+  level: Money
+  repeat?: boolean
+}
+/** An alert the server keeps with the account, checks after each market batch and forwards to its channels. */
+export interface Alert {
+  id: string
+  label: string
+  scope: "contract" | "spread" | "underlying" | "account"
+  metric: string
+  symbol: string | null
+  legs: OrderLeg[] | null
+  direction: "at_or_below" | "at_or_above"
+  level: Money
+  repeat: boolean
+  created_at: string
+  actor: string
+  armed: boolean
+  fired: number
+  fired_at: string | null
+  value: Money | null
+}
+export interface AlertsResponse { account_version: string; alerts: Alert[] }
+export interface AlertResponse { account_version: string; alert: Alert }
+export interface AlertDeleted { account_version: string; deleted: string }
 export type TimeInForce = "day" | "gtc" | "ioc" | "exto" | "gtc_exto" | "gtd"
 type Pricing = { type: "limit"; limit_price: Money; time_in_force: TimeInForce }
   | { type: "market"; time_in_force: "ioc" | "exto" | "gtc_exto" | "gtd"; limit_price?: never }

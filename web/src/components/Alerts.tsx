@@ -8,6 +8,7 @@ import { isNum } from "../lib/format"
 import { notificationPermission, notify, requestNotifications, toasts, useToasts } from "../lib/notify"
 import { Dialog } from "./Dialog"
 import { NotificationSettings } from "./NotificationSettings"
+import { ServerAlerts, ServerAlertWatcher } from "./ServerAlerts"
 
 const setAt = new Intl.DateTimeFormat("en-US", { month: "short", day: "numeric", hour: "numeric", minute: "2-digit", timeZone: "America/New_York" })
 
@@ -26,8 +27,10 @@ export function AlertWatcher() {
       notify(title, body, settings.sound)
     }
   }, [settings, underlyings, source])
-  if (source !== "live") return null
+  // Account alerts fire in replays too; the server forwards only live ones.
+  if (source !== "live") return <ServerAlertWatcher sound={settings.sound} />
   return <>
+    <ServerAlertWatcher sound={settings.sound} />
     {settings.fills && <FillWatcher sound={settings.sound} />}
     <DeliveryWatcher sound={settings.sound} />
     <RuleWatcher sound={settings.sound} />
@@ -149,8 +152,9 @@ export function AlertsDialog({ initial, onClose }: { initial?: { symbol: string;
         : permission === "unsupported" ? "This browser has no notifications, so alerts show on this page only."
         : <>Alerts show on this page. <button type="button" className="text-accent hover:underline"
             onClick={() => void requestNotifications().then(setPermission)}>Allow browser notifications</button> to see them in other tabs too.</>}</p>
-      <p className="text-[11px] text-faint">Alerts are kept in this browser and run while openport is open, on the feed's prices{delay ? `, which arrive ${Math.round(delay / 60)} minutes late` : ""}. A price alert fires once, then clears.</p>
+      <p className="text-[11px] text-faint">Browser price alerts are kept in this browser and run while openport is open, on the feed's prices{delay ? `, which arrive ${Math.round(delay / 60)} minutes late` : ""}. A price alert fires once, then clears.</p>
     </section>
+    <ServerAlerts />
     <NotificationSettings />
   </Dialog>
 }
