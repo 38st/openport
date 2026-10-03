@@ -337,7 +337,8 @@ TEST(TradingKill, ACooldownSaysWhenItEndsAndItsReleaseIsKept) {
   const auto refused = s.submit(f.market("again"), f.time).decision;
   EXPECT_EQ(refused.code, Reason::COOLDOWN);
   EXPECT_EQ(refused.message, "Cooldown after a stop-loss exit or loss until 10:30:01 ET");
-  EXPECT_EQ(s.snapshot()->kill_reset.message, "A reset waits for the cooldown to end at 10:30:01 ET");
+  EXPECT_EQ(s.snapshot()->kill_reset.message,
+            "The kill-switch reset waits for the cooldown to end at 10:30:01 ET; an account reset also preserves this cooldown");
   // It releases on market time, and the history keeps the release.
   f.time += 30 * md::kNanosPerMinute;
   ++f.observation;
