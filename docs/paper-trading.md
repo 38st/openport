@@ -2536,6 +2536,13 @@ the terminal limits editor adds, edits and removes rows, and risk buckets identi
 the effective override or common cap. Revisions and replay mirror behavior match
 other limits.
 
+For a new main account, `--paper-fill-model as_displayed|conservative|midpoint`
+selects the same execution preset as reset. `--paper-slippage-ticks` (0–10),
+`--paper-fill-latency-ms` (0–60000) and `--paper-impact-ticks` (0–10) override its
+values regardless of flag order. Existing journals retain their saved rules, as
+with `--plan`. Named accounts and resets use their request's rules/model; sandboxes
+keep displayed practice fills. The flags apply only to main, unlike `--paper-fee`.
+
 ### Commands and views
 
 The engine thread alone owns every session. A bounded FIFO inbox (256 pending

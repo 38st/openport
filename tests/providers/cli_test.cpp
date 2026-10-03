@@ -75,6 +75,19 @@ TEST(Cli, DaemonRejectsMalformedRangesUnknownFlagsAndStartupFailures) {
   rejects("openportd", "--provider databento --window 0.1", "whole chain upstream");
 }
 
+TEST(Cli, PaperFillFlagsValidateModelsAndExecutionRanges) {
+  rejects("openportd", "--paper-fill-model unknown", "--paper-fill-model");
+  for (const auto* flag : {"--paper-slippage-ticks", "--paper-impact-ticks", "--paper-fill-latency-ms"}) {
+    for (const auto* value : {"-1", "1.5", "junk", "60001"})
+      rejects("openportd", std::string(flag) + " " + value, flag);
+  }
+  rejects("openportd", "--paper-impact-ticks 11", "--paper-impact-ticks");
+  rejects("openportd", "--paper-slippage-ticks 11", "--paper-slippage-ticks");
+  for (const auto* model : {"as_displayed", "conservative", "midpoint"})
+    rejects("openportd", std::string("--paper-fill-model ") + model +
+        " --paper-fill-latency-ms 60000 --paper-impact-ticks 10 --paper-slippage-ticks 0 --provider missing", "unknown provider");
+}
+
 TEST(Cli, DemoRejectsNetworkOptionsUnknownDaysAndUnsupportedSymbols) {
   rejects("openportd", "--provider demo --option speed=max", "demo speed");
   rejects("openportd", "--provider demo --option days=overnight", "not a regular session");

@@ -89,6 +89,8 @@ struct Settings {
   std::vector<analytics::EventLabel> events;
   const server::PlanPreset* plan = server::find_plan("practice");
   std::optional<trading::Money> paper_cash;
+  std::string paper_fill_model = "as_displayed";
+  std::optional<int> paper_slippage_ticks, paper_fill_latency_ms, paper_impact_ticks;
   std::string write_token;
   std::filesystem::path write_token_file;
   std::filesystem::path notify_config;
@@ -114,6 +116,8 @@ int usage(const char* error = nullptr) {
       "                 [--allowed-host NAME]... [--token-file FILE] [--require-token]\n"
       "                 [--notify-config FILE]\n"
       "                 [--paper-journal PATH] [--plan ID] [--paper-cash DECIMAL] [--paper-fee DECIMAL]\n"
+      "                 [--paper-fill-model as_displayed|conservative|midpoint]\n"
+      "                 [--paper-slippage-ticks N] [--paper-fill-latency-ms N] [--paper-impact-ticks N]\n"
       "                 [--sandboxes N] [--sandbox-idle-seconds N] [--client-ip-header NAME]\n"
       "                 [--no-paper] [--write-token TOKEN] [--write-token-file PATH] [--candle-dir DIR] [--no-history]\n"
       "                 [--dividends FILE|massive] [--events FILE] [--no-cboe-holidays]\n"
@@ -136,6 +140,8 @@ int usage(const char* error = nullptr) {
       "plan: rules for a new journal (practice, intraday-25k|50k|100k, eod-25k|50k|100k,\n"
       "      funded-intraday-25k|50k|100k, funded-eod-25k|50k|100k); default practice;\n"
       "      --paper-cash then overrides its starting balance\n"
+      "fill model: seeds only a new main journal; numeric execution flags override the model\n"
+      "            slippage/impact: 0..10 ticks, latency: 0..60000 ms; saved rules win on restart\n"
       "write token: --write-token overrides OPENPORT_WRITE_TOKEN; required for remote writes\n"
       "write token file: without either, the token kept in PATH, created at random if missing,\n"
       "                  with a link that saves it in a browser tab printed at startup\n"
@@ -405,6 +411,16 @@ int run(int argc, char** argv) {
     } else if (arg == "--paper-fee") {
       settings.paper.fee_per_contract = trading::Money::parse(value);
       if (settings.paper.fee_per_contract < trading::Money{}) return usage("--paper-fee must be nonnegative");
+    } else if (arg == "--paper-fill-model") {
+      if (value != "as_displayed" && value != "conservative" && value != "midpoint")
+        return usage("--paper-fill-model must be as_displayed, conservative or midpoint");
+      settings.paper_fill_model = value;
+    } else if (arg == "--paper-slippage-ticks") {
+      settings.paper_slippage_ticks = providers::parse_integer(value, "--paper-slippage-ticks", 0, 10);
+    } else if (arg == "--paper-fill-latency-ms") {
+      settings.paper_fill_latency_ms = providers::parse_integer(value, "--paper-fill-latency-ms", 0, 60000);
+    } else if (arg == "--paper-impact-ticks") {
+      settings.paper_impact_ticks = providers::parse_integer(value, "--paper-impact-ticks", 0, 10);
     } else if (arg == "--write-token") {
       if (value.empty()) return usage("--write-token requires a nonempty token");
       settings.write_token = value;
@@ -575,6 +591,12 @@ int run(int argc, char** argv) {
   if (settings.sandboxes.capacity) engine_options.sandboxes = std::make_shared<server::Sandboxes>(settings.sandboxes);
   // Rules and cash seed new journals only; recovery restores the recorded configuration.
   settings.paper.rules = settings.plan->rules;
+  const bool conservative = settings.paper_fill_model == "conservative";
+  settings.paper.rules.slippage_ticks = settings.paper_slippage_ticks.value_or(conservative ? 1 : 0);
+  settings.paper.rules.fill_latency_ms = settings.paper_fill_latency_ms.value_or(conservative ? 1000 : 0);
+  settings.paper.rules.impact_ticks = settings.paper_impact_ticks.value_or(conservative ? 1 : 0);
+  settings.paper.rules.inside_fill_percent = settings.paper_fill_model == "midpoint" ? 50 : 0;
+  trading::validate_rules(settings.paper.rules);
   settings.paper.initial_cash = settings.paper_cash.value_or(settings.plan->initial_cash);
   if (settings.paper.initial_cash <= trading::Money{}) return usage("--paper-cash must be positive");
   engine_options.paper = settings.paper;

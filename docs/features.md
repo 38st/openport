@@ -312,7 +312,8 @@ special opening quotation; live providers keep manual imports.
 - [x] Seeded demo soak with JSON run identity, counters and exit status (F73)
 - [x] F57 part 1: named-account lifecycle, preset IDs, copied limits/guardrails and replay reset guidance
 - [x] F57: HTTP per-underlying limit overrides and terminal editing
-- [ ] F57 remaining work: token management and fill-model startup flag
+- [x] F57: fill-model startup flag and numeric execution overrides
+- [ ] F57 remaining work: token management
 
 - [x] Opening share positions for hedges, covered calls and collars, with share previews and terminal shortcuts
 - [x] A flatten that works until flat: spreads close as one order, large closes split,
