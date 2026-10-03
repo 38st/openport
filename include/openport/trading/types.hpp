@@ -32,10 +32,11 @@ enum class Reason {
   // Plan decisions and objectives: what decided an attempt, what locked its day,
   // and what a pass still waits for.
   PROFIT_TARGET, DRAWDOWN_FLOOR, DAILY_LOSS_LIMIT, MIN_TRADING_DAYS, MIN_PROFITABLE_DAYS, CONSISTENCY,
-  ACCOUNT_TYPE, INVALID_ALERT, UNKNOWN_ALERT, PLAYBOOK_TIME_STOP, PLAYBOOK_TRAILING_STOP, PLAYBOOK_DTE_STOP, PLAYBOOK_DAYS_IN_TRADE_STOP
+  ACCOUNT_TYPE, INVALID_ALERT, UNKNOWN_ALERT, PLAYBOOK_TIME_STOP, PLAYBOOK_TRAILING_STOP, PLAYBOOK_DTE_STOP, PLAYBOOK_DAYS_IN_TRADE_STOP,
+  MAX_CONTRACTS_HELD
 };
 /// The last Reason; recorded codes are strings, so new codes append here.
-inline constexpr Reason kLastReason = Reason::PLAYBOOK_DAYS_IN_TRADE_STOP;
+inline constexpr Reason kLastReason = Reason::MAX_CONTRACTS_HELD;
 [[nodiscard]] std::string_view to_string(Reason reason) noexcept;
 
 class TradingError : public std::runtime_error {
@@ -629,6 +630,7 @@ struct AccountRules {
   /// 16:15 (975) to 24:00 (1440): it decides which day a moment counts toward.
   std::int64_t day_end_minutes = kDayEndMinutes;
   std::optional<FeeSchedule> fees;  ///< Empty keeps SessionConfig::fee_per_contract.
+  Quantity max_contracts_held = 0;  ///< Held options plus working opening contracts, 1-100000; zero disables.
   [[nodiscard]] bool evaluation() const {
     return profit_target > Money{} || max_drawdown > Money{} || daily_loss_limit > Money{};
   }

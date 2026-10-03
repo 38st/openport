@@ -1403,3 +1403,5 @@ See [saved runs](playbooks.md#api-and-saved-runs) for comparison and partial res
 F52 report schema 2 adds per-attempt day rows and supplied input identities.
 Schema 1 reports still load. Snapshot reads and comparison do not add reducer
 commands or change any journal bytes; driver 6 and scenario revisions are unchanged.
+
+F15 plan contract caps are opt-in: `max_contracts_held` is journaled only when nonzero. Existing plans keep their journal bytes; driver 6 and scenario revisions are unchanged.

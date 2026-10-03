@@ -83,6 +83,8 @@ export interface AccountRules {
   house_margin_percent?: number
   /** Portfolio margin's implied-volatility shock, in points up and down. */
   pm_vol_shock?: number
+  /** Held options plus working opening contracts, excluding shares; 0 disables. */
+  max_contracts_held?: number
   buying_power: boolean
   expiry_cutoff_seconds: number
   payouts: PayoutRules | null

@@ -28,6 +28,7 @@ std::string_view to_string(Reason reason) noexcept {
     CASE(RUN_ENDED); CASE(INVALID_GROUP); CASE(GTD_END);
     CASE(PROFIT_TARGET); CASE(DRAWDOWN_FLOOR); CASE(DAILY_LOSS_LIMIT); CASE(MIN_TRADING_DAYS);
     CASE(MIN_PROFITABLE_DAYS); CASE(CONSISTENCY); CASE(ACCOUNT_TYPE); CASE(INVALID_ALERT); CASE(UNKNOWN_ALERT);
+    CASE(MAX_CONTRACTS_HELD);
   }
 #undef CASE
   return "UNKNOWN";
@@ -234,6 +235,8 @@ void validate_rules(const AccountRules& r) {
         "days 0-366");
   if (r.day_end_minutes < 16 * 60 + 15 || r.day_end_minutes > 24 * 60)
     throw TradingError(Reason::INVALID_RULES, "The trading day ends between 16:15 and 24:00 New York time");
+  if (r.max_contracts_held < 0 || r.max_contracts_held > 100000)
+    throw TradingError(Reason::INVALID_RULES, "The contracts held cap must be 0 to 100000; zero disables it");
   if (r.fees) {
     const auto& f = *r.fees;
     const auto amount = [](Money value) { return value >= Money{} && value <= Money::from_micros(1'000'000'000); };

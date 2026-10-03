@@ -25,6 +25,8 @@ simulation's limits.
 - **Exposure**: GEX and VEX by strike and expiry, total gamma profile, gamma flip, and
   call and put walls.
 
+- **F15 contracts held cap:** custom plans cap held option contracts plus working opening quantities across orders, with numeric refusals and preview sizing; shares are excluded.
+
 ## Trading terminal
 
 - **Brief**: prior-session and observed overnight levels, implied moves and bands,
@@ -484,3 +486,5 @@ special opening quotation; live providers keep manual imports.
   recovery status; journal size and verification estimates/warnings; equity
   paging in live, replay and archived accounts; indexed recording end lookup
   and replay control queue shutdown.
+
+- [x] F15: a per-plan cap on contracts held at once, counting working entries and combo ratios
