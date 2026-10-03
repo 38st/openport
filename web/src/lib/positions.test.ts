@@ -174,3 +174,15 @@ it("keeps both verticals visible after rolling one side of a four-leg strategy",
   expect(groups[0]!.cost).toBe(-2) // held basis, never the roll's combined close/open net
   expect(groups[1]!.legs.map((m) => m.leg.symbol)).toEqual([c1.symbol, c2.symbol])
 })
+
+it("allocates dollar gamma and vega to held units, preserving missing Greeks", () => {
+  const short = { ...put(6900, -4, "3"), greeks: { ...greeks, dollar_gamma_1pct: -400, vega_dollars: -80 } }
+  const long = { ...put(6890, 2, "2"), greeks: { ...greeks, dollar_gamma_1pct: 120, vega_dollars: 30 } }
+  const opened = combo("7", [[6900, "sell"], [6890, "buy"]], 2, "-1")
+  const [group] = strategyGroups([short, long], [opened], null)
+  expect(group!.greeks.dollar_gamma_1pct).toBe(-80) // half the short, all the long
+  expect(group!.greeks.vega_dollars).toBe(-10)
+  const [missing] = strategyGroups([short, { ...long, greeks: { ...long.greeks, dollar_gamma_1pct: null, vega_dollars: null } }], [opened], null)
+  expect(missing!.greeks.dollar_gamma_1pct).toBeNull()
+  expect(missing!.greeks.vega_dollars).toBeNull()
+})

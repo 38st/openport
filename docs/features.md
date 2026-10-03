@@ -59,8 +59,9 @@ simulation's limits.
   spread at 15 delta or a condor one expected move out, with presets saved in the
   browser. Legs fill together at a net debit or credit. The ticket shows the P&L at
   expiry and today, the expected move, and the probability of profit from the smile's
-  risk-neutral distribution, skew included. A held strategy is one row with its net
-  P&L and Greeks, closed or rolled in one order: to a later expiry, to new strikes in
+  risk-neutral distribution, skew included. A held strategy is one row with its combined
+  open P&L before fees and dollar delta, gamma per 1% spot move, vega per volatility
+  point and theta per day, closed or rolled in one order: to a later expiry, to new strikes in
   the same expiry, or a whole condor as one eight-leg order. A roll or an adjustment
   stays one whole trade with its own review. Spreads take OCO
   exits on entry or while held, with stops on the closing net or the underlying, and
