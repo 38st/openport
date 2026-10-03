@@ -40,9 +40,12 @@ inline std::vector<std::string> paper_csv_columns(bool fills) {
   for (const auto& prefix : fills ? std::vector<std::string>{"context"} : std::vector<std::string>{"entry_context", "exit_context"})
     for (const auto* field : {"spot", "spot_source", "iv", "delta", "years", "equity", "floor_room", "buying_power"})
       columns.push_back(prefix + "." + field);
-  if (fills)
+  if (fills) {
     for (const auto* field : {"observation", "bid", "ask", "bid_size", "ask_size", "size_left", "quoted_at", "age_seconds"})
       columns.push_back(std::string("quote.") + field);
+    for (const auto* field : {"commission", "clearing", "regulatory", "index"})
+      columns.push_back(std::string("fees.") + field);
+  }
   if (!fills) {
     for (const auto* prefix : {"review", "strategy_review"}) {
       for (const auto* field : {"mae", "mfe", "planned_risk", "give_back", "heat", "r_multiple"})

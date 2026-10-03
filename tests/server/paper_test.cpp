@@ -3170,27 +3170,52 @@ TEST_F(PaperEngine, ItemizedFeesComeFromTheAttemptAndShowOnPreviewsAndFills) {
   EXPECT_FALSE(json::parse(flat.body)["rules"].contains("fees"));
   expect_error(write(*engine, "POST", "/api/account/reset", {{"plan", "practice"}, {"reason", "bad"}, {"fee_model", "broker"}}),
                400, "INVALID_REQUEST");
-  const auto created = write(*engine, "POST", "/api/accounts", {{"name", "Fee account"}, {"plan", "practice"}, {"fee_model", "itemized"}});
-  ASSERT_EQ(created.status, 201) << created.body;
-  const auto id = json::parse(created.body)["account"]["id"].get<std::string>();
-  EXPECT_EQ(read(*engine, "/api/account?account=" + id)["rules"]["fees"], fees);
-  for (const auto& malformed : {json(1), json::array(), json{{"open", 1}}, json{{"open", nullptr}},
-                               json{{"index", json::array()}}, json{{"index", {{"SPXW", 0.6}}}}}) {
-    rules["fees"] = malformed;
-    expect_error(write(*engine, "POST", "/api/accounts", {{"name", "Bad"}, {"initial_cash", "50000"}, {"rules", rules}}),
-                 400, "INVALID_REQUEST");
-  }
-  for (const auto& invalid : {json{{"open", "1000.000001"}}, json{{"index", {{"spx", "0.60"}}}},
-                             json{{"index", {{"SPXW", "-0.01"}}}}}) {
-    rules["fees"] = invalid;
-    expect_error(write(*engine, "POST", "/api/accounts", {{"name", "Bad"}, {"initial_cash", "50000"}, {"rules", rules}}),
-                 422, "INVALID_RULES");
-  }
   rules["fees"] = nullptr;
   const auto no_schedule = write(*engine, "POST", "/api/account/reset", {{"initial_cash", "50000"}, {"rules", rules}, {"reason", "flat"}});
   ASSERT_EQ(no_schedule.status, 200) << no_schedule.body;
   EXPECT_FALSE(json::parse(no_schedule.body)["rules"].contains("fees"));
 }
 
-
+TEST(PaperAccounts, CreationSelectsAndValidatesFeeSchedules) {
+  const auto directory = paper_path().parent_path();
+  auto options = paper_options();
+  options.paper_journal = directory / "paper.jsonl";
+  options.paper_accounts = directory / "accounts";
+  {
+    PaperProvider provider;
+    server::Engine engine(provider, {{"SPX"}}, options);
+    engine.start();
+    ASSERT_TRUE(wait_for([&] { return engine.trading_view() != nullptr; }));
+    const auto created = write(engine, "POST", "/api/accounts", {{"name", "Fee account"}, {"plan", "practice"}, {"fee_model", "itemized"}});
+    ASSERT_EQ(created.status, 201) << created.body;
+    const auto id = json::parse(created.body)["account"]["id"].get<std::string>();
+    const auto fees = read(engine, "/api/account?account=" + id)["rules"]["fees"];
+    EXPECT_EQ(fees["open"], "1.00");
+    EXPECT_EQ(fees["index"]["SPXW"], "0.60");
+    EXPECT_EQ(fees["exercise"], "5.00");
+    json rules{{"profit_target", nullptr}, {"max_drawdown", nullptr}, {"drawdown_mode", "intraday"},
+               {"buy_only", false}, {"buying_power", true}, {"expiry_cutoff_seconds", 0},
+               {"fees", {{"open", "0.50"}}}};
+    const auto custom = write(engine, "POST", "/api/accounts", {{"name", "Custom"}, {"initial_cash", "50000"}, {"rules", rules}});
+    ASSERT_EQ(custom.status, 201) << custom.body;
+    const auto custom_id = json::parse(custom.body)["account"]["id"].get<std::string>();
+    EXPECT_EQ(read(engine, "/api/account?account=" + custom_id)["rules"]["fees"]["open"], "0.50");
+    const auto expect_invalid = [&](int status, const char* code) {
+      const auto response = write(engine, "POST", "/api/accounts", {{"name", "Bad"}, {"initial_cash", "50000"}, {"rules", rules}});
+      EXPECT_EQ(response.status, status) << response.body;
+      EXPECT_EQ(json::parse(response.body)["error"]["code"], code);
+    };
+    for (const auto& malformed : {json(1), json::array(), json{{"open", 1}}, json{{"open", nullptr}},
+                                 json{{"index", json::array()}}, json{{"index", {{"SPXW", 0.6}}}}}) {
+      rules["fees"] = malformed;
+      expect_invalid(400, "INVALID_REQUEST");
+    }
+    for (const auto& invalid : {json{{"open", "1000.000001"}}, json{{"index", {{"spx", "0.60"}}}},
+                               json{{"index", {{"SPXW", "-0.01"}}}}}) {
+      rules["fees"] = invalid;
+      expect_invalid(422, "INVALID_RULES");
+    }
+  }
+  std::filesystem::remove_all(directory);
+}
 }  // namespace

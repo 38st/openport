@@ -491,6 +491,20 @@ TEST(FeeSchedule, AllScheduleBoundsAreValidatedOnResetWithoutChangingTheAccount)
   EXPECT_THROW(validate_rules(rules), TradingError);
 }
 
+TEST(FeeSchedule, AnUnknownComboLegKeepsItsReasonWhenPreviewed) {
+  for (const auto& c : {config(), itemized()}) {
+    Chain chain;
+    TradingSession session(c, chain.time);
+    chain.define(session, {P4900});
+    chain.quote(session, {{P4900, "5.00", "5.20"}});
+    const auto before = session.snapshot_json();
+    const auto preview = session.preview(vertical("unknown", 1, "-0.50"), chain.time);
+    EXPECT_EQ(preview.decision.code, Reason::UNKNOWN_CONTRACT);
+    EXPECT_FALSE(preview.fee);
+    EXPECT_EQ(session.snapshot_json(), before);
+  }
+}
+
 TEST(FeeSchedule, ItemizedFeesSurviveRecoveryAndAreValidated) {
   TemporaryDirectory directory;
   const auto path = directory.file("journal.jsonl");

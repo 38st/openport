@@ -60,6 +60,30 @@ void check_columns(const json& value, const std::set<std::string>& columns, cons
   }
 }
 
+TEST(TradeReviewApi, CsvKeepsItemizedFillFeesExactAndItsEmptyColumnsStable) {
+  test::ScriptedMarket market;
+  trading::SessionConfig config;
+  config.rules.fees = trading::FeeSchedule{Money::parse("1"), {}, {}, Money::parse("0.10"), Money::parse("0.02"),
+                                         {{"SPXW", Money::parse("0.600001")}}, {}};
+  trading::TradingSession session(config, market.time);
+  market.seed(session);
+  ReviewSource source;
+  source.publish(session);
+  const auto columns = csv_rows(server::handle_api({"GET", "/api/fills.csv"}, source).body).front();
+  ASSERT_TRUE(session.submit(market.market("open", 3), market.time).decision.ok());
+  source.publish(session);
+  const auto rows = csv_rows(server::handle_api({"GET", "/api/fills.csv"}, source).body);
+  ASSERT_EQ(rows.size(), 2U);
+  EXPECT_EQ(rows.front(), columns);
+  const auto row = csv_record(columns, rows[1]);
+  EXPECT_EQ(row["fee"], "5.160003");
+  EXPECT_EQ(row["fees.commission"], "3.00");
+  EXPECT_EQ(row["fees.clearing"], "0.30");
+  EXPECT_EQ(row["fees.regulatory"], "0.06");
+  EXPECT_EQ(row["fees.index"], "1.800003");
+  check_columns(json::parse(server::handle_api({"GET", "/api/fills"}, source).body)["fills"][0], {columns.begin(), columns.end()});
+}
+
 TEST(TradeReviewApi, CsvQuotesNotesAndKeepsColumnsAndExactMoneyWithEmptyHistory) {
   test::ScriptedMarket f;
   trading::SessionConfig config; config.fee_per_contract = Money::parse("0.650001");
@@ -139,7 +163,7 @@ TEST(TradeReviewApi, CsvDateUsesNewYorkCalendarDateIncludingDst) {
       "run_id", "scenario", "seed", "recording", "id", "attempt", "order_id", "actor", "symbol", "underlying", "side", "quantity", "price", "fee", "quote_time", "time", "context.spot",
       "context.spot_source", "context.iv", "context.delta", "context.years", "context.equity", "context.floor_room", "context.buying_power",
       "quote.observation", "quote.bid", "quote.ask", "quote.bid_size", "quote.ask_size", "quote.size_left", "quote.quoted_at",
-      "quote.age_seconds"};
+      "quote.age_seconds", "fees.commission", "fees.clearing", "fees.regulatory", "fees.index"};
   EXPECT_EQ(server::paper_csv_columns(true), fill_columns);
   EXPECT_EQ(server::paper_csv_columns(false).size(), 105U);
 }
