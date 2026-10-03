@@ -315,6 +315,85 @@ TEST(Notifications, ObservesNewAccountEventsOnceAndSkipsRecoveredHistory) {
   for (const auto& call : h.http->calls) kinds.insert(json::parse(call.body).at("event").get<std::string>());
   EXPECT_EQ(kinds, (std::multiset<std::string>{"fill", "order_rejected", "rule_trip", "rule_trip", "assignment", "exercise", "playbook_ready"}));
 }
+TEST(Notifications, PlanDailyLossTripsNotifyOnceForLocksAndFailures) {
+  for (const auto action : {trading::BreachAction::Lock, trading::BreachAction::Fail}) {
+    Harness h;
+    test::ScriptedMarket market;
+    trading::SessionConfig config;
+    config.initial_cash = Money::parse("10000");
+    config.limits.aggregate = {1e9, 1e9};
+    config.limits.per_underlying = {1e9, 1e9};
+    config.rules.daily_loss_limit = Money::parse("200");
+    config.rules.daily_loss_action = action;
+    trading::TradingSession session(config, market.time);
+    market.seed(session);
+    const auto entry = session.submit(market.market("open", 5), market.time);
+    ASSERT_TRUE(entry.decision.ok()) << entry.decision.message;
+    server::TradingView current;
+    current.config = config;
+    current.snapshot = session.snapshot();
+    h.notifications->observe("main", current);
+    market.next();
+    session.on_quotes({market.quote("3.70", "3.90")}, {market.valuation()}, market.time);
+    current.snapshot = session.snapshot();
+    const bool locked = action == trading::BreachAction::Lock;
+    ASSERT_EQ(current.snapshot->evaluation.status, locked ? trading::EvaluationStatus::Active : trading::EvaluationStatus::Failed);
+    ASSERT_EQ(locked ? current.snapshot->evaluation.day_lock : current.snapshot->evaluation.decision_code,
+        trading::Reason::DAILY_LOSS_LIMIT);
+    h.notifications->observe("main", current);
+    h.notifications->observe("main", current);
+    current.snapshot = std::make_shared<trading::TradingSnapshot>(*current.snapshot);
+    h.notifications->observe("main", current);
+    h.drain();
+    std::vector<json> trips;
+    for (const auto& call : h.http->calls) {
+      auto body = json::parse(call.body);
+      if (body.at("event") == "rule_trip") trips.push_back(std::move(body));
+    }
+    ASSERT_EQ(trips.size(), 1U);
+    EXPECT_EQ(trips[0].at("account"), "main");
+    EXPECT_EQ(trips[0].at("market_time"), md::format_timestamp(market.time));
+    EXPECT_EQ(trips[0].at("details"), (json{{"code", "DAILY_LOSS_LIMIT"}, {"level", "9800.00"},
+        {"action", locked ? "lock" : "fail"}}));
+    const auto message = locked
+        ? "Plan daily loss limit reached; positions are closed and opening orders refused until the next trading day."
+        : "Plan daily loss limit reached; the attempt failed.";
+    EXPECT_NE(trips[0].at("message").get<std::string>().find(message), std::string::npos);
+    // Starting observation on a recovered lock or failure does not replay it.
+    Harness recovered;
+    recovered.notifications->observe("main", current);
+    current.snapshot = std::make_shared<trading::TradingSnapshot>(*current.snapshot);
+    recovered.notifications->observe("main", current);
+    recovered.drain();
+    EXPECT_TRUE(recovered.http->calls.empty());
+  }
+}
+TEST(Notifications, PlanDailyLossLocksRearmOnANewDayAndOtherFailuresStayQuiet) {
+  Harness h;
+  auto snapshot = std::make_shared<trading::TradingSnapshot>();
+  snapshot->evaluation.day = {2026, 9, 22};
+  snapshot->evaluation.day_lock = trading::Reason::DAILY_LOSS_LIMIT;
+  h.notifications->observe("main", view(snapshot));
+  snapshot = std::make_shared<trading::TradingSnapshot>(*snapshot);
+  snapshot->evaluation.day = {2026, 9, 23};
+  snapshot->evaluation.day_lock = trading::Reason::NONE;
+  h.notifications->observe("main", view(snapshot));
+  EXPECT_FALSE(h.notifications->deliver_one());
+  snapshot = std::make_shared<trading::TradingSnapshot>(*snapshot);
+  snapshot->evaluation.day_lock = trading::Reason::DAILY_LOSS_LIMIT;
+  h.notifications->observe("main", view(snapshot));
+  h.drain();
+  ASSERT_EQ(h.http->calls.size(), 1U);
+  const auto body = json::parse(h.http->calls[0].body);
+  EXPECT_EQ(body.at("event"), "rule_trip");
+  EXPECT_EQ(body.at("details").at("action"), "lock");
+  snapshot = std::make_shared<trading::TradingSnapshot>(*snapshot);
+  snapshot->evaluation.status = trading::EvaluationStatus::Failed;
+  snapshot->evaluation.decision_code = trading::Reason::DRAWDOWN_FLOOR;
+  h.notifications->observe("main", view(snapshot));
+  h.drain();
+  EXPECT_EQ(h.http->calls.size(), 1U);
+}
 TEST(Notifications, ForwardsEachAlertFiringOnce) {
   // F44: alerts the server keeps fire off-screen through the channels.
   Harness h;

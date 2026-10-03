@@ -374,6 +374,21 @@ void Notifications::observe(std::string_view account, const TradingView& view) {
         previous->evaluation.day != current.evaluation.day ||
         (current.risk.kill_reason == "DAILY_LOSS" && previous->risk.kill_reason != "DAILY_LOSS")))
       emit("rule_trip", current.time, "Daily loss limit reached.", {{"daily_loss", current.risk.daily_loss.str()}});
+    const auto& evaluation = current.evaluation;
+    const bool plan_locked = evaluation.day_lock == trading::Reason::DAILY_LOSS_LIMIT &&
+        previous->evaluation.day_lock != trading::Reason::DAILY_LOSS_LIMIT;
+    const bool plan_failed = evaluation.status == trading::EvaluationStatus::Failed &&
+        evaluation.decision_code == trading::Reason::DAILY_LOSS_LIMIT &&
+        previous->evaluation.status != trading::EvaluationStatus::Failed;
+    if (plan_locked || plan_failed) {
+      json details{{"code", "DAILY_LOSS_LIMIT"}, {"action", plan_failed ? "fail" : "lock"}};
+      if (const auto daily = trading::daily_loss_level(evaluation, view.config.rules, trading::plan_inputs(current)))
+        details["level"] = daily->level.str();
+      emit("rule_trip", current.time, plan_failed
+          ? "Plan daily loss limit reached; the attempt failed."
+          : "Plan daily loss limit reached; positions are closed and opening orders refused until the next trading day.",
+          std::move(details));
+    }
     std::map<std::string, bool> expiry_assignments;
     for (std::size_t i = previous->closures.size(); i < current.closures.size(); ++i) {
       const auto& closure = current.closures[i];
