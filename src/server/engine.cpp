@@ -58,6 +58,9 @@ Engine::Engine(md::Provider& provider, md::Subscription subscription, Options op
   if (options_.notifications) desk_.set_publication_sink([this](std::string_view account, const TradingView& view) {
     options_.notifications->observe(account, view);
   });
+  if (options_.notifications) desk_.set_removal_sink([this](const std::string& account) {
+    options_.notifications->remove_account(account);
+  });
 }
 
 void Engine::set_dividends(std::vector<trading::Dividend> dividends) {

@@ -4,7 +4,7 @@ import type { StrategyTemplate, TemplateResult } from "../lib/strategy"
 import type { Volatility, VolatilitySeries } from "./types"
 import type { NotificationChannel, NotificationStatus } from "./types"
 import type { CandleInterval, Candles, Chain, ExposureMatrix, Probability, ReplayListing, ReplayState, Status, Summary, Surface } from "./types"
-import type { Account, AccountsResponse, AlertDeleted, AlertRequest, AlertResponse, AlertsResponse, CancelAllResponse, ClosePositionsResponse, CreateAccountRequest, CreateAccountResponse, DayNote, EquityHistory, FillsResponse, FlattenPreview, FlattenPricing, GroupResponse, Guardrails, KillResponse, Limits, Money, NewOrder, OrderChange, OrderPreview, OrderResponse, OrdersResponse, PlansResponse, Portfolio, ResetRequest, Risk, RiskProfile, RiskProfileQuery, SettlementsResponse, SettlementResponse, Side, StockPreview, SubmitOrderResponse, TradeNote, TradeNoteResponse, TradesResponse, WhatIfResponse, WriteMode } from "./trading-types"
+import type { Account, AccountsResponse, UpdateAccountRequest, UpdateAccountResponse, DeleteAccountResponse, AlertDeleted, AlertRequest, AlertResponse, AlertsResponse, CancelAllResponse, ClosePositionsResponse, CreateAccountRequest, CreateAccountResponse, DayNote, EquityHistory, FillsResponse, FlattenPreview, FlattenPricing, GroupResponse, Guardrails, KillResponse, Limits, Money, NewOrder, OrderChange, OrderPreview, OrderResponse, OrdersResponse, PlansResponse, Portfolio, ResetRequest, Risk, RiskProfile, RiskProfileQuery, SettlementsResponse, SettlementResponse, Side, StockPreview, SubmitOrderResponse, TradeNote, TradeNoteResponse, TradesResponse, WhatIfResponse, WriteMode } from "./trading-types"
 import { activeAccount, MAIN_ACCOUNT } from "../lib/active-account"
 import { dataSource } from "../lib/data-source"
 import { isSandboxToken, writeToken } from "../lib/write-token"
@@ -83,7 +83,7 @@ export async function downloadCsv(path: string, filename: string) {
   link.click()
   setTimeout(() => URL.revokeObjectURL(url), 1000)
 }
-function write<T>(path: string, method: "POST" | "PUT" | "DELETE", mode: WriteMode, body?: unknown) {
+function write<T>(path: string, method: "POST" | "PUT" | "PATCH" | "DELETE", mode: WriteMode, body?: unknown) {
   const headers: Record<string, string> = { Accept: "application/json", "Content-Type": "application/json" }
   if (mode === "disabled") return Promise.reject(new ApiError(403, "Trading writes are disabled by the server.", "WRITE_DISABLED"))
   if (mode === "token") {
@@ -196,7 +196,9 @@ export const api = {
   trades: (status: "open" | "closed" | "all" = "all", attempt: "current" | "all" = "current", signal?: AbortSignal) =>
     get<TradesResponse>(scoped(`/api/trades?status=${status}&attempt=${attempt}`), signal),
   plans: (signal?: AbortSignal) => get<PlansResponse>("/api/plans", signal),
-  accounts: (signal?: AbortSignal) => get<AccountsResponse>("/api/accounts", signal),
+  accounts: (signal?: AbortSignal, archived = false) => get<AccountsResponse>(`/api/accounts${archived ? "?archived=true" : ""}`, signal),
+  updateAccount: (id: string, request: UpdateAccountRequest, mode: WriteMode) => write<UpdateAccountResponse>(`/api/accounts/${encodeURIComponent(id)}`, "PATCH", mode, request),
+  deleteAccount: (id: string, mode: WriteMode) => write<DeleteAccountResponse>(`/api/accounts/${encodeURIComponent(id)}`, "DELETE", mode),
   createAccount: (request: CreateAccountRequest, mode: WriteMode) => write<CreateAccountResponse>("/api/accounts", "POST", mode, request),
   resetAccount: (request: ResetRequest, mode: WriteMode) => write<Account>(scoped("/api/account/reset"), "POST", mode, request),
   requestPayout: (amount: Money, mode: WriteMode) => write<Account>(scoped("/api/account/payout"), "POST", mode, { amount }),

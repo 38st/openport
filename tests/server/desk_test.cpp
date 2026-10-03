@@ -203,6 +203,79 @@ TEST(Desk, NamedAccountsListInIdOrderBeforeAndAfterARestart) {
   restarted.stop();
 }
 
+TEST(Desk, AccountLifecycleSurvivesRestartAndReservesDeletedIds) {
+  test::RecordingFile file;
+  test::ScriptedMarket market;
+  server::Desk::Options options;
+  options.paper_journal = file.directory / "paper.jsonl";
+  options.paper_accounts = file.directory / "accounts";
+  server::TradingCommand create;
+  create.kind = server::TradingCommand::Kind::CreateAccount;
+  create.name = "Evaluation";
+  create.rules = server::find_plan("eod-50k")->rules;
+  create.initial_cash = server::find_plan("eod-50k")->initial_cash;
+  server::TradingCommand change;
+  change.kind = server::TradingCommand::Kind::UpdateAccount;
+  change.account = "evaluation";
+  change.name = "Renamed 東京";
+  change.archived = true;
+  {
+    server::Desk desk("test", {}, {{"SPX"}}, options);
+    desk.start_trading();
+    ASSERT_EQ(command(desk, create, market.time, market.time).account, "evaluation");
+    ASSERT_TRUE(command(desk, change, market.time, market.time).error_code.empty());
+    const auto version = desk.trading_view("evaluation")->snapshot->account_version;
+    desk.replay_batch(market_batch(market), market.time);
+    EXPECT_EQ(desk.trading_view("evaluation")->snapshot->account_version, version);
+    server::TradingCommand order;
+    order.account = "evaluation";
+    order.order = market.market("archived-order");
+    EXPECT_EQ(command(desk, order, market.time, market.time).error_code, "ACCOUNT_ARCHIVED");
+    change.account = "main";
+    EXPECT_EQ(command(desk, change, market.time, market.time).error_code, "ACCOUNT_PROTECTED");
+    change.account = "missing";
+    EXPECT_EQ(command(desk, change, market.time, market.time).error_code, "UNKNOWN_ACCOUNT");
+    desk.stop();
+  }
+  {
+    server::Desk desk("test", {}, {{"SPX"}}, options);
+    desk.start_trading();
+    ASSERT_EQ(desk.accounts().size(), 2U);
+    EXPECT_EQ(desk.accounts()[1].name, "Renamed 東京");
+    EXPECT_TRUE(desk.accounts()[1].archived);
+    change.account = "evaluation";
+    change.name.clear();
+    change.archived = false;
+    ASSERT_TRUE(command(desk, change, market.time, market.time).error_code.empty());
+    desk.replay_batch(market_batch(market), market.time);
+    server::TradingCommand order;
+    order.account = "evaluation";
+    order.order = market.market("working");
+    order.order.type = trading::OrderType::Limit;
+    order.order.limit_price = Money::from_double(.1);
+    ASSERT_TRUE(command(desk, order, market.time, market.time).decision.ok());
+    server::TradingCommand remove;
+    remove.kind = server::TradingCommand::Kind::DeleteAccount;
+    remove.account = "evaluation";
+    EXPECT_EQ(command(desk, remove, market.time, market.time).error_code, "ACCOUNT_NOT_EMPTY");
+    change.archived = true;
+    ASSERT_TRUE(command(desk, change, market.time, market.time).error_code.empty());
+    ASSERT_TRUE(command(desk, remove, market.time, market.time).error_code.empty());
+    EXPECT_FALSE(desk.trading_view("evaluation"));
+    EXPECT_TRUE(std::filesystem::exists(options.paper_accounts / "deleted/evaluation/evaluation.jsonl"));
+    ASSERT_EQ(command(desk, create, market.time, market.time).account, "evaluation-2");
+    desk.stop();
+  }
+  // Simulate a crash after committing the deletion tombstone, before moving files.
+  std::filesystem::create_directories(options.paper_accounts / "deleted/evaluation-2");
+  server::Desk desk("test", {}, {{"SPX"}}, options);
+  desk.start_trading();
+  EXPECT_EQ(desk.accounts().size(), 1U);
+  EXPECT_TRUE(std::filesystem::exists(options.paper_accounts / "deleted/evaluation-2/evaluation-2.jsonl"));
+  EXPECT_EQ(command(desk, create, market.time, market.time).account, "evaluation-3");
+  desk.stop();
+}
+
 TEST(Desk, OnlyExplicitReplayJournalsBatchSyncs) {
   for (const bool replay : {false, true}) {
     test::RecordingFile file;

@@ -336,6 +336,13 @@ void Notifications::run() {
   }
 }
 
+void Notifications::remove_account(const std::string& account) {
+  seen_.erase(account);
+  const std::lock_guard lock(mutex_);
+  for (auto& channel : channels_) channel.near_floor.erase(account);
+  std::erase_if(queue_, [&](const auto& pending) { return pending.event.account == account; });
+}
+
 void Notifications::observe(std::string_view account, const TradingView& view) {
   if (!view.snapshot) return;
   const std::string id(account);

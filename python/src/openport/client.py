@@ -188,8 +188,8 @@ class Client:
     def plans(self) -> Plans:
         return self._request("GET", "/plans")
 
-    def accounts(self) -> Accounts:
-        return self._request("GET", "/accounts")
+    def accounts(self, *, archived: bool = False) -> Accounts:
+        return self._request("GET", "/accounts", params={"archived": "true"} if archived else None)
 
     @staticmethod
     def _order(order: JSON | None, fields: JSON) -> JSON:
@@ -278,6 +278,15 @@ class Client:
 
     def create_account(self, name: str, **settings) -> JSON:
         return self._request("POST", "/accounts", {"name": name, **settings})
+
+    def rename_account(self, account_id: str, name: str) -> JSON:
+        return self._request("PATCH", "/accounts/" + quote(account_id, safe=""), {"name": name})
+
+    def archive_account(self, account_id: str, archived: bool = True) -> JSON:
+        return self._request("PATCH", "/accounts/" + quote(account_id, safe=""), {"archived": archived})
+
+    def delete_account(self, account_id: str) -> JSON:
+        return self._request("DELETE", "/accounts/" + quote(account_id, safe=""))
 
     def reset_account(self, reason: str, **settings) -> Account:
         return self._request("POST", "/account/reset", {"reason": reason, **settings}, scoped=True)

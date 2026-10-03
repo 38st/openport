@@ -127,6 +127,8 @@ class Stub:
             return 201 if first else 200, {"account_version": "1", "order": order, "fills": []}
         if path.startswith("/api/orders/") and method == "GET":
             return 200, {"account_version": "2", "order": shaped("Order", id=path.rsplit("/", 1)[-1], actor="agent", status="cancelled")}
+        if path.startswith("/api/accounts/"):
+            return 200, shaped("DeleteAccountResponse" if method == "DELETE" else "UpdateAccountResponse")
         if path.startswith("/api/orders/") and method in {"DELETE", "PUT"}:
             return 200, {"account_version": "2", "order": shaped("Order", actor="agent", status="cancelled"), "fills": []}
         if path.endswith(".csv"):
@@ -167,7 +169,7 @@ def stub(monkeypatch):
             self.end_headers()
             self.wfile.write(raw)
 
-        do_GET = do_POST = do_PUT = do_DELETE = respond
+        do_GET = do_POST = do_PUT = do_PATCH = do_DELETE = respond
 
     server = ThreadingHTTPServer(("127.0.0.1", 0), Handler, bind_and_activate=False)
     worker = None

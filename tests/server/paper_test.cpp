@@ -1270,6 +1270,17 @@ TEST(PaperAccounts, NamedAccountsTradeApartAndRecoverFromTheirOwnJournals) {
     EXPECT_EQ(server::handle_api({"GET", "/api/portfolio?account=Swing"}, engine).status, 400);
     EXPECT_EQ(write(engine, "POST", "/api/orders?account=nobody", order(market, "lost")).status, 404);
     EXPECT_EQ(write(engine, "POST", "/api/orders?account=swing-50k&x=1", order(market, "extra")).status, 400);
+    EXPECT_EQ(write(engine, "PATCH", "/api/accounts/main", {{"name", "No"}}).status, 403);
+    EXPECT_EQ(write(engine, "PATCH", "/api/accounts/missing", {{"archived", true}}).status, 404);
+    for (const auto& body : {json::object(), json{{"name", ""}}, json{{"archived", "yes"}}, json{{"unknown", true}}}) {
+      EXPECT_EQ(write(engine, "PATCH", "/api/accounts/swing-50k", body).status, 400);
+    }
+    EXPECT_EQ(write(engine, "PATCH", "/api/accounts/swing-50k", {{"archived", true}}).status, 200);
+    EXPECT_EQ(read(engine, "/api/accounts")["accounts"].size(), 2);
+    EXPECT_EQ(read(engine, "/api/accounts?archived=true")["accounts"].size(), 3);
+    EXPECT_EQ(json::parse(server::tick_message(engine))["accounts"].size(), 2);
+    EXPECT_EQ(write(engine, "POST", "/api/orders?account=swing-50k", order(market, "frozen")).status, 409);
+    EXPECT_EQ(write(engine, "PATCH", "/api/accounts/swing-50k", {{"archived", false}}).status, 200);
     swing = read(engine, "/api/portfolio?account=swing-50k").dump();
     engine.stop();
   }

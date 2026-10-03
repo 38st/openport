@@ -23,7 +23,7 @@ void Desk::evaluate_playbooks(md::Timestamp driver_time) {
   const auto cancel_reason = inputs_first() && options_.playbook_cancel_labels
       ? trading::Reason::PLAYBOOK_TIME_STOP : trading::Reason::USER_CANCEL;
   for (auto& account : accounts_) {
-    if (!account.session || !account.failure.empty() || !playbooks_->enabled(account.id)) continue;
+    if (account.archived || !account.session || !account.failure.empty() || !playbooks_->enabled(account.id)) continue;
     evaluated = true;
     const auto view = trading_view(account.id);
     const auto inputs = [&](const std::string& symbol, const json& conditions) {

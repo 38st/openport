@@ -48,6 +48,7 @@ class Playbooks {
       const TradingView& view, const std::function<PlaybookInputs(const std::string&, const Json&)>& inputs,
       const Preview& preview, const Send& send, const Cancel& cancel);
   trading::OrderRequest take(const std::string& account, const std::string& staged);
+  void remove_account(const std::string& account);
  private:
   void save(const Json& next);
   std::filesystem::path file_;

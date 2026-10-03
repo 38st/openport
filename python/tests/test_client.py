@@ -335,3 +335,19 @@ def test_alerts_keep_decimal_levels_and_scope_in_live_replay_and_history(stub):
     assert stub.requests[-1][1] == "/api/replay/history/run-1/alerts?account=main"
     client.delete_alert("7/8")
     assert stub.requests[-1][0:2] == ("DELETE", "/api/alerts/7%2F8?account=practice")
+
+
+def test_account_lifecycle_routes(stub):
+    client = Client(stub.url, "secret", "unrelated")
+    client.accounts(archived=True)
+    assert stub.requests[-1][1] == "/api/accounts?archived=true"
+    client.rename_account("swing", "Renamed")
+    assert stub.requests[-1][0:2] == ("PATCH", "/api/accounts/swing")
+    assert stub.requests[-1][3] == {"name": "Renamed"}
+    client.archive_account("swing")
+    assert stub.requests[-1][3] == {"archived": True}
+    client.archive_account("swing", False)
+    assert stub.requests[-1][3] == {"archived": False}
+    client.delete_account("swing")
+    assert stub.requests[-1][0:2] == ("DELETE", "/api/accounts/swing")
+    assert stub.requests[-1][3] is None

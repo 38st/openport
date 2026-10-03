@@ -64,6 +64,7 @@ class Notifications {
   void stop();
   void publish(const NotificationEvent& event);
   void observe(std::string_view account, const TradingView& view);
+  void remove_account(const std::string& account);
   /// 202 queued, 404 unknown channel, 409 disabled, 429 full, 503 stopped.
   int test(std::string_view channel);
   /// Only nonsecret settings can be changed; invalid input throws a redacted error.
