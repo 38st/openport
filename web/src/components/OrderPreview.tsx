@@ -62,8 +62,8 @@ export function ExecutionSummary({ execution: e }: { execution: PreviewExecution
   </section>
 }
 /** `what` names what is previewed: a new order, or a change to a resting one, whose sizes count the units still to work. */
-export function OrderPreviewPanel({ preview, onSize, disabled = false, what = "order", onWhatIf }: {
-  preview: { data?: OrderPreview; error: unknown; loading: boolean }; onSize: (size: number) => void; disabled?: boolean; what?: "order" | "change"
+export function OrderPreviewPanel({ preview, onSize, disabled = false, what = "order", onWhatIf, sizing = true }: {
+  preview: { data?: OrderPreview; error: unknown; loading: boolean }; onSize: (size: number) => void; disabled?: boolean; what?: "order" | "change"; sizing?: boolean
   /** Adds the order to Positions' what-if comparison; false when there is no room. */
   onWhatIf?: () => boolean
 }) {
@@ -75,8 +75,8 @@ export function OrderPreviewPanel({ preview, onSize, disabled = false, what = "o
     <div className="flex items-center justify-between gap-2"><span className="font-medium">Simulated order preview</span>
       {onWhatIf && <button type="button" className="trade-button ml-auto" disabled={!p}
         onClick={() => setAdded(onWhatIf() ? "Added to What-if on Positions." : "What-if is full: six candidates of up to four orders.")}>Add to what-if</button>}
-      <button type="button" className="trade-button" disabled={disabled || preview.loading || !p || p.max_units == null || p.max_units < 1 || !!preview.error}
-        onClick={() => { if (p?.max_units) onSize(p.max_units) }}>{floorless ? "Size to buying power" : "Size to floor"}</button></div>
+      {sizing && <button type="button" className="trade-button" disabled={disabled || preview.loading || !p || p.max_units == null || p.max_units < 1 || !!preview.error}
+        onClick={() => { if (p?.max_units) onSize(p.max_units) }}>{floorless ? "Size to buying power" : "Size to floor"}</button>}</div>
     {added && <p role="status" className="text-muted">{added}</p>}
     {preview.loading ? <p className="text-muted">Checking order…</p>
       : preview.error ? <p role="status" className="text-warn">Preview failed. Buying power and floor risk are unavailable. You can still submit for the server's checks.</p>
@@ -86,13 +86,13 @@ export function OrderPreviewPanel({ preview, onSize, disabled = false, what = "o
           <dt className="text-muted">Buying power after</dt><dd className="text-right">{formatMoney(p.buying_power.after)}</dd>
           <dt className="text-muted">{p.max_loss_basis === "scenario_grid" ? "Scenario-grid loss" : "Max loss at expiry"}</dt><dd className="text-right">{formatMoney(p.max_loss)}</dd>
           <dt className="text-muted">Room after this {what}</dt><dd className="text-right">{formatMoney(p.breach.room)}</dd>
-          {floorless ? <><dt className="text-muted">Size within buying power and limits</dt><dd className="text-right">{units(p.max_units)}</dd></>
+          {sizing && (floorless ? <><dt className="text-muted">Size within buying power and limits</dt><dd className="text-right">{units(p.max_units)}</dd></>
             : p.max_units_buying_power === undefined ? <><dt className="text-muted">Size at 50% of floor room</dt><dd className="text-right">{units(p.max_units)}</dd></>
             : <>
               <dt className="text-muted">Fits buying power</dt><dd className="text-right">{units(p.max_units_buying_power)}</dd>
               <dt className="text-muted">Fits 50% of floor room</dt><dd className="text-right">{units(p.max_units_floor)}</dd>
               <dt className="text-muted">Size that fits both</dt><dd className="text-right">{units(p.max_units)}</dd>
-            </>}
+            </>)}
         </dl>
         {p.decision !== "ok" && <p role="status" className="text-warn">{p.decision}: {p.reason?.message}</p>}
         {p.decision === "ok" && p.execution && <ExecutionSummary execution={p.execution} />}
@@ -107,7 +107,7 @@ export function OrderPreviewPanel({ preview, onSize, disabled = false, what = "o
               <div key={key}><dt className="text-muted">{label}</dt><dd>{signed(p.exposure_change![key])}</dd></div>)}</dl>
           </section>}
         </details>
-        <p className="text-faint">Full-size projection including fees. {floorless ? "Size uses buying power and limits: the account has no plan or soft floor." : "Size uses buying power, limits and 50% of the nearer floor's room."} Sizing is unavailable when the order is refused at any size or its loss cannot be projected. Scenario losses are model estimates.</p>
+        <p className="text-faint">Full-size projection including fees. {sizing && <>{floorless ? "Size uses buying power and limits: the account has no plan or soft floor." : "Size uses buying power, limits and 50% of the nearer floor's room."} Sizing is unavailable when the order is refused at any size or its loss cannot be projected. </>} Scenario losses are model estimates.</p>
       </>}
   </section>
 }

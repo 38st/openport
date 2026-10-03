@@ -477,3 +477,18 @@ it("enables limit flatten overnight and sends the same pricing to its preview", 
   await click("Close 1 position")
   expect(api.closePositions).toHaveBeenCalledWith(null, "open", { type: "limit", limit_ticks: 3 })
 })
+
+it.each([3, -3])("keeps a close within the %s held contracts without opening-size suggestions", async (held) => {
+  vi.mocked(api.portfolio).mockResolvedValue({ ...portfolio, positions: [{ ...portfolio.positions[0]!, symbol: selection.symbol, quantity: held }] })
+  await act(async () => root.render(<QueryClientProvider client={client}>
+    <OrderTicket selection={{ ...selection, closing: true, cell: held > 0 ? "bid" : "ask", quantity: Math.abs(held) }} quote={quote} trading={trading} onClose={() => {}} />
+  </QueryClientProvider>))
+  await act(async () => { await new Promise((resolve) => setTimeout(resolve, 20)) })
+  expect(field("Quantity").value).toBe("3")
+  expect(host.textContent).not.toContain("Size to")
+  expect(host.querySelector('[aria-label="Quantity 5"]')).toBeNull()
+  await setField("Quantity", "37")
+  expect(field("Quantity").value).toBe("3")
+  await click("Submit order")
+  expect(api.submitOrder).toHaveBeenCalledWith(expect.objectContaining({ quantity: 3, side: held > 0 ? "sell" : "buy" }), trading.write)
+})

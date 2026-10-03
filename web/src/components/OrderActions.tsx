@@ -124,7 +124,7 @@ export function EditOrderDialog({ order, trading, onClose, onDone }: {
         {order.reduce_only && <p className="text-xs text-muted">This close’s size follows its position. Changing its price stops automatic repricing.</p>}
         {order.role && <p className="text-xs text-muted">A bracket exit closes at most the position it protects: make it smaller to take part off, and the other exit keeps protecting the rest.</p>}
         {"error" in result && <p className="text-xs text-warn" role="status">{result.error}</p>}
-        {"change" in result && <OrderPreviewPanel what="change" preview={preview} disabled={!fields.quantity}
+        {"change" in result && <OrderPreviewPanel sizing={!order.reduce_only && !order.role} what="change" preview={preview} disabled={!fields.quantity}
           onSize={(size) => setDraft({ ...draft, quantity: String(order.filled_quantity + size) })} />}
         <p className="text-[11px] text-muted">
           The order keeps its number and fills. The new terms are checked like a new order, and a limit that crosses the market fills at once.

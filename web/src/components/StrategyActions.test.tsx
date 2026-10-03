@@ -190,3 +190,20 @@ it("warns for the thin leg and shows per-leg market quantities and displayed sid
   await click("Submit strategy order")
   expect(api.submitOrder).toHaveBeenCalledWith(expect.objectContaining({ type: "market", quantity: 3 }), trading.write)
 }, renderTimeout)
+
+it.each([false, true])("caps a held ticket's quantity and hides sizing (roll: %s)", async (roll) => {
+  const closing = closingPlan(spread).legs.map((leg) => ({ ...leg, quote }))
+  const legs = roll ? [...closing, ...spread.legs.map(({ leg }) => ({ ...leg, symbol: leg.symbol.replace("261016", "261023"), expiry: "2026-10-23PM", quote }))] : closing
+  await render(<StrategyTicket legs={legs} onLegs={() => {}} expiries={[selection.expiry]} underlying="SPX" spot={7000} trading={trading}
+    units={2} closing={!roll} roll={roll} onClose={() => {}} />)
+  const quantity = () => host.querySelector<HTMLInputElement>('input[type="number"]')!
+  expect(quantity().value).toBe("2")
+  expect(host.textContent).not.toContain("Size to")
+  expect(host.querySelector('[aria-label="Quantity 5"]')).toBeNull()
+  await setField("Quantity", "37")
+  expect(quantity().value).toBe("2")
+  expect(quantity().max).toBe("2")
+  await waitForRender(() => expect(quantity().value).toBe("2"))
+  await act(async () => host.querySelector("form")!.dispatchEvent(new Event("submit", { bubbles: true, cancelable: true })))
+  expect(api.submitOrder).toHaveBeenCalledWith(expect.objectContaining({ quantity: 2 }), trading.write)
+}, renderTimeout)
