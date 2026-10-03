@@ -1225,6 +1225,23 @@ cancels active I/O; system DNS resolution can still wait for the OS. No live pro
 send was exercised in the offline test environment. Native SMTP is not included;
 use a generic webhook connected to a webhook-to-email service for email alerts.
 
+## Paper execution startup flags
+
+| Flag | New main-account value |
+| --- | --- |
+| `--paper-fill-model as_displayed\|conservative\|midpoint` | `as_displayed` by default; the same presets as account reset |
+| `--paper-slippage-ticks N` | Override the model's slippage, integer 0–10 |
+| `--paper-fill-latency-ms N` | Override the model's latency, integer 0–60000 ms |
+| `--paper-impact-ticks N` | Override the model's impact, integer 0–10 |
+
+`conservative` selects 1 slippage tick, 1000 ms latency and 1 impact tick;
+`midpoint` selects zero for those fields and 50% inside fills. `as_displayed`
+selects zero throughout. Numeric flags override the model regardless of argument
+order. Like `--plan`, these seed only a new main journal: recovery keeps all
+recorded settings even if startup flags differ. Named accounts and resets use
+request rules or `fill_model`; sandboxes use the practice plan's displayed fills.
+Unlike `--paper-fee`, execution startup flags do not seed those other accounts.
+
 ## Paper fee schedules
 
 `--paper-fee` remains the flat per-contract default for new accounts. Create/reset
