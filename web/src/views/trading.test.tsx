@@ -160,7 +160,7 @@ describe("paper trading fixtures", () => {
     vi.mocked(useLive).mockReturnValue(liveState({ ...status, underlyings: [{ ...status.underlyings[0]!, session }] }, null, "open"))
     const html = render(<OrderTicket selection={selection} quote={quote} trading={trading} onClose={() => {}} />)
     expect(html).toContain(name === "global" ? "SPX is in its overnight session (8:15 pm to 9:25 am ET)" : "SPX is in its curb session (4:15 to 5:00 pm ET)")
-    expect(html).toContain("limit orders only, with a condition or exits only on a GTC order, which waits for the regular session")
+    expect(html).toContain("limit orders only. EXTO and GTC + EXTO conditions and exits work here; GTC and GTD wait for regular hours.")
     expect(html).not.toContain('aria-label="Condition"')
     expect(html).not.toContain('aria-label="Bracket"')
     expect(html).not.toContain(">Market</button>")

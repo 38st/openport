@@ -8,7 +8,7 @@ export function spreadTarget(entry: number, percent: number, tick: number): stri
   return roundNet(-entry * percent / 100, tick).toFixed(2)
 }
 
-export function useSpreadExits(entry: number | null, tick: number, enabled = false) {
+export function useSpreadExits(entry: number | null, tick: number, enabled = false, extended = false) {
   const [protect, setProtect] = useState(enabled)
   const [targetOn, setTargetOn] = useState(true)
   const [stopOn, setStopOn] = useState(true)
@@ -50,10 +50,11 @@ export function useSpreadExits(entry: number | null, tick: number, enabled = fal
           <span className="text-muted">Limit: {limitValid && limit ? netText(Number(limit)) : "—"}</span></label>}
         <p className="text-muted">Combo net is the displayed cost to close: positive to pay, negative to receive. A leg nobody bids for is bought back at its ask or given away at $0.00. {limitOn
           ? "A reached stop-limit rests as a closing GTC combo limit at its net, on the combo tick, and waits if the market gaps through it."
+          : extended ? "Outside regular hours a reached stop executes once at each leg’s touch, with displayed size only."
           : "A reached stop sends a market IOC combo with the plan’s slippage."}</p>
       </>}
-      <p className="text-muted">Exits close all legs together, wait outside the regular session, and expire at the nearest leg’s last trade or auto-close. An exit filling completely cancels the other; a stop that fills only in part re-arms for the units left.</p>
+      <p className="text-muted">Exits close all legs together, {extended ? "work in every product session" : "wait outside the regular session"}, and expire at the nearest leg’s last trade or auto-close. An exit filling completely cancels the other; a stop that fills only in part re-arms for the units left.</p>
     </>}
   </div>
-  return { bracket, valid, fields }
+  return { bracket, valid, fields, setLimitOn }
 }

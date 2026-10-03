@@ -130,3 +130,9 @@ describe("fill quotes", () => {
       .toEqual({ book: "— × $4.60", detail: "10 × 3 · 2 of 10 left · quoted 0s before" })
   })
 })
+
+it("lets a limit flatten change price while keeping its quantity tied to the position", () => {
+  const close: typeof order = { ...order, reduce_only: true, type: "limit", time_in_force: "exto", limit_ticks: 1 }
+  expect(editable(close)).toBe(true)
+  expect(editableFields(close)).toEqual({ quantity: false, limit: true, trigger: false, tif: false })
+})
