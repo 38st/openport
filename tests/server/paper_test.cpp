@@ -3016,12 +3016,12 @@ TEST_F(PaperEngine, FundedPlansUnlockAfterAPassAndPayoutsFollowTheirRules) {
     auto bad = custom; bad["payouts"][key] = value;
     expect_error(write(*engine, "POST", "/api/account/reset", {{"initial_cash", "10000"}, {"rules", bad}, {"reason", "invalid"}}), 400, "INVALID_REQUEST");
   }
-  EXPECT_EQ(json::parse(custom_reset.body)["rules"]["payouts"]["consistency_percents"], json({20, 25, 30}));
-  for (const auto& invalid : {json({0}), json({101}), json({-1})}) {
+  EXPECT_EQ(json::parse(custom_reset.body)["rules"]["payouts"]["consistency_percents"], json::array({20, 25, 30}));
+  for (const auto& invalid : {json::array({0}), json::array({101}), json::array({-1})}) {
     custom["payouts"]["consistency_percents"] = invalid;
     expect_error(write(*engine, "POST", "/api/account/reset", {{"initial_cash", "10000"}, {"rules", custom}, {"reason", "invalid"}}), 400, "INVALID_RULES");
   }
-  for (const auto& invalid : {json({40.5}), json({"40"}), json(nullptr), json(40), json::array({18446744073709551615ULL})}) {
+  for (const auto& invalid : {json::array({40.5}), json::array({"40"}), json(nullptr), json(40), json::array({18446744073709551615ULL})}) {
     custom["payouts"]["consistency_percents"] = invalid;
     expect_error(write(*engine, "POST", "/api/account/reset", {{"initial_cash", "10000"}, {"rules", custom}, {"reason", "invalid"}}), 400, "INVALID_REQUEST");
   }
