@@ -183,7 +183,7 @@ RUT and their weeklies) and American equity and ETF options (SPY, QQQ, single st
 against displayed quotes: market and marketable orders take the far side up to the
 displayed size by default, with optional per-plan slippage of 0–10 ticks. Single-leg limits cap
 the fill price; multi-leg orders wait if the slipped net exceeds their limit.
-Rules offers **As displayed** (the existing defaults), **Inside at midpoint** (F46,
+Rules offers **As displayed** (the existing defaults), **Inside at midpoint** (see
 below), or **Conservative** for a new
 account attempt: 1 second of market-time latency, 1 slippage tick and 1 extra tick
 for each additional displayed-size block. Custom rules set latency up to 60 seconds
@@ -271,7 +271,7 @@ and the Payouts page; set `showFundedAccounts` in `web/src/lib/features.ts` to o
 them. [Paper trading](paper-trading.md) documents every rule, the HTTP contract and
 the simulation's limits.
 
-F46 adds opt-in inside fills at a deterministic share of the bid/ask spread
+Opt-in inside fills fill limits at a deterministic share of the bid/ask spread
 (midpoint preset: 50%), limited by each far side's displayed size left, with the
 usual fees and risk checks. DAY/GTC single-leg and net combo limits can walk by a
 chosen step and interval toward a cap on market time. Both tickets, previews,
