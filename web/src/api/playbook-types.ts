@@ -1,15 +1,21 @@
 import type { NewOrder } from "./trading-types"
 import type { StrategyTemplate } from "../lib/strategy"
+export type TechnicalCondition = { interval: "minute" | "day"; period: number } & (
+  | { indicator: "sma" | "ema"; direction: "above" | "below" }
+  | { indicator: "rsi"; min: number; max: number }
+  | { indicator: "bollinger"; direction: "above" | "below"; k: number }
+)
 export interface Playbook {
   id: string; version?: number; name: string; description: string; underlyings: string[]
   window: { start: string; end: string; weekdays: number[] }
   conditions: {
     price?: { reference: "level" | "prior_close" | "day_open"; direction: "above" | "below"; value: number }
+    technical?: TechnicalCondition[]; vix?: { min: number; max: number }; gap?: { min_percent: number; max_percent: number }
     iv_rank?: { min: number; max: number }; vrp_min?: number; term_inverted?: boolean; dte?: { min: number; max: number }
   }
   structure: { template: StrategyTemplate; expiry: { min: number; max: number } }
   sizing: { units: number } | { floor_share: number }
-  management: { take_profit_percent?: number; stop_credit_multiple?: number; stop_underlying?: { direction: "above" | "below"; level: number }; close_by: string; max_hold_days?: number }
+  management: { take_profit_percent?: number; stop_credit_multiple?: number; stop_underlying?: { direction: "above" | "below"; level: number }; close_by: string; max_hold_days?: number; max_days_in_trade?: number; close_at_dte?: number; stop_loss_percent?: number; trailing_stop?: { percent: number } }
   guardrails: { max_entries_per_day: number; cooldown_minutes: number }
 }
 export interface PlaybookStats {

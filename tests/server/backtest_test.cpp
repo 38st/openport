@@ -24,7 +24,7 @@ json catalogue() {
 std::string bytes(const std::filesystem::path& path) {
   std::ifstream input(path); std::ostringstream out; out << input.rdbuf(); return out.str();
 }
-std::filesystem::path recorded_day(const std::filesystem::path& directory, md::Date date, bool loss = false) {
+std::filesystem::path recorded_day(const std::filesystem::path& directory, md::Date date, bool loss = false, bool breadth = false) {
   const auto path = directory / (md::format_date(date) + ".oprec");
   auto contract = *md::parse_osi("SPXW  260916P05000000");
   contract.expiry = date;
@@ -41,9 +41,10 @@ std::filesystem::path recorded_day(const std::filesystem::path& directory, md::D
   md::RecordingSink sink(path, header, discard, recording);
   sink.publish(md::ContractDefinition{0, contract});
   sink.publish(md::ContractDefinition{1, lower});
+  if (breadth) sink.publish(md::UnderlyingClose{"SPX", time, md::previous_business_day(date), 5000});
   for (int minute = 0; minute < 3; ++minute) {
     time = header.started + minute * md::kNanosPerMinute;
-    const double high = minute == 0 ? 10 : loss && minute == 2 ? 13 : 9;
+    const double high = minute == 0 ? 10 : breadth && minute == 2 ? 9.5 : loss && minute == 2 ? 13 : 9;
     sink.publish(md::UnderlyingQuote{"SPX", time, 5000, 5000, 5000});
     sink.publish(md::OptionQuote{0, time, high, high + .1, 20, 20});
     sink.publish(md::OptionQuote{1, time, 8, 8.1, 20, 20});
@@ -58,6 +59,36 @@ server::BacktestRequest request_for(const std::vector<std::filesystem::path>& fi
   auto request = server::parse_backtest({{"playbook", "batch@1"}, {"plan", "eod-50k"}, {"days", days}}, catalogue(), {}, {}, false);
   request.analytics.fallback_rate = 0;
   return request;
+}
+TEST(Backtest, GapAndTrailingRulesMatchFourWorkersAndVerify) {
+  test::RecordingFile storage;
+  std::vector<std::filesystem::path> files;
+  for (int day = 14; day <= 17; ++day) files.push_back(recorded_day(storage.directory, {2026, 9, day}, false, true));
+  auto request = request_for(files);
+  auto& setup = request.playbooks["definitions"]["batch"]["versions"][0];
+  setup["conditions"] = {{"gap", {{"min_percent", -1}, {"max_percent", 1}}}};
+  setup["management"] = {{"close_by", "15:45"}, {"trailing_stop", {{"percent", 50}}}};
+  const std::atomic_bool cancel{false};
+  request.workers = 1;
+  const auto first = server::run_backtest(request, storage.directory / "one", cancel);
+  ASSERT_EQ(first.at("status"), "completed") << first.dump();
+  request.workers = 4;
+  const auto second = server::run_backtest(request, storage.directory / "four", cancel);
+  EXPECT_EQ(first, second);
+  for (const auto& day : first.at("days")) {
+    ASSERT_EQ(day.at("fills").size(), 4U) << day.dump();
+    ASSERT_EQ(day.at("trades").size(), 1U);
+    EXPECT_EQ(day.at("trades")[0].at("rules").at("trailing_stop"), true);
+    const auto journal = day.at("journal").get<std::string>();
+    EXPECT_EQ(bytes(storage.directory / "one" / journal), bytes(storage.directory / "four" / journal));
+    EXPECT_NE(bytes(storage.directory / "one" / journal).find("Playbook automatic trailing stop"), std::string::npos);
+    const auto verified = server::verify_run(storage.directory / "one" / journal);
+    EXPECT_TRUE(verified.matched) << verified.message;
+  }
+  for (const auto& attempt : first.at("attempts")) {
+    const auto verified = server::verify_run(storage.directory / "one" / attempt.at("journal").get<std::string>());
+    EXPECT_TRUE(verified.matched) << verified.message;
+  }
 }
 TEST(Backtest, AttemptsCarryBalancesDecidePassAndFailureAndLeaveOpenTail) {
   test::RecordingFile storage;

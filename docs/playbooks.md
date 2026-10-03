@@ -61,10 +61,13 @@ midnight. The normal product session and feed-freshness checks still apply.
 | `vrp_min` | 30-day model-free IV minus 21-session close-to-close realized volatility, strictly above this many vol points |
 | `term_inverted` | Whether model-free 9d/30d is greater than one; false includes equality |
 | `dte: {min,max}` | Inclusive ACT/365 calendar days to the selected expiry's settlement |
+| `technical` | SMA/EMA price comparisons, RSI ranges and Bollinger bands; see technical rules below |
+| `vix: {min,max}` | Inclusive current VIX index level |
+| `gap: {min_percent,max_percent}` | Inclusive signed day-open gap vs prior close |
 
 A missing input fails its condition. The publication's `reasons` and backtests'
 `entry_reasons` name the first failed condition, checked in this fixed order: DTE,
-IV rank, VRP, term structure, then price. Reasons include measured values and
+IV rank, VRP, term structure, price, VIX, gap, then technical rules. Reasons include measured values and
 thresholds, for example `IV rank 0.12 is outside 0.30-1.00` or
 `Price 5912.30 is not above day open 5920.00 + 0.00`. Missing inputs name what is
 absent: `IV rank unavailable (no IV history)`, `Day open unavailable (no 09:30 minute)`
@@ -511,3 +514,84 @@ margin. A collar's long put costs its premium, without extra strategy margin.
 Playbook definitions and automatic stages remain option orders; share purchases
 are manual terminal/API trades. Python `trade_stock` and `preview_stock` and the
 matching MCP tools support live named accounts and replay.
+
+## Technical, VIX and gap rules
+
+Optional `conditions.technical` is an AND array of 1–20 rules. Each has
+`interval: "minute"|"day"` and integer `period` 2–500:
+
+| Indicator | Other required fields | Passes when |
+| --- | --- | --- |
+| `sma`, `ema` | `direction: "above"|"below"` | Current underlying spot is strictly above/below the average |
+| `rsi` | `min`, `max` (0–100) | Wilder RSI is within the inclusive range |
+| `bollinger` | `direction: "above"|"below"`, `k` (>0, ≤10) | Spot is strictly above the upper/below the lower band |
+
+For example, `{"technical":[{"indicator":"rsi","interval":"minute","period":14,"min":30,"max":70}]}`.
+Calculations use chronological completed candle closes, at most the latest 1,000.
+Minute bars count once their start plus one minute is at or before the underlying's
+market time. Daily bars count only before its current New York date. The current
+partial minute and entire current day are excluded. Missing minutes/sessions are
+not filled. SMA uses the last N closes; EMA starts with the first N closes' SMA
+and applies alpha=2/(N+1) to the remaining closes in that retained window. Wilder
+RSI starts with mean gains/losses over N changes, then smooths each with alpha=1/N;
+a flat series is 50, only gains is 100, only losses is zero. It needs N+1 closes.
+Bollinger uses the last N closes' SMA and population standard deviation.
+Changing available warm-up history can change EMA/RSI. A replay/backtest uses only
+its observed candle history, never future bars or downloaded history.
+
+`conditions.vix: {min,max}` is an inclusive index-level range (0–1,000), using
+the observed underlying spot keyed by `VIX`, no more than five market minutes older than the traded
+underlying and never newer. Demo revision 3+ supplies VIX when subscribed; live
+feeds and recordings must actually carry VIX. Neither SPX implied volatility nor an option-implied VIX forward substitutes for the index.
+Missing/stale data fails with `VIX unavailable (no current VIX spot)`.
+
+`conditions.gap: {min_percent,max_percent}` is the signed percentage
+`100 × (09:30 open / prior business close − 1)`, inclusive, bounds −100 to 10,000.
+It uses the same official/stored prior close and exact opening minute as `price`.
+Positive ranges select up gaps; negative ranges select down gaps. A missing open
+or prior close fails explicitly. New checks follow the existing conditions:
+VIX, gap, then technical rules in array order. Missing history reports, for example,
+`SMA(20, day) unavailable: 12 of 20 daily bars`; threshold failures include the
+measured indicator/band and comparison. No fast/slow crossover rule is included.
+
+## Additional management rules
+
+- `trailing_stop: {percent: P}` (0 < P ≤ 100) closes after P percent of the
+  highest positive gross strategy profit is given back. Profit uses closing natural
+  prices (sell longs at bid, buy shorts at ask), as combo stops do, actual opening
+  fills, multipliers and any realized leg profit, excluding fees. It activates at
+  any positive peak; there is no separate activation threshold. The reducer samples
+  fresh positive quotes at its marking/execution cadence. Peak and first trigger
+  are journaled only for entries carrying this rule, survive restart and latch
+  until closed, including while a close cannot be accepted. Entries retain the rule
+  in their order note. Missing/shared strategy evidence leaves adherence unknown.
+- `close_at_dte: N` (integer 0–3,650) closes when the nearest remaining leg has
+  at most N ACT/365 calendar DTE to settlement, on the first update at/after that
+  instant, without a time-of-day restriction. Already-due entries are refused and
+  pending entries are cancelled. Expiry settlement and account risk
+  liquidation can close first. The regular time deadline still applies.
+- `max_days_in_trade: N` (integer 1–365) moves `close_by` N exchange business days
+  after the entry date (entry day is zero), skipping weekends/holidays, capped at
+  the destination day's regular close. It is mutually exclusive with calendar
+  `max_hold_days`; without either allowance, `close_by` remains the entry day.
+- `stop_loss_percent: P` (0 < P ≤ 100) requires a debit entry. It attaches a combo
+  bracket stop at signed closing debit `−entry_debit × (1 − P/100)`, rounded to a
+  cent, triggering at-or-above that level. Like credit stops it is fixed at
+  submission; it is mutually exclusive with credit-multiple and underlying stops.
+
+Auto applies these rules in live paper, replay and backtest engines. Stage shows
+all management rules for the trader to follow; submitted brackets still work.
+Time/days deadlines take precedence over DTE, then trailing when simultaneous.
+Automatic closes use reducing market IOC orders and retry on later updates if the
+normal close checks refuse them. The new exits check before cancelling working
+protection. Cancellations use `PLAYBOOK_TRAILING_STOP`, `PLAYBOOK_DTE_STOP` or
+`PLAYBOOK_DAYS_IN_TRADE_STOP`; close notes name the rule and entry order. Orders,
+Journal details and the existing CSV `time_stop_orders` column include them.
+
+Adherence adds `close_at_dte`, `max_days_in_trade`, `stop_loss_percent` and
+`trailing_stop` only when configured. Deadline rules are pending until due or
+closed and pass if fully closed by the exact deadline, like `time_stop`; an update
+arriving later can therefore close automatically but fail adherence. Debit stops
+check submitted bracket levels. Trailing checks closure by its recorded first
+trigger; a closed trade with sampled evidence and no trigger passes, absent
+evidence is null. Stage/off stop automatic closes but do not erase trigger evidence.

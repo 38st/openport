@@ -15428,8 +15428,168 @@
                   "min",
                   "max"
                 ]
+              },
+              "vix": {
+                "type": "object",
+                "additionalProperties": false,
+                "properties": {
+                  "min": {
+                    "type": "number",
+                    "minimum": 0,
+                    "maximum": 1000
+                  },
+                  "max": {
+                    "type": "number",
+                    "minimum": 0,
+                    "maximum": 1000
+                  }
+                },
+                "required": [
+                  "min",
+                  "max"
+                ]
+              },
+              "gap": {
+                "type": "object",
+                "additionalProperties": false,
+                "properties": {
+                  "min_percent": {
+                    "type": "number",
+                    "minimum": -100,
+                    "maximum": 10000
+                  },
+                  "max_percent": {
+                    "type": "number",
+                    "minimum": -100,
+                    "maximum": 10000
+                  }
+                },
+                "required": [
+                  "min_percent",
+                  "max_percent"
+                ]
+              },
+              "technical": {
+                "type": "array",
+                "minItems": 1,
+                "maxItems": 20,
+                "items": {
+                  "oneOf": [
+                    {
+                      "type": "object",
+                      "additionalProperties": false,
+                      "properties": {
+                        "indicator": {
+                          "enum": [
+                            "sma",
+                            "ema"
+                          ]
+                        },
+                        "interval": {
+                          "enum": [
+                            "minute",
+                            "day"
+                          ]
+                        },
+                        "period": {
+                          "type": "integer",
+                          "minimum": 2,
+                          "maximum": 500
+                        },
+                        "direction": {
+                          "enum": [
+                            "above",
+                            "below"
+                          ]
+                        }
+                      },
+                      "required": [
+                        "indicator",
+                        "interval",
+                        "period",
+                        "direction"
+                      ]
+                    },
+                    {
+                      "type": "object",
+                      "additionalProperties": false,
+                      "properties": {
+                        "indicator": {
+                          "const": "rsi"
+                        },
+                        "interval": {
+                          "enum": [
+                            "minute",
+                            "day"
+                          ]
+                        },
+                        "period": {
+                          "type": "integer",
+                          "minimum": 2,
+                          "maximum": 500
+                        },
+                        "min": {
+                          "type": "number",
+                          "minimum": 0,
+                          "maximum": 100
+                        },
+                        "max": {
+                          "type": "number",
+                          "minimum": 0,
+                          "maximum": 100
+                        }
+                      },
+                      "required": [
+                        "indicator",
+                        "interval",
+                        "period",
+                        "min",
+                        "max"
+                      ]
+                    },
+                    {
+                      "type": "object",
+                      "additionalProperties": false,
+                      "properties": {
+                        "indicator": {
+                          "const": "bollinger"
+                        },
+                        "interval": {
+                          "enum": [
+                            "minute",
+                            "day"
+                          ]
+                        },
+                        "period": {
+                          "type": "integer",
+                          "minimum": 2,
+                          "maximum": 500
+                        },
+                        "direction": {
+                          "enum": [
+                            "above",
+                            "below"
+                          ]
+                        },
+                        "k": {
+                          "type": "number",
+                          "minimum": 0.000001,
+                          "maximum": 10
+                        }
+                      },
+                      "required": [
+                        "indicator",
+                        "interval",
+                        "period",
+                        "direction",
+                        "k"
+                      ]
+                    }
+                  ]
+                }
               }
-            }
+            },
+            "additionalProperties": false
           },
           "structure": {
             "type": "object",
@@ -15513,11 +15673,77 @@
               },
               "max_hold_days": {
                 "type": "integer",
-                "minimum": 1
+                "minimum": 1,
+                "maximum": 365
+              },
+              "max_days_in_trade": {
+                "type": "integer",
+                "minimum": 1,
+                "maximum": 365
+              },
+              "close_at_dte": {
+                "type": "integer",
+                "minimum": 0,
+                "maximum": 3650
+              },
+              "stop_loss_percent": {
+                "type": "number",
+                "minimum": 0.000001,
+                "maximum": 100
+              },
+              "trailing_stop": {
+                "type": "object",
+                "additionalProperties": false,
+                "properties": {
+                  "percent": {
+                    "type": "number",
+                    "minimum": 0.000001,
+                    "maximum": 100
+                  }
+                },
+                "required": [
+                  "percent"
+                ]
               }
             },
             "required": [
               "close_by"
+            ],
+            "additionalProperties": false,
+            "description": "Optional exits; see playbooks.md. max_hold_days and max_days_in_trade are mutually exclusive. Choose one bracket stop: stop_credit_multiple, stop_loss_percent or stop_underlying. Trailing percent is peak gross natural-price profit given back; DTE is ACT/365 to nearest settlement.",
+            "allOf": [
+              {
+                "not": {
+                  "required": [
+                    "max_hold_days",
+                    "max_days_in_trade"
+                  ]
+                }
+              },
+              {
+                "not": {
+                  "required": [
+                    "stop_credit_multiple",
+                    "stop_loss_percent"
+                  ]
+                }
+              },
+              {
+                "not": {
+                  "required": [
+                    "stop_credit_multiple",
+                    "stop_underlying"
+                  ]
+                }
+              },
+              {
+                "not": {
+                  "required": [
+                    "stop_loss_percent",
+                    "stop_underlying"
+                  ]
+                }
+              }
             ]
           },
           "guardrails": {
@@ -17683,7 +17909,7 @@
       },
       "Decision": {
         "type": "object",
-        "description": "Cancellation codes include PLAYBOOK_TIME_STOP for automatic playbook time stops (older runs retain USER_CANCEL). A reason code with its numeric evidence: actual against limit for a numeric check, and scope, the underlying or aggregate it applies to (null when a check has none). A check on one contract reports its underlying; the journal keeps the contract's OSI.",
+        "description": "Cancellation codes include PLAYBOOK_TIME_STOP, PLAYBOOK_TRAILING_STOP, PLAYBOOK_DTE_STOP and PLAYBOOK_DAYS_IN_TRADE_STOP for automatic playbook exits (older runs retain USER_CANCEL). A reason code with its numeric evidence: actual against limit for a numeric check, and scope, the underlying or aggregate it applies to (null when a check has none). A check on one contract reports its underlying; the journal keeps the contract's OSI.",
         "properties": {
           "code": {
             "type": "string"

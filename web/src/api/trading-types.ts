@@ -88,7 +88,7 @@ export type DailyLossBasis = "equity" | "balance" | "higher" | "peak"
  * check, and `scope`, the underlying or "aggregate" it applies to. The evidence is
  * absent on older servers and null when a check has none.
  */
-/** Codes include PLAYBOOK_TIME_STOP for automatic entry/exit cancellations; older runs use USER_CANCEL. */
+/** Codes include PLAYBOOK_TIME_STOP, PLAYBOOK_TRAILING_STOP, PLAYBOOK_DTE_STOP and PLAYBOOK_DAYS_IN_TRADE_STOP for automatic entry/exit cancellations; older runs use USER_CANCEL. */
 export interface Decision { code: string; message: string; actual?: number | null; limit?: number | null; scope?: string | null }
 /** `requirement` is `short_requirement` under a name that fits portfolio margin too; absent on older servers. */
 export interface BuyingPower { available: Money; reserved: Money; short_requirement: Money; requirement?: Money }

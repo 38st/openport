@@ -1,4 +1,5 @@
 #include <fstream>
+#include "openport/analytics/technical.hpp"
 #include <sstream>
 #include <gtest/gtest.h>
 #include "openport/server/playbooks.hpp"
@@ -37,6 +38,236 @@ server::TradingReply command(server::Desk& desk, const json& change, md::Timesta
   desk.command(request, [&](server::TradingReply reply) { result = std::move(reply); }, time, time);
   return result;
 }
+TEST(Playbooks, TechnicalMathMatchesHandComputedCloses) {
+  const std::vector<double> closes{1, 2, 3, 2, 4};
+  EXPECT_DOUBLE_EQ(analytics::sma(closes, 3), 3);
+  EXPECT_DOUBLE_EQ(analytics::ema(closes, 3), 3);
+  EXPECT_NEAR(analytics::rsi(closes, 2), 100 * 1.25 / 1.5, 1e-12);
+  EXPECT_NEAR(analytics::bollinger(closes, 3, 2), 3 + 2 * std::sqrt(2.0 / 3), 1e-12);
+  const std::vector<double> flat{3, 3, 3}, up{1, 2, 3}, down{3, 2, 1};
+  EXPECT_DOUBLE_EQ(analytics::rsi(flat, 2), 50);
+  EXPECT_DOUBLE_EQ(analytics::rsi(up, 2), 100);
+  EXPECT_DOUBLE_EQ(analytics::rsi(down, 2), 0);
+  EXPECT_TRUE(std::isnan(analytics::rsi(flat, 3)));
+  EXPECT_TRUE(std::isnan(analytics::sma(flat, 0)));
+  EXPECT_TRUE(std::isnan(analytics::ema(std::vector<double>{1, analytics::kNaN}, 2)));
+}
+TEST(Playbooks, BreadthConditionsHaveSpecificFailuresAndStrictValidation) {
+  auto setup = definition();
+  server::PlaybookInputs inputs;
+  inputs.spot = 105; inputs.prior_close = 100; inputs.day_open = 102; inputs.vix = 20;
+  inputs.daily_closes = {99, 100, 101};
+  setup["conditions"] = {{"vix", {{"min", 20}, {"max", 20}}}, {"gap", {{"min_percent", 1}, {"max_percent", 3}}},
+      {"technical", {{{"indicator", "sma"}, {"interval", "day"}, {"period", 3}, {"direction", "above"}}}}};
+  EXPECT_NO_THROW(server::validate_playbook(setup));
+  EXPECT_FALSE(server::playbook_condition_reason(setup, inputs, 1));
+  inputs.vix = analytics::kNaN;
+  EXPECT_EQ(server::playbook_condition_reason(setup, inputs, 1), "VIX unavailable (no current VIX spot)");
+  inputs.vix = 21;
+  EXPECT_EQ(server::playbook_condition_reason(setup, inputs, 1), "VIX 21.00 is outside 20.00-20.00");
+  inputs.vix = 20; inputs.day_open = analytics::kNaN;
+  EXPECT_EQ(server::playbook_condition_reason(setup, inputs, 1), "Gap unavailable (no 09:30 minute)");
+  inputs.day_open = 99;
+  EXPECT_EQ(server::playbook_condition_reason(setup, inputs, 1), "Gap percent -1.00 is outside 1.00-3.00");
+  inputs.day_open = 102; inputs.daily_closes = {99, 100};
+  EXPECT_EQ(server::playbook_condition_reason(setup, inputs, 1), "SMA(3, day) unavailable: 2 of 3 daily bars");
+  inputs.daily_closes.push_back(101); inputs.spot = 100;
+  EXPECT_EQ(server::playbook_condition_reason(setup, inputs, 1), "Price 100.00 is not above SMA(3, day) 100.00");
+  for (const auto& [path, value] : std::vector<std::pair<std::string, json>>{
+      {"/conditions/vix/min", -1}, {"/conditions/gap/max_percent", 0}, {"/conditions/technical/0/period", 2.5},
+      {"/conditions/technical/0/interval", "hour"}, {"/conditions/technical/0/k", 2},
+      {"/management/trailing_stop", {{"percent", 0}}}, {"/management/trailing_stop", {{"percent", 20}, {"typo", 1}}},
+      {"/management/close_at_dte", -1}, {"/management/max_days_in_trade", 0}, {"/management/stop_loss_percent", 20}}) {
+    auto bad = setup; bad[json::json_pointer(path)] = value;
+    EXPECT_THROW(server::validate_playbook(bad), std::invalid_argument) << path;
+  }
+  setup["management"] = {{"close_by", "15:45"}, {"max_hold_days", 1}, {"max_days_in_trade", 1}};
+  EXPECT_THROW(server::validate_playbook(setup), std::invalid_argument);
+  setup["management"] = {{"close_by", "15:45"}, {"stop_loss_percent", 25}};
+  EXPECT_NO_THROW(server::validate_playbook(setup));
+  const auto stop = server::playbook_bracket(setup["management"], money("2")).stop_loss;
+  ASSERT_TRUE(stop && stop->trigger);
+  EXPECT_EQ(stop->trigger->level, money("-1.50"));
+  EXPECT_EQ(stop->trigger->direction, trading::TriggerDirection::AtOrAbove);
+  EXPECT_THROW(server::playbook_bracket(setup["management"], money("-2")), std::invalid_argument);
+  setup["management"] = {{"close_by", "15:45"}, {"max_days_in_trade", 1}};
+  EXPECT_EQ(server::playbook_deadline(setup, md::new_york_to_utc({2026, 9, 4}, 10, 0)), md::new_york_to_utc({2026, 9, 8}, 15, 45));
+}
+
+// Explicit two-leg snapshots exercise the same Desk callbacks in live and replay.
+std::vector<md::Event> breadth_batch(md::Timestamp time, double high, double spot = 5000) {
+  auto upper = *md::parse_osi("SPXW260924P05000000");
+  auto lower = upper; lower.strike = 4995;
+  return {md::ContractDefinition{0, upper}, md::ContractDefinition{1, lower},
+      md::UnderlyingQuote{"SPX", time, spot, spot, spot},
+      md::OptionQuote{0, time, high, high + .1, 20, 20}, md::OptionQuote{1, time, 8, 8.1, 20, 20},
+      md::SnapshotComplete{"SPX", time}};
+}
+json breadth_setup() {
+  auto setup = definition();
+  setup["structure"]["template"]["target"] = {{"mode", "strike"}, {"value", 5000}};
+  setup["management"] = {{"close_by", "15:45"}, {"take_profit_percent", 1}, {"trailing_stop", {{"percent", 50}}}};
+  return setup;
+}
+TEST(Playbooks, TrailingExitUsesNaturalProfitAndRecovers) {
+  for (const bool replay : {false, true}) {
+    test::RecordingFile file;
+    const auto opened = md::new_york_to_utc({2026, 9, 22}, 10, 0);
+    server::Desk::Options options; options.replay = replay;
+    options.paper_journal = file.directory / "trail.jsonl";
+    options.paper.limits.aggregate = {1e9, 1e9}; options.paper.limits.per_underlying = {1e9, 1e9};
+    {
+      server::Desk desk("test", {}, {{"SPX"}}, options);
+      desk.start_trading(); desk.replay_batch(breadth_batch(opened, 10), opened, opened);
+      ASSERT_TRUE(command(desk, {{"action", "create"}, {"definition", breadth_setup()}}, opened).decision.ok());
+      ASSERT_TRUE(command(desk, {{"action", "mode"}, {"id", "morning"}, {"mode", "auto"}}, opened).decision.ok());
+      ASSERT_EQ(desk.trading_view()->snapshot->positions.size(), 2U) << desk.trading_view()->playbooks_json;
+      desk.replay_batch(breadth_batch(opened + md::kNanosPerMinute, 9), opened + md::kNanosPerMinute, opened + md::kNanosPerMinute);
+      const auto& review = desk.trading_view()->snapshot->strategy_reviews.at("1");
+      ASSERT_TRUE(review.trailing);
+      EXPECT_EQ(review.trailing->peak, money("80"));
+      EXPECT_EQ(review.trailing->triggered, 0);
+      desk.stop();
+    }
+    server::Desk desk("test", {}, {{"SPX"}}, options);
+    desk.start_trading();
+    const auto fire = opened + 2 * md::kNanosPerMinute;
+    desk.replay_batch(breadth_batch(fire, 9.5), fire, fire);
+    const auto view = desk.trading_view();
+    EXPECT_TRUE(view->snapshot->positions.empty());
+    EXPECT_TRUE(view->snapshot->open_orders.empty());
+    EXPECT_EQ(view->snapshot->recent_orders.back().request.note, "Playbook automatic trailing stop; entry 1");
+    EXPECT_EQ(view->snapshot->recent_orders[1].reason.code, trading::Reason::PLAYBOOK_TRAILING_STOP);
+    const auto& review = view->snapshot->strategy_reviews.at("1");
+    ASSERT_TRUE(review.trailing);
+    EXPECT_EQ(review.trailing->triggered, fire);
+    const auto report = server::playbook_report(json::parse(view->playbooks_json), *view).at("morning");
+    EXPECT_EQ(report.at("trades")[0].at("rules").at("trailing_stop"), true);
+    desk.stop();
+    const auto recovered = trading::TradingSession::recover(trading::FileJournal::read(options.paper_journal));
+    EXPECT_EQ(recovered.snapshot()->strategy_reviews.at("1").trailing->peak, money("80"));
+  }
+}
+TEST(Playbooks, StageTrailingRuleLatchesAndAutoWaitsWithoutCancellingProtection) {
+  const auto opened = md::new_york_to_utc({2026, 9, 22}, 10, 0);
+  server::Desk::Options options; options.replay = true;
+  options.paper.limits.aggregate = {1e9, 1e9}; options.paper.limits.per_underlying = {1e9, 1e9};
+  server::Desk desk("test", {}, {{"SPX"}}, options);
+  desk.start_trading(); desk.replay_batch(breadth_batch(opened, 10), opened, opened);
+  ASSERT_TRUE(command(desk, {{"action", "create"}, {"definition", breadth_setup()}}, opened).decision.ok());
+  auto staged = command(desk, {{"action", "mode"}, {"id", "morning"}, {"mode", "stage"}}, opened);
+  const auto stages = json::parse(staged.playbook_result).at("staged");
+  ASSERT_EQ(stages.size(), 1U);
+  EXPECT_EQ(stages[0].at("management").at("trailing_stop").at("percent"), 50);
+  ASSERT_TRUE(command(desk, {{"action", "send"}, {"staged", stages[0].at("id")}}, opened).decision.ok());
+  const auto peak = opened + md::kNanosPerMinute, fire = peak + md::kNanosPerMinute;
+  desk.replay_batch(breadth_batch(peak, 9), peak, peak);
+  desk.replay_batch(breadth_batch(fire, 9.5), fire, fire);
+  EXPECT_EQ(desk.trading_view()->snapshot->positions.size(), 2U);
+  const auto bad = fire + md::kNanosPerMinute;
+  auto unusable = breadth_batch(bad, 9.5);
+  // Closing the long wing needs a positive bid; don't cancel its bracket yet.
+  std::get<md::OptionQuote>(unusable[4]).bid = 0;
+  desk.replay_batch(unusable, bad, bad);
+  ASSERT_TRUE(command(desk, {{"action", "mode"}, {"id", "morning"}, {"mode", "auto"}}, bad).decision.ok());
+  EXPECT_EQ(desk.trading_view()->snapshot->recent_orders.size(), 2U);
+  EXPECT_EQ(desk.trading_view()->snapshot->open_orders.size(), 1U);
+  const auto usable = bad + md::kNanosPerMinute;
+  desk.replay_batch(breadth_batch(usable, 9), usable, usable);
+  const auto view = desk.trading_view();
+  EXPECT_TRUE(view->snapshot->positions.empty());
+  EXPECT_EQ(view->snapshot->recent_orders.back().request.note, "Playbook automatic trailing stop; entry 1");
+  EXPECT_EQ(server::playbook_report(json::parse(view->playbooks_json), *view).at("morning").at("trades")[0].at("rules").at("trailing_stop"), false);
+}
+TEST(Playbooks, TechnicalInputsExcludeCurrentAndFutureBars) {
+  const auto time = md::new_york_to_utc({2026, 9, 22}, 10, 0);
+  auto setup = breadth_setup();
+  setup["conditions"] = {{"technical", {{{"indicator", "sma"}, {"interval", "minute"}, {"period", 2}, {"direction", "above"}},
+      {{"indicator", "ema"}, {"interval", "day"}, {"period", 2}, {"direction", "above"}}}}};
+  server::Desk::Options options; options.replay = true;
+  options.candles = std::make_shared<server::CandleStore>();
+  for (const auto t : {time - 2 * md::kNanosPerMinute, time - md::kNanosPerMinute}) options.candles->sample("SPX", t, 4900);
+  options.candles->sample("SPX", time + md::kNanosPerMinute, 10000);
+  for (const int day : {18, 21, 22, 23}) {
+    const auto t = md::new_york_to_utc({2026, 9, day}, 9, 30);
+    const double price = day < 22 ? 4900 : 10000;
+    options.candles->merge_days("SPX", {{t, price, price, price, price}});
+  }
+  options.paper.limits.aggregate = {1e9, 1e9}; options.paper.limits.per_underlying = {1e9, 1e9};
+  server::Desk desk("test", {}, {{"SPX"}}, options);
+  desk.start_trading(); desk.replay_batch(breadth_batch(time, 10), time, time);
+  ASSERT_TRUE(command(desk, {{"action", "create"}, {"definition", setup}}, time).decision.ok());
+  const auto result = command(desk, {{"action", "mode"}, {"id", "morning"}, {"mode", "stage"}}, time);
+  EXPECT_EQ(json::parse(result.playbook_result).at("staged").size(), 1U) << result.playbook_result;
+}
+TEST(Playbooks, VixConditionUsesObservedIndexAndRejectsStaleOrFuturePrints) {
+  const auto time = md::new_york_to_utc({2026, 9, 22}, 10, 0);
+  for (const int age : {-1, 0, 6}) {
+    auto setup = breadth_setup(); setup["conditions"] = {{"vix", {{"min", 20}, {"max", 20}}}};
+    server::Desk::Options options; options.replay = true;
+    options.paper.limits.aggregate = {1e9, 1e9}; options.paper.limits.per_underlying = {1e9, 1e9};
+    server::Desk desk("test", {}, {{"SPX", "VIX"}}, options);
+    desk.start_trading();
+    auto batch = breadth_batch(time, 10);
+    batch.insert(batch.begin(), md::UnderlyingQuote{"VIX", time - age * md::kNanosPerMinute, 20, 20, 20});
+    desk.replay_batch(batch, time, time);
+    ASSERT_TRUE(command(desk, {{"action", "create"}, {"definition", setup}}, time).decision.ok());
+    const auto reply = command(desk, {{"action", "mode"}, {"id", "morning"}, {"mode", "stage"}}, time);
+    const auto publication = json::parse(reply.playbook_result);
+    EXPECT_EQ(publication.at("staged").size(), age == 0 ? 1U : 0U) << publication.dump();
+    if (age != 0) { EXPECT_EQ(publication.at("reasons").at("morning:SPX"), "VIX unavailable (no current VIX spot)"); }
+  }
+}
+TEST(Playbooks, DebitStopIsSubmittedAsAFixedComboBracket) {
+  const auto time = md::new_york_to_utc({2026, 9, 22}, 10, 0);
+  auto setup = breadth_setup();
+  setup["structure"]["template"]["direction"] = "debit";
+  setup["structure"]["template"]["target"]["value"] = 4995;
+  setup["management"] = {{"close_by", "15:45"}, {"stop_loss_percent", 25}};
+  server::Desk::Options options; options.replay = true;
+  options.paper.limits.aggregate = {1e9, 1e9}; options.paper.limits.per_underlying = {1e9, 1e9};
+  server::Desk desk("test", {}, {{"SPX"}}, options);
+  desk.start_trading(); desk.replay_batch(breadth_batch(time, 10), time, time);
+  ASSERT_TRUE(command(desk, {{"action", "create"}, {"definition", setup}}, time).decision.ok());
+  ASSERT_TRUE(command(desk, {{"action", "mode"}, {"id", "morning"}, {"mode", "auto"}}, time).decision.ok());
+  const auto snapshot = desk.trading_view()->snapshot;
+  ASSERT_EQ(snapshot->positions.size(), 2U) << desk.trading_view()->playbooks_json;
+  ASSERT_TRUE(snapshot->recent_orders[0].request.bracket);
+  EXPECT_EQ(snapshot->recent_orders[0].request.bracket->stop_loss->trigger->level, money("-1.58"));
+  const auto next = time + md::kNanosPerMinute;
+  desk.replay_batch(breadth_batch(next, 9.5), next, next);
+  EXPECT_TRUE(desk.trading_view()->snapshot->positions.empty());
+  EXPECT_EQ(desk.trading_view()->snapshot->recent_orders[1].status, trading::OrderStatus::Filled);
+}
+TEST(Playbooks, DteAndBusinessDayExitsCloseAtTheirExactUpdate) {
+  for (const bool dte : {false, true}) {
+    const auto opened = md::new_york_to_utc(dte ? md::Date{2026, 9, 22} : md::Date{2026, 9, 4}, 10, 0);
+    const auto deadline = md::new_york_to_utc(dte ? md::Date{2026, 9, 22} : md::Date{2026, 9, 8}, dte ? 16 : 15, dte ? 0 : 45);
+    auto setup = breadth_setup();
+    setup["management"].erase("trailing_stop");
+    if (dte) { setup["management"]["close_at_dte"] = 2; setup["management"]["max_hold_days"] = 2; }
+    else setup["management"]["max_days_in_trade"] = 1;
+    server::Desk::Options options; options.replay = true;
+    options.paper.limits.aggregate = {1e9, 1e9}; options.paper.limits.per_underlying = {1e9, 1e9};
+    server::Desk desk("test", {}, {{"SPX"}}, options);
+    desk.start_trading(); desk.replay_batch(breadth_batch(opened, 10), opened, opened);
+    ASSERT_TRUE(command(desk, {{"action", "create"}, {"definition", setup}}, opened).decision.ok());
+    ASSERT_TRUE(command(desk, {{"action", "mode"}, {"id", "morning"}, {"mode", "auto"}}, opened).decision.ok());
+    ASSERT_EQ(desk.trading_view()->snapshot->positions.size(), 2U) << desk.trading_view()->playbooks_json;
+    const auto before = deadline - md::kNanosPerSecond;
+    desk.replay_batch(breadth_batch(before, 10), before, before);
+    EXPECT_EQ(desk.trading_view()->snapshot->positions.size(), 2U);
+    desk.replay_batch(breadth_batch(deadline, 10), deadline, deadline);
+    const auto view = desk.trading_view();
+    EXPECT_TRUE(view->snapshot->positions.empty());
+    EXPECT_EQ(view->snapshot->recent_orders.back().request.note,
+        dte ? "Playbook automatic DTE stop; entry 1" : "Playbook automatic days in trade stop; entry 1");
+    EXPECT_EQ(view->snapshot->recent_orders[1].reason.code,
+        dte ? trading::Reason::PLAYBOOK_DTE_STOP : trading::Reason::PLAYBOOK_DAYS_IN_TRADE_STOP);
+    EXPECT_EQ(server::playbook_report(json::parse(view->playbooks_json), *view).at("morning").at("trades")[0].at("rules").at(dte ? "close_at_dte" : "max_days_in_trade"), true);
+  }
+}
+
 TEST(Playbooks, DefinitionValidationRejectsUnknownAndInconsistentFields) {
   EXPECT_NO_THROW(server::validate_playbook(definition()));
   for (const auto& [path, value] : std::vector<std::pair<std::string, json>>{
@@ -442,7 +673,7 @@ TEST(Playbooks, JournaledAutomaticRejectionSurvivesRestartAndCountsOnlySubmissio
   server::Playbooks recovered(path);
   bool sent = false;
   recovered.evaluate("main", false, market.time, {}, view, [](const auto&, const auto&) { return server::PlaybookInputs{}; },
-      [](const auto&, double) { return trading::OrderPreview{}; }, [&](const auto&) { sent = true; return server::TradingReply{}; }, [](auto) {});
+      [](const auto&, double) { return trading::OrderPreview{}; }, [&](const auto&) { sent = true; return server::TradingReply{}; }, [](auto, auto) {});
   EXPECT_FALSE(sent);
   EXPECT_NE(recovered.publication("main", false).at("reasons").at("morning:SPX").get<std::string>().find("Automatic entry refused for this day"), std::string::npos);
   const auto forward = server::playbook_forward_report(recovered.publication("main", false), view).at("morning");

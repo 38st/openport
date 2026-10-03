@@ -1253,6 +1253,14 @@ schedule and preserves commission caps across partial fills and restarts. New
 journal fields are optional; accounts without a schedule keep their existing
 journal bytes. See [fees](paper-trading.md#fees) for amounts and API examples.
 
+F52 playbook rules keep driver 6 and existing definitions' journal bytes. Only
+entries using `trailing_stop` add the rule to their order note and an optional
+`trailing: {peak, triggered}` strategy-review field to reducer state. Peak is Money
+in the internal journal encoding; triggered is market time (zero before firing).
+Older reviews omit the field and still recover. New configured exits add their
+labelled cancellations and reducing IOC commands; old definitions and saved
+backtest reports retain their original behavior and shape.
+
 ## Reloading named tokens
 
 `--token-file FILE` requires a valid, nonempty named-token file at startup. The
