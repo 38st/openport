@@ -98,12 +98,40 @@ def test_real_time_rule_create_reset_and_error_responses(tmp_path):
         pytest.skip("Build C++ tests to check real time-rule responses")
     result = subprocess.run(
         [str(binary), "--gtest_filter=PaperEngine.TimeRulesRoundTripProgressRefusalsAndValidation:"
-         "PaperEngine.TimeAndTradeRulesSurviveCreateResetAndPresetMatching"],
+         "PaperEngine.TimeAndTradeRulesSurviveCreateResetAndPresetMatching:PaperEngine.FlatRulesRoundTripValidationAndAccountProgress:PaperStocks.FlatTimeRejectsOpeningPreviewsWith422"],
         env={**os.environ, "OPENPORT_CONTRACT_OUTPUT": str(tmp_path)},
         capture_output=True, text=True, timeout=120)
     assert result.returncode == 0, result.stdout + result.stderr
     contract = Contract("", None, SPEC)
     rows = [json.loads(line) for line in (tmp_path / "time-rules.jsonl").read_text().splitlines()]
+    rows += [json.loads(line) for line in (tmp_path / "flat-rules.jsonl").read_text().splitlines()]
     for row in rows:
         contract.validate(**row)
     assert {row["status"] for row in rows} == {200, 201, 422}
+
+
+def test_flat_rule_types_and_schemas():
+    hints = get_type_hints(AccountRules)
+    assert hints["flat_time"] == str | None
+    assert hints["no_overnight"] is bool
+    progress = get_type_hints(Evaluation)
+    assert progress["flat_time"] == str | None
+    assert progress["flat_now"] is bool
+    contract = Contract("", None, SPEC)
+    for path in ("AccountRulesInput", "BacktestRequest/properties/plan/oneOf/1/properties/rules"):
+        validator = jsonschema.Draft202012Validator(
+            {"$ref": "urn:openport#/components/schemas/" + path}, registry=contract.registry)
+        base = {"profit_target": "100.00", "max_drawdown": "1000.00", "drawdown_mode": "intraday",
+                "buy_only": False, "buying_power": True, "flat_time": "15:45", "no_overnight": True}
+        if path == "AccountRulesInput":
+            base["expiry_cutoff_seconds"] = 0
+        validator.validate(base)
+        validator.validate({**base, "flat_time": None, "no_overnight": False})
+        for patch in ({"flat_time": "24:00"}, {"flat_time": "9:30"}, {"flat_time": "12:60"},
+                      {"flat_time": 945}, {"no_overnight": None}, {"no_overnight": 1}):
+            with pytest.raises(jsonschema.ValidationError):
+                validator.validate({**base, **patch})
+    props = SPEC["components"]["schemas"]["Evaluation"]["properties"]
+    assert "OVERNIGHT_HOLD" in props["decision_code"]["description"]
+    jsonschema.validate(False, props["flat_now"])
+    jsonschema.validate("15:45", props["flat_time"])

@@ -2484,7 +2484,7 @@ TEST(PaperPlans, PresetsListExactRules) {
                   {"profitable_day_profit", nullptr}, {"day_end", "17:00"}, {"max_contracts_held", 0},
                   {"require_stop_loss", false}, {"max_trade_risk", nullptr}, {"max_trade_risk_percent", 0},
                   {"time_limit_days", 0}, {"inactivity_days", 0}, {"underlyings", json::array()},
-                  {"trading_start", nullptr}, {"trading_end", nullptr}});
+                  {"trading_start", nullptr}, {"trading_end", nullptr}, {"flat_time", nullptr}, {"no_overnight", false}});
     return rules;
   };
   const auto intraday = plans[3];
@@ -4270,7 +4270,7 @@ TEST_F(PaperEngine, TimeAndTradeRulesSurviveCreateResetAndPresetMatching) {
   ASSERT_TRUE(wait_for([&] { return engine->trading_view() != nullptr; }));
   seed();
   auto rules = read(*engine, "/api/account")["rules"];
-  rules.update({{"plan", "Combined rules"}, {"plan_id", nullptr}, {"time_limit_days", 30}, {"inactivity_days", 14},
+  rules.update({{"plan", "Combined rules"}, {"plan_id", nullptr}, {"flat_time", "15:45"}, {"no_overnight", true}, {"time_limit_days", 30}, {"inactivity_days", 14},
                 {"underlyings", {"SPX"}}, {"trading_start", "09:30"}, {"trading_end", "16:00"},
                 {"max_contracts_held", 5}, {"require_stop_loss", true}, {"max_trade_risk", "123.456789"},
                 {"max_trade_risk_percent", 25}});
@@ -4285,7 +4285,7 @@ TEST_F(PaperEngine, TimeAndTradeRulesSurviveCreateResetAndPresetMatching) {
   ASSERT_EQ(response.status, 200) << response.body;
   EXPECT_EQ(json::parse(response.body)["attempts"].back()["rules"], rules);
   const auto practice = read(*engine, "/api/account")["rules"];
-  for (const auto* field : {"time_limit_days", "inactivity_days", "underlyings", "trading_start",
+  for (const auto* field : {"flat_time", "no_overnight", "time_limit_days", "inactivity_days", "underlyings", "trading_start",
                            "max_contracts_held", "require_stop_loss", "max_trade_risk", "max_trade_risk_percent"}) {
     auto borrowed = practice;
     borrowed[field] = rules[field];
@@ -4350,10 +4350,94 @@ TEST_F(PaperEngine, TimeRulesRoundTripProgressRefusalsAndValidation) {
   funded["time_limit_days"] = 0;
   ASSERT_EQ(reset(funded).status, 200);
   rules.update({{"time_limit_days", 0}, {"inactivity_days", 0}, {"underlyings", json::array()},
-                {"trading_start", nullptr}, {"trading_end", nullptr}});
+                {"trading_start", nullptr}, {"trading_end", nullptr}, {"flat_time", nullptr}, {"no_overnight", false}});
   response = reset(rules); ASSERT_EQ(response.status, 200) << response.body;
   account = json::parse(response.body);
   for (const auto* field : {"time_limit_days", "deadline", "days_left", "last_activity", "inactive_days", "inactivity_deadline"})
     EXPECT_TRUE(account["evaluation"][field].is_null()) << field;
+}
+TEST_F(PaperEngine, FlatTimeMarketTransactionClosesBeforeTheApiCanOpenAgain) {
+  seed();
+  auto rules = read(*engine, "/api/account")["rules"];
+  rules.update({{"plan", "Flat clock"}, {"flat_time", "10:01"}});
+  auto response = write(*engine, "POST", "/api/account/reset", {{"initial_cash", "100000"}, {"rules", rules}, {"reason", "F6"}});
+  ASSERT_EQ(response.status, 200) << response.body;
+  response = write(*engine, "POST", "/api/orders", order(market, "held", "4.20"));
+  ASSERT_EQ(response.status, 201) << response.body;
+  market.time += md::kNanosPerMinute;
+  quote("3.90", "4.10");
+  ASSERT_TRUE(wait_for([&] { return read(*engine, "/api/account")["evaluation"]["flat_now"] == true &&
+      read(*engine, "/api/portfolio")["positions"].empty(); }));
+  EXPECT_TRUE(read(*engine, "/api/portfolio")["positions"].empty());
+  expect_error(write(*engine, "POST", "/api/orders", order(market, "too-late", "4.10")), 422, "FLAT_TIME");
+}
+TEST_F(PaperEngine, FlatRulesRoundTripValidationAndAccountProgress) {
+  seed();
+  auto rules = read(*engine, "/api/account")["rules"];
+  rules.update({{"plan", "Mandatory flat"}, {"flat_time", "10:01"}, {"no_overnight", true}});
+  const auto reset = [&](const json& r) {
+    const auto response = write(*engine, "POST", "/api/account/reset", {{"initial_cash", "100000"}, {"rules", r}, {"reason", "F6"}});
+    test::capture_contract("flat-rules", "POST", "/api/account/reset", response);
+    return response;
+  };
+  auto response = reset(rules); ASSERT_EQ(response.status, 200) << response.body;
+  auto account = json::parse(response.body);
+  EXPECT_EQ(account["rules"], rules);
+  EXPECT_EQ(account["evaluation"]["flat_time"], "10:01");
+  EXPECT_EQ(account["evaluation"]["flat_now"], false);
+  for (const auto& patch : std::vector<json>{{{"flat_time", "17:00"}}, {{"flat_time", "24:00"}},
+      {{"flat_time", "09:60"}}, {{"flat_time", "9:30"}}, {{"flat_time", 600}},
+      {{"flat_time", false}}, {{"no_overnight", nullptr}}, {{"no_overnight", 1}}, {{"no_overnight", "true"}},
+      {{"flat_time", "18:00"}, {"day_end", "18:00"}}}) {
+    auto bad = rules; bad.update(patch);
+    response = reset(bad); expect_error(response, 422, "INVALID_RULES");
+    EXPECT_EQ(json::parse(response.body)["error"]["message"], patch.contains("flat_time")
+        ? "flat_time must be HH:MM New York time from 00:00 to 23:59, before day_end"
+        : "no_overnight must be a boolean");
+    const auto created = write(*engine, "POST", "/api/accounts", {{"name", "Invalid flat rule"}, {"initial_cash", "100000"}, {"rules", bad}});
+    expect_error(created, 422, "INVALID_RULES");
+    test::capture_contract("flat-rules", "POST", "/api/accounts", created);
+  }
+  rules["flat_time"] = "10:00";
+  response = reset(rules); ASSERT_EQ(response.status, 200) << response.body;
+  account = json::parse(response.body);
+  EXPECT_EQ(account["evaluation"]["flat_now"], true);
+  response = write(*engine, "POST", "/api/orders", order(market, "flat-time-refused"));
+  expect_error(response, 422, "FLAT_TIME");
+  const auto error = json::parse(response.body)["error"];
+  EXPECT_EQ(error["actual"], 600); EXPECT_EQ(error["limit"], 600); EXPECT_EQ(error["scope"], "account");
+  test::capture_contract("flat-rules", "POST", "/api/orders", response);
+  response = write(*engine, "POST", "/api/orders/preview", order(market, "flat-preview"));
+  expect_error(response, 422, "FLAT_TIME");
+  EXPECT_EQ(json::parse(response.body)["error"]["actual"], 600);
+  EXPECT_EQ(json::parse(response.body)["error"]["limit"], 600);
+  EXPECT_EQ(json::parse(response.body)["error"]["scope"], "account");
+  test::capture_contract("flat-rules", "POST", "/api/orders/preview", response);
+  rules["flat_time"] = nullptr; rules["no_overnight"] = false;
+  response = reset(rules); ASSERT_EQ(response.status, 200) << response.body;
+  EXPECT_EQ(json::parse(response.body)["evaluation"]["flat_time"], nullptr);
+  EXPECT_EQ(json::parse(response.body)["evaluation"]["flat_now"], false);
+}
+TEST(PaperStocks, FlatTimeRejectsOpeningPreviewsWith422) {
+  PaperProvider provider;
+  server::Engine engine(provider, md::Subscription{{"SPY"}}, paper_options());
+  engine.start();
+  ASSERT_TRUE(wait_for([&] { return engine.trading_view() != nullptr; }));
+  const auto time = md::new_york_to_utc({2026, 9, 22}, 10, 0);
+  provider.sink->publish(md::UnderlyingQuote{"SPY", time, 519.9, 520.1, 520});
+  ASSERT_TRUE(wait_for([&] { const auto view = engine.trading_view(); return view && view->market_times.contains("SPY"); }));
+  auto rules = read(engine, "/api/account")["rules"];
+  rules.update({{"plan", "Flat shares"}, {"flat_time", "10:00"}});
+  const auto reset = write(engine, "POST", "/api/account/reset", {{"initial_cash", "100000"}, {"rules", rules}, {"reason", "F6"}});
+  ASSERT_EQ(reset.status, 200) << reset.body;
+  for (const auto* path : {"/api/stocks/trade/preview", "/api/stocks/trade"}) {
+    const auto response = write(engine, "POST", path, {{"symbol", "SPY"}, {"side", "buy"}, {"shares", 1}});
+    ASSERT_EQ(response.status, 422) << response.body;
+    const auto error = json::parse(response.body)["error"];
+    EXPECT_EQ(error["code"], "FLAT_TIME"); EXPECT_EQ(error["actual"], 600);
+    EXPECT_EQ(error["limit"], 600); EXPECT_EQ(error["scope"], "account");
+    test::capture_contract("flat-rules", "POST", path, response);
+  }
+  engine.stop();
 }
 }  // namespace

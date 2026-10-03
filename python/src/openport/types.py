@@ -190,6 +190,8 @@ class AccountRules(TypedDict, total=False):
     underlyings: list[str]
     trading_start: str | None
     trading_end: str | None
+    flat_time: str | None
+    no_overnight: bool
     plan_id: str | None
     plan: str | None
     phase: str
@@ -273,6 +275,8 @@ class EvaluationProgress(TypedDict, total=False):
     last_activity: str | None
     inactive_days: int | None
     inactivity_deadline: str | None
+    flat_time: str | None
+    flat_now: bool
 
 
 class Evaluation(EvaluationProgress):

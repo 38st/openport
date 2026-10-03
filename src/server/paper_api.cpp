@@ -79,6 +79,7 @@ json rules_json(const AccountRules& r, Money initial_cash) {
           {"time_limit_days", r.time_limit_days}, {"inactivity_days", r.inactivity_days}, {"underlyings", r.underlyings},
           {"trading_start", r.trading_start ? json(clock_text(*r.trading_start)) : json(nullptr)},
           {"trading_end", r.trading_end ? json(clock_text(*r.trading_end)) : json(nullptr)},
+          {"flat_time", r.flat_time ? json(clock_text(*r.flat_time)) : json(nullptr)}, {"no_overnight", r.no_overnight},
           {"buy_only", r.buy_only}, {"defined_risk", r.defined_risk}, {"buying_power", r.buying_power},
           {"slippage_ticks", r.slippage_ticks}, {"margin", r.margin == MarginMode::Portfolio ? "portfolio" : "strategy"},
           {"account_type", r.account_type == AccountType::Cash ? "cash" : r.account_type == AccountType::Ira ? "ira" : "margin"},
@@ -823,6 +824,8 @@ json account_json(const TradingView& view) {
               {"last_activity", time_or_null(timed.last_activity)},
               {"inactive_days", timed.inactive_days ? json(*timed.inactive_days) : json(nullptr)},
               {"inactivity_deadline", timed.inactivity_deadline ? json(md::format_date(*timed.inactivity_deadline)) : json(nullptr)},
+              {"flat_time", r.flat_time ? json(clock_text(*r.flat_time)) : json(nullptr)},
+              {"flat_now", plan_flat_now(r, s.time)},
               {"day_lock", e.day_lock == Reason::NONE ? json(nullptr) : json(to_string(e.day_lock))},
               {"day_locked_at", time_or_null(e.day_locked_at)},
               {"exit_equity", s.exit_equity.str()}, {"exit_cost", (s.equity - s.exit_equity).str()},
@@ -1174,6 +1177,11 @@ ApiResponse command_response(const TradingCommand& command, const TradingReply& 
                      reply.error_code, reply.decision.message);
   if (!reply.decision.ok()) return api_error(reason_status(reply.decision.code),
       std::string(to_string(reply.decision.code)), reply.decision.message, reply.decision);
+  // Mandatory flat time is an HTTP refusal for opening dry runs as well as submits.
+  const auto* preview_decision = reply.preview ? &reply.preview->decision
+      : reply.stock_preview ? &reply.stock_preview->decision : nullptr;
+  if (preview_decision && preview_decision->code == Reason::FLAT_TIME)
+    return api_error(422, "FLAT_TIME", preview_decision->message, *preview_decision);
   if (!reply.account_result.empty()) return {200, reply.account_result};
   if (!reply.view || !reply.view->snapshot) return api_error(503, "TRADING_UNAVAILABLE", "No trading publication");
   const auto& view = *reply.view;
@@ -1571,6 +1579,13 @@ void parse_time_rules(const json& j, AccountRules& rules) try {
   }
   if (j.contains("trading_start") && !j.at("trading_start").is_null()) rules.trading_start = clock_field(j, "trading_start");
   if (j.contains("trading_end") && !j.at("trading_end").is_null()) rules.trading_end = clock_field(j, "trading_end");
+  if (j.contains("flat_time") && !j.at("flat_time").is_null()) {
+    try { rules.flat_time = clock_field(j, "flat_time"); }
+    catch (const std::exception&) {
+      throw std::invalid_argument("flat_time must be HH:MM New York time from 00:00 to 23:59, before day_end");
+    }
+  }
+  if (j.contains("no_overnight")) rules.no_overnight = boolean_field(j, "no_overnight");
   validate_time_rules(rules);
 } catch (const std::exception& error) {
   throw PlanRestrictionError(error.what());
@@ -1584,7 +1599,7 @@ AccountRules parse_rules(const json& j) {
           "consistency_basis", "min_trading_days", "min_profitable_days", "profitable_day_profit", "day_end", "fees",
           "account_type", "house_margin_percent", "pm_vol_shock", "inside_fill_percent",
           "max_contracts_held", "require_stop_loss", "max_trade_risk", "max_trade_risk_percent",
-          "time_limit_days", "inactivity_days", "underlyings", "trading_start", "trading_end"});
+          "time_limit_days", "inactivity_days", "underlyings", "trading_start", "trading_end", "flat_time", "no_overnight"});
   AccountRules rules;
   // Accept read-back rules in a custom request, but always derive the identity.
   if (j.contains("plan_id") && !j.at("plan_id").is_null() && !j.at("plan_id").is_string())

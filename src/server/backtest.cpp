@@ -427,7 +427,7 @@ BacktestRequest parse_backtest(const json& body, const json& catalogue,
                          : key == "daily_loss_action" ? std::initializer_list<const char*>{"lock", "fail"}
                                                       : std::initializer_list<const char*>{"total", "positive_days"});
         rules[key] = value;
-      } else if (key == "trading_start" || key == "trading_end") {
+      } else if (key == "trading_start" || key == "trading_end" || key == "flat_time") {
         if (value.is_null()) { rules[key] = nullptr; continue; }
         if (!value.is_string()) throw std::invalid_argument("plan rules " + key + " must be HH:MM New York time");
         const auto text = value.get<std::string>();
