@@ -8,7 +8,7 @@ import { evaluationBadge } from "../components/Sidebar"
 import { TradingError, WriteAccess, writeBlocked } from "../components/TradingControls"
 import { Badge, Check, Empty, PageHeader, Panel, Tile, toneOf, toneText } from "../components/ui"
 import { timestampET } from "../lib/freshness"
-import { cycleDays, lockReason, offeredPlans, payoutAmountError, payoutCap, payoutChecks, unlockedFundedPlan } from "../lib/payouts"
+import { cycleDays, lockReason, offeredPlans, payoutAmountError, payoutBestDayShare, payoutCap, payoutChecks, unlockedFundedPlan } from "../lib/payouts"
 import { useRoute } from "../lib/route"
 import { formatMoney, percentOfMoney, signedMoney, sumMoney } from "../lib/trading"
 import { useWriteToken } from "../lib/write-token"
@@ -60,6 +60,18 @@ function Funded({ trading, account, status }: { trading: TradingStatus; account:
       <Tile label="Paid to you" value={formatMoney(paid)}
         detail={e.payouts.length ? `${e.payouts.length} payout${e.payouts.length === 1 ? "" : "s"} · ${formatMoney(withdrawn)} withdrawn` : "No payouts yet"} />
     </div>
+    {(status.consistency_percent != null || status.buffer_balance != null) && <Panel title="Payout standing">
+      <dl className="grid gap-3 text-sm sm:grid-cols-2">
+        {status.consistency_percent != null && <>
+          <div><dt className="text-muted">Cycle net realised profit</dt><dd>{signedMoney(status.cycle_profit)}</dd></div>
+          <div><dt className="text-muted">Best day</dt><dd>{status.best_day ? `${formatMoney(status.best_day.profit)} on ${status.best_day.day}` : "No positive day yet"}</dd></div>
+          <div><dt className="text-muted">Best day's share</dt><dd>{payoutBestDayShare(status)} · limit {status.consistency_percent}%</dd></div>
+          <div><dt className="text-muted">Profit still needed</dt><dd>{formatMoney(status.consistency_needed)}</dd></div>
+        </>}
+        {status.buffer_balance != null && <div><dt className="text-muted">Payout buffer balance</dt><dd>{formatMoney(status.buffer_balance)} must remain after withdrawal</dd></div>}
+      </dl>
+      {status.consistency_percent != null && <p className="mt-3 text-xs text-muted">Includes the day in progress and losing days. Profit needed assumes the best day stays the same; cycle profit must be positive.</p>}
+    </Panel>}
     <div className="grid min-w-0 gap-3 lg:grid-cols-[minmax(0,1fr)_minmax(0,1fr)]">
       <Panel title={`Request payout #${status.number}`}>
         <ul className="space-y-1.5 text-sm">

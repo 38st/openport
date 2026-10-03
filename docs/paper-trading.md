@@ -1936,7 +1936,11 @@ compares closes net of it; a locked floor stays where it is.
 
 The web terminal hides funded plans and the Payouts page (this simulator funds no one)
 unless the account is already funded; `showFundedAccounts` in `web/src/lib/features.ts`
-offers them again. The server offers a funded preset for each intraday and end-of-day evaluation preset
+offers them again. The custom plan editor can explicitly select the funded phase
+and edit qualifying days, shares, caps, consistency percentages and buffer rules.
+The Payouts page shows cycle profit, best day/date/share, the current limit, remaining
+profit and active buffer balance; plan facts and Rules also state these settings.
+The server offers a funded preset for each intraday and end-of-day evaluation preset
 (`funded-intraday-25k` and so on). A reset into one requires that the current attempt passed the evaluation
 it names, otherwise `PLAN_LOCKED`: that preset's starting balance and every one of its
 rules, with the fill model's execution settings and fee schedule free to differ. Custom rules may set `phase`

@@ -1,6 +1,6 @@
-import type { Account, EvaluationDay, Money, PayoutStatus, Plan } from "../api/trading-types"
+import type { Account, EvaluationDay, Money, PayoutStatus, PayoutRules, Plan } from "../api/trading-types"
 import { showFundedAccounts } from "./features"
-import { compareMoney, formatMoney } from "./trading"
+import { compareMoney, formatMoney, sumMoney } from "./trading"
 
 /** Plans the terminal offers: funded plans only when they are shown. */
 export function offeredPlans(plans: Plan[]): Plan[] {
@@ -45,6 +45,9 @@ export function payoutChecks(status: PayoutStatus): PayoutCheck[] {
     { label: `Qualifying days of ${formatMoney(status.qualifying_profit, 0)}+ net realised profit`,
       ok: status.qualifying_days >= status.required_days, value: `${status.qualifying_days} of ${status.required_days}` },
   ]
+  if (status.consistency_percent != null) checks.push({ label: "Payout consistency",
+    ok: (compareMoney(status.cycle_profit, "0") ?? 0) > 0 && compareMoney(status.consistency_needed, "0") === 0,
+    value: `${payoutBestDayShare(status)} of ${status.consistency_percent}% max` })
   checks.push({ label: "Available payout meets the minimum",
     ok: (compareMoney(status.maximum, "0") ?? 0) > 0 && (compareMoney(status.maximum, status.minimum) ?? -1) >= 0,
     value: `${formatMoney(status.maximum)} of ${formatMoney(status.minimum)}` })
@@ -58,4 +61,18 @@ export function payoutAmountError(amount: string, status: PayoutStatus): string 
   if ((compareMoney(amount.trim(), status.minimum) ?? -1) < 0) return `The minimum payout is ${formatMoney(status.minimum)}`
   if ((compareMoney(amount.trim(), status.maximum) ?? 1) > 0) return `The most you can request now is ${formatMoney(status.maximum)}`
   return null
+}
+
+/** Extra funded rules, shared by plan facts and the Rules page. */
+export function payoutRuleFacts(rules: PayoutRules, startingBalance: Money): string[] {
+  const percents = rules.consistency_percents ?? []
+  return [
+    ...(percents.length ? [`Payout consistency: best day at most ${percents.map((p) => `${p}%`).join(" / ")} of cycle net profit by payout number; last repeats`] : []),
+    ...((compareMoney(rules.buffer ?? "0", "0") ?? 0) > 0 ? [`Payout buffer: keep equity at ${formatMoney(sumMoney([startingBalance, rules.buffer!]))} or more (${formatMoney(rules.buffer)} above start), ${rules.buffer_payouts ? `first ${rules.buffer_payouts} payouts` : "every payout"}`] : []),
+  ]
+}
+
+export function payoutBestDayShare(status: PayoutStatus): string {
+  return status.best_day && Number(status.cycle_profit) > 0
+    ? `${(Number(status.best_day.profit) / Number(status.cycle_profit) * 100).toFixed(2)}%` : "—"
 }

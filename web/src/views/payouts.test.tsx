@@ -5,7 +5,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
 import { liveState, useLive } from "../api/live"
 import { tradingQueries } from "../api/trading"
 import type { Account } from "../api/trading-types"
-import { ResetDialog } from "../components/ResetDialog"
+import { ResetDialog, planFacts } from "../components/ResetDialog"
 import { account, fundedAccount, plans, portfolio, risk, status, trades } from "../test/trading-fixtures"
 import { DashboardView } from "./DashboardView"
 import { PayoutsView } from "./PayoutsView"
@@ -43,6 +43,25 @@ describe("funded accounts and payouts", () => {
     expect(html).toContain("payout cycle since Tue, Sep 22, 2026, 14:00 ET")
     expect(html).not.toContain("NaN")
     expect(html).toMatch(/<button type="submit" class="trade-button" disabled="">Request payout/)
+  })
+  it("shows consistency standing and the active buffer with facts on the Rules page", () => {
+    const custom: Account = { ...fundedAccount,
+      rules: { ...fundedAccount.rules, payouts: { ...fundedAccount.rules.payouts!, consistency_percents: [20, 25, 30], buffer: "2100.00", buffer_payouts: 3 } },
+      payout: { ...fundedAccount.payout!, consistency_percent: 25, cycle_profit: "500.00", best_day: { day: "2026-09-24", profit: "200.00" },
+        consistency_needed: "300.00", buffer_balance: "102100.00" } }
+    const html = render(<PayoutsView />, custom)
+    for (const text of ["Cycle net realised profit", "+$500.00", "$200.00 on 2026-09-24", "40.00% · limit 25%",
+      "Profit still needed", "$300.00", "Payout buffer balance", "$102,100.00 must remain after withdrawal"])
+      expect(html).toContain(text)
+    const facts = planFacts({ initial_cash: "100000.00", rules: custom.rules })
+    expect(facts.join(" ")).toContain("20% / 25% / 30%")
+    expect(facts.join(" ")).toContain("$102,100.00 or more ($2,100.00 above start), first 3 payouts")
+    const bodies = ruleText(custom, "0.65").map((r) => renderToStaticMarkup(<>{r.body}</>)).join(" ")
+    for (const text of ["20% / 25% / 30%", "first 3 payouts", "Consistency includes losses and the day in progress"])
+      expect(bodies).toContain(text)
+    const lifted = render(<PayoutsView />, { ...custom, payout: { ...custom.payout!, buffer_balance: null } })
+    expect(lifted).not.toContain("Payout buffer balance")
+    expect(render(<PayoutsView />, fundedAccount)).not.toContain("Profit still needed")
   })
   it("prefills the maximum and previews the trader's share when eligible", () => {
     const eligible: Account = { ...fundedAccount, payout: { ...fundedAccount.payout!, eligible: true, blocked: null, qualifying_days: 8 } }

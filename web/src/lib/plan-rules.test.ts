@@ -1,7 +1,7 @@
 import { describe, expect, it } from "vitest"
 import type { AccountRules } from "../api/trading-types"
 import { customPlan, planForm } from "../components/PlanEditor"
-import { account } from "../test/trading-fixtures"
+import { account, fundedAccount } from "../test/trading-fixtures"
 import { clockText, dailyLossFact, dayEndFact, decisionLabel, drawdownFact, floorMoves, objectiveFacts, objectiveValue, targetFact } from "./plan-rules"
 
 const rules: AccountRules = { ...account.rules, buy_only: false }
@@ -62,6 +62,24 @@ describe("custom plans", () => {
     // A trailing floor keeps its lock; blank amounts turn rules off.
     const trailing = customPlan({ ...form, drawdown_mode: "end_of_day", daily_loss_limit: "", consistency_percent: "" }, rules)
     expect("error" in trailing ? null : trailing.rules).toMatchObject({ lock_at_start: true, daily_loss_limit: null, consistency_percent: 0 })
+  })
+  it("edits funded payout rules and validates consistency and buffer settings", () => {
+    const base = fundedAccount.rules
+    const form = { ...planForm({ initial_cash: "100000.00", rules: base }),
+      payout_consistency_percents: "20, 25, 30", payout_buffer: "2100.000001", buffer_payouts: "3" }
+    const result = customPlan(form, base)
+    expect("error" in result ? result : result.rules).toMatchObject({ phase: "funded", profit_target: null,
+      payouts: { ...base.payouts, consistency_percents: [20, 25, 30], buffer: "2100.000001", buffer_payouts: 3 } })
+    for (const value of ["0", "101", "40.5", "20,", ",20", "abc", Array(65).fill("40").join(",")])
+      expect(customPlan({ ...form, payout_consistency_percents: value }, base)).toHaveProperty("error")
+    for (const value of ["-1", "101", "1.5", "abc"])
+      expect(customPlan({ ...form, buffer_payouts: value }, base)).toHaveProperty("error")
+    expect(customPlan({ ...form, payout_buffer: "-0.01" }, base)).toHaveProperty("error")
+    const off = customPlan({ ...form, payout_consistency_percents: "", payout_buffer: "0", buffer_payouts: "0" }, base)
+    expect("error" in off ? off : off.rules.payouts).toMatchObject({ consistency_percents: [], buffer: "0", buffer_payouts: 0 })
+    const restored = planForm({ initial_cash: "100000.00", rules: { ...base,
+      payouts: { ...base.payouts!, consistency_percents: [40], buffer: "2100.00", buffer_payouts: 2 } } })
+    expect(restored).toMatchObject({ phase: "funded", payout_consistency_percents: "40", payout_buffer: "2100.00", buffer_payouts: "2" })
   })
   it("names the first problem before the server sees it", () => {
     const form = planForm({ initial_cash: "100000.00", rules })

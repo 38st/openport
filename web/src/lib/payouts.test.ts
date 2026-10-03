@@ -53,6 +53,15 @@ describe("payouts", () => {
     expect(payoutChecks({ ...status, maximum: "999.99" }).at(-1)?.ok).toBe(false)
     expect(payoutChecks({ ...status, active: false, flat: false }).slice(0, 2).map((c) => c.ok)).toEqual([false, false])
   })
+  it("puts consistency after days and before the minimum and handles nonpositive cycles", () => {
+    const q: PayoutStatus = { ...status, consistency_percent: 40, cycle_profit: "300.00",
+      best_day: { day: "2026-09-22", profit: "200.00" }, consistency_needed: "200.00" }
+    expect(payoutChecks(q)[3]).toEqual({ label: "Payout consistency", ok: false, value: "66.67% of 40% max" })
+    expect(payoutChecks(q)[4]?.label).toBe("Available payout meets the minimum")
+    expect(payoutChecks({ ...q, cycle_profit: "500.00", consistency_needed: "0.00" })[3]?.ok).toBe(true)
+    expect(payoutChecks({ ...q, cycle_profit: "0.00", consistency_needed: "0.00" })[3])
+      .toEqual({ label: "Payout consistency", ok: false, value: "— of 40% max" })
+  })
   it("validates a whole-cent amount within the range", () => {
     expect(payoutAmountError("1500", status)).toBeNull()
     expect(payoutAmountError("3000.00", status)).toBeNull()
