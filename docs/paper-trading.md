@@ -1658,7 +1658,7 @@ unless the account is already funded; `showFundedAccounts` in `web/src/lib/featu
 offers them again. The server offers a funded preset for each intraday and end-of-day evaluation preset
 (`funded-intraday-25k` and so on). A reset into one requires that the current attempt passed the evaluation
 it names, otherwise `PLAN_LOCKED`: that preset's starting balance and every one of its
-rules, with only the fill model's execution settings free. Custom rules may set `phase`
+rules, with the fill model's execution settings and fee schedule free to differ. Custom rules may set `phase`
 freely, but may not take a preset's name unless they are that preset (`INVALID_RULES`),
 so an attempt recorded under a preset's name was that preset; `--plan` can start a new
 journal on a funded preset directly. Preset parameters are this project's own,

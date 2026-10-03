@@ -303,8 +303,9 @@ FillFees fees_for(const State& s, const std::string& symbol, Quantity contracts,
   FillFees fees{schedule->open * (contracts - closing) + schedule->close * closing,
                 schedule->clearing * contracts, schedule->regulatory * contracts, {}};
   if (schedule->leg_cap > Money{}) fees.commission = std::min(fees.commission, std::max(Money{}, schedule->leg_cap - paid));
-  if (const auto index = schedule->index.find(s.contracts.at(symbol).root); index != schedule->index.end())
-    fees.index = index->second * contracts;
+  if (const auto contract = s.contracts.find(symbol); contract != s.contracts.end())
+    if (const auto index = schedule->index.find(contract->second.root); index != schedule->index.end())
+      fees.index = index->second * contracts;
   return fees;
 }
 Money exercise_fee(const State& s, Quantity contracts) {
@@ -2608,10 +2609,18 @@ PreviewProjection project_working(const State& before, State after_state, OrderI
   request.quantity = after.orders.at(static_cast<std::size_t>(id - 1)).remaining();
   auto legs = request.legs;
   if (legs.empty()) legs.push_back({request.symbol, request.side, 1});
-  if (request.quantity <= 0 || legs.size() > kMaxRollLegs) return projection;
-  for (const auto& leg : legs)
+  if (request.quantity <= 0 || legs.size() > kMaxRollLegs) {
+    after = before;
+    return projection;
+  }
+  for (const auto& leg : legs) {
     if (leg.ratio <= 0 || leg.ratio > kMaxRatio || request.quantity > std::numeric_limits<Quantity>::max() / (100 * leg.ratio) ||
-        !before.contracts.contains(leg.symbol) || !quote_check(before, leg.symbol).ok()) return projection;
+        !before.contracts.contains(leg.symbol) || !quote_check(before, leg.symbol).ok()) {
+      // An unprojectable order cannot reserve an unknown contract in the risk view.
+      after = before;
+      return projection;
+    }
+  }
   // The full size at the far sides, block by block, as market_slices prices it.
   Money gross, net;
   for (const auto& leg : legs)
