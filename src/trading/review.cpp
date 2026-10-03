@@ -412,13 +412,29 @@ Decision regroup(State& s, const std::vector<std::uint64_t>& trades, bool togeth
     if (group == std::to_string(life.root)) s.groups.erase(key);
     else s.groups[key] = group;
   };
+  const auto planned_risk = [&](const std::string& group) -> std::optional<Money> {
+    if (const auto found = s.group_reviews.find(group); found != s.group_reviews.end()) return found->second.planned_risk;
+    for (const auto& life : all)
+      if (life.first_fill == trade_id(group))
+        if (const auto* review = first_review(s, life)) return review->planned_risk;
+    return {};
+  };
   // Each trade's whole-trade review restarts now, while it holds more than one entry.
-  const auto restart = [&](const std::string& group, const std::vector<const Lifecycle*>& members) {
+  const auto restart = [&](const std::string& group, const std::vector<const Lifecycle*>& members, std::optional<Money> previous_risk) {
     std::set<OrderId> entries;
-    for (const auto* life : members) entries.insert(life->entry_order);
+    std::vector<const Lifecycle*> open;
+    for (const auto* life : members) {
+      entries.insert(life->entry_order);
+      if (!life->closed) open.push_back(life);
+    }
     if (entries.size() < 2) return;
     TradeReview review;
     review.since = s.time;
+    if (!open.empty()) {
+      review.planned_risk = structure_risk(open);
+      if (!review.planned_risk) review.planned_risk = covered_debit(open);
+    }
+    if (!review.planned_risk) review.planned_risk = previous_risk;
     s.group_reviews[group] = review;
   };
   std::map<std::string, std::vector<const Lifecycle*>> members;
@@ -429,17 +445,19 @@ Decision regroup(State& s, const std::vector<std::uint64_t>& trades, bool togeth
     if (members.size() == 1) return {};
     std::string target = members.begin()->first;
     for (const auto& [group, lives] : members) if (trade_id(group) < trade_id(target)) target = group;
+    const auto previous_risk = planned_risk(target);
     std::vector<const Lifecycle*> joined;
     for (const auto& [group, lives] : members) {
       s.group_reviews.erase(group);
       for (const auto* life : lives) { set_group(*life, target); joined.push_back(life); }
     }
-    restart(target, joined);
+    restart(target, joined, previous_risk);
   } else {
     std::set<std::uint64_t> leaving;
     for (const auto* life : listed) leaving.insert(life->first_fill);
     for (const auto& [group, lives] : members) {
       if (lives.size() < 2) continue;
+      const auto previous_risk = planned_risk(group);
       s.group_reviews.erase(group);
       std::vector<const Lifecycle*> staying;
       for (const auto* life : lives) {
@@ -454,7 +472,7 @@ Decision regroup(State& s, const std::vector<std::uint64_t>& trades, bool togeth
         for (const auto* life : staying) if (life->first_fill < trade_id(name)) name = std::to_string(life->first_fill);
       }
       for (const auto* life : staying) set_group(*life, name);
-      restart(name, staying);
+      restart(name, staying, previous_risk);
     }
   }
   recount_reviews(s);

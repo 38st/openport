@@ -2023,7 +2023,13 @@ A trade with more than one entry has a whole-trade review. A roll's starts as th
 trade's review was before it (its first strategy's, or its first round trip's), so
 its worst and best include the moves before the roll, then samples the P&L of every
 round trip in the trade together, closed ones at their final P&L. A trade the account
-grouped or ungrouped starts its review again then (`review_since`). `GET /api/trades`
+grouped or ungrouped starts its review again then (`review_since`). Its planned risk
+comes from what its open round trips can lose as a same-settlement structure, or
+their debit when their later-expiring longs cover every short, as for strategy
+reviews. When neither gives a positive risk, it keeps the planned risk of the review
+it replaces: the target trade's earlier whole-trade review, or its first strategy's
+or round trip's review. Its worst and best still start at the grouping. The trade
+left after an ungroup plans its risk the same way. `GET /api/trades`
 lists such trades under `groups`, newest first and filtered as the trades are: `id`,
 `attempt`, `underlying`, `status`, `opened`, `closed`, `trading_day`, `round_trips`,
 `entries` (the orders that opened them), `gross`, `fees`, `net`, `unrealised` while
