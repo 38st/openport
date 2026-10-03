@@ -1919,20 +1919,20 @@ TEST(ReproducibleRun, WalkingChangesAndInsideFillsVerifyWithIdenticalBytes) {
   }
 }
 
-TEST(ReproducibleRun, OverrideRemovalVerifiesWithCurrentAndLegacyDriverBytes) {
+TEST(ReproducibleRun, OverrideRemovalVerifiesWithDriverSix) {
   test::RecordingFile file;
   write_stream(file.path, true);
-  for (const bool current : {false, true}) {
-    const auto journal = file.directory / (current ? "overrides-7.jsonl" : "overrides-6.jsonl");
+  for (const bool overrides : {false, true}) {
+    SCOPED_TRACE(overrides ? "with overrides" : "without overrides");
+    const auto journal = file.directory / (overrides ? "overrides.jsonl" : "no-overrides.jsonl");
     {
       md::RecordingReader reader(file.path);
       server::Desk::Options options;
       options.run_input = server::recording_input(file.path);
       options.replay = true;
-      options.remove_redundant_overrides = current;
       options.paper_journal = journal;
       options.paper.rules.max_drawdown = Money::parse("1000");
-      options.paper.limits.underlying_overrides["SPX"] = {2e6, 2e4};
+      if (overrides) options.paper.limits.underlying_overrides["SPX"] = {2e6, 2e4};
       server::Desk desk("replay (synthetic)", reader.header().capabilities, reader.header().subscription, options);
       desk.start_trading();
       providers::ReplayBatches batches(reader, reader.header().subscription);
@@ -1947,12 +1947,16 @@ TEST(ReproducibleRun, OverrideRemovalVerifiesWithCurrentAndLegacyDriverBytes) {
           request.limits.underlying_overrides.clear();
           const auto reply = command(desk, request, batch->time, batch->received);
           ASSERT_TRUE(reply.decision.ok()) << reply.decision.message;
-          EXPECT_EQ(bool(desk.trading_view()->snapshot->pending_limits), !current);
+          EXPECT_FALSE(desk.trading_view()->snapshot->pending_limits);
+          EXPECT_TRUE(desk.trading_view()->config.limits.underlying_overrides.empty());
           changed = true;
         }
       }
       desk.stop();
     }
+    const auto inputs = server::run_inputs(trading::FileJournal::read(journal.string()));
+    ASSERT_FALSE(inputs.empty());
+    EXPECT_EQ(json::parse(inputs.front()).at("driver"), 6);
     const auto verified = server::verify_run(journal);
     EXPECT_TRUE(verified.matched) << verified.message;
   }

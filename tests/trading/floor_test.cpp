@@ -111,10 +111,7 @@ TEST(TradingFloor, OverrideChangesAndRolloverRecoverWithBothRemovalDirections) {
   auto limits = c.limits; limits.underlying_overrides.erase("SPX");
   tightening.set_limits(limits, f.time);
   EXPECT_FALSE(tightening.snapshot()->pending_limits);
-  TradingSession legacy(c, f.time);
-  legacy.set_limits(limits, f.time, false);
-  EXPECT_TRUE(legacy.snapshot()->pending_limits);
-  EXPECT_TRUE(legacy.config().limits.underlying_overrides.contains("SPX"));
+  EXPECT_FALSE(tightening.config().limits.underlying_overrides.contains("SPX"));
 }
 TEST(TradingFloor, AttemptResetAppliesPendingAndClearsGuardrailProgress) {
   ScriptedMarket f;
