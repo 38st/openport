@@ -878,7 +878,7 @@ export interface SubmitOrderResponse extends OrderResponse { fills: Fill[] }
 /** `time_in_force` switches a resting limit order between DAY and GTC; absent from older servers' accepted fields. */
 export interface OrderChange { quantity?: number; limit_price?: Money; trigger_level?: Money; time_in_force?: "day" | "gtc"; walk?: Walk | null }
 export interface CancelAllResponse { account_version: string; cancelled_orders: string[] }
-export interface AccountListItem { id: string; name: string; archived?: boolean; trading: TradingStatus; equity: Money | null }
+export interface AccountListItem { id: string; name: string; archived?: boolean; sandbox_idle_seconds?: number; trading: TradingStatus; equity: Money | null }
 export interface AccountsResponse { accounts: AccountListItem[] }
 export type CreateAccountRequest = { name: string; copy_settings_from?: string; fill_model?: FillModel; fee_model?: FeeModel } & MarginModel & ({ plan: string } | { initial_cash: Money; rules: AccountRulesInput })
 export interface CreateAccountResponse { account: { id: string; name: string; account_version: string; plan: string | null; plan_id?: string | null; equity: Money } }

@@ -2518,6 +2518,10 @@ resetting discards the current attempt's positions and orders as usual. Runs wit
 later trading day apply queued values at rollover and report false; another session
 on the same trading day does not suffice. Live accounts always report false.
 
+The terminal’s account switcher opens **Manage accounts** for rename, archive,
+unarchive and confirmed deletion, with archived accounts grouped separately. New
+account and Replay start forms offer **Copy limits and guardrails from**.
+
 ### Commands and views
 
 The engine thread alone owns every session. A bounded FIFO inbox (256 pending
@@ -2879,7 +2883,7 @@ read only at startup; protect it and restart the server to rotate credentials.
 | `read` | Every API GET, CSV export and WebSocket ticks |
 | `trade:ACCOUNT` / `trade:*` | Orders and previews, cancels, flatten, exercise, stock closure, notes and sending or dismissing playbook stages on the named account / all live accounts |
 | `replay` | Start, control and stop replays, and trade their isolated accounts |
-| `admin` | Everything, including limits, guardrails, kill switch, resets, payouts, settlements, account creation, playbook definitions and modes, and replay history deletion |
+| `admin` | Everything, including limits, guardrails, kill switch, resets, payouts, settlements, account creation/rename/archive/delete, playbook definitions and modes, and replay history deletion |
 
 The legacy write token has `admin` scope and actor name `legacy`. Writes always
 check the token they carry: an unknown one gets 403 `WRITE_TOKEN_REQUIRED`, and a

@@ -197,6 +197,7 @@ export const api = {
     get<TradesResponse>(scoped(`/api/trades?status=${status}&attempt=${attempt}`), signal),
   plans: (signal?: AbortSignal) => get<PlansResponse>("/api/plans", signal),
   accounts: (signal?: AbortSignal, archived = false) => get<AccountsResponse>(`/api/accounts${archived ? "?archived=true" : ""}`, signal),
+  liveAccounts: (signal?: AbortSignal) => request<AccountsResponse>("/api/accounts?archived=true", { signal, headers: readHeaders() }),
   updateAccount: (id: string, request: UpdateAccountRequest, mode: WriteMode) => write<UpdateAccountResponse>(`/api/accounts/${encodeURIComponent(id)}`, "PATCH", mode, request),
   deleteAccount: (id: string, mode: WriteMode) => write<DeleteAccountResponse>(`/api/accounts/${encodeURIComponent(id)}`, "DELETE", mode),
   createAccount: (request: CreateAccountRequest, mode: WriteMode) => write<CreateAccountResponse>("/api/accounts", "POST", mode, request),

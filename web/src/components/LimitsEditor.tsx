@@ -1,3 +1,4 @@
+import { PendingSettingsNotice } from "./PendingSettingsNotice"
 import { useRef, useState } from "react"
 import { api, ApiError } from "../api/client"
 import { useRefreshTrading, useTradingSession } from "../api/trading"
@@ -61,6 +62,7 @@ export function LimitsEditor({ initial, trading, onClose }: { initial: Risk; tra
     finally { busy.current = false; if (sameSession()) setPending(false) }
   }
   return <Dialog title="Edit risk limits" onClose={onClose}>
+    <PendingSettingsNotice requiresReset={initial.pending_requires_reset} />
     <p className="text-xs text-muted">Editing revision {revision}. During an evaluation, tightening applies now and loosening takes effect next trading day. Practice limits change immediately. A newer revision must be reloaded before saving.</p>
     <WriteAccess trading={trading} />
     <form className="space-y-4" onSubmit={(event) => { event.preventDefault(); void save() }}>

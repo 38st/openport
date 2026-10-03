@@ -124,7 +124,7 @@ simulation's limits.
   scenario days, with independent daily results and carried-account evaluation
   attempts. The CLI, API and Backtest page keep reports and verifiable journals.
   Results are simulated trading, not predictions or investment advice.
-- **Accounts**: copy active limits and guardrails into new accounts or replays; replay notices when queued settings need a reset; preset IDs beside plan names; rename, archive/unarchive and delete named accounts (deleted files are retained); several named accounts at once, say a 50K evaluation beside a practice
+- **Accounts**: copy active limits and guardrails into new accounts or replays; replay notices when queued settings need a reset; preset IDs beside plan names; rename, archive/unarchive and confirm deletion in the terminal (deleted files are retained); several named accounts at once, say a 50K evaluation beside a practice
   book, each with its own journal, rules and positions on the same market. Public
   demo visitors can create private sandbox accounts on simulated prices, removed
   after 24 hours unused or a server restart.

@@ -109,3 +109,12 @@ it("reports nullable preset ids beside plan names", () => {
     expect(new RegExp(`export interface ${name} \{([^}]+)\}`).exec(source)?.[1]).toContain("plan_id?: string | null")
   }
 })
+
+
+it("keeps account management and copied-setting fields in sync", () => {
+  expect(Object.keys(spec.components.schemas.UpdateAccountRequest!.properties!).sort()).toEqual(["archived", "name"])
+  expect(source).toContain("archived?: boolean")
+  expect(source).toContain("copy_settings_from?: string")
+  expect(wireType(spec.components.schemas.Risk!.properties!.pending_requires_reset!)).toBe("boolean")
+  expect(source).toContain("pending_requires_reset?: boolean")
+})

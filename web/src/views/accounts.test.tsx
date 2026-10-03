@@ -2,6 +2,7 @@ import { QueryClient, QueryClientProvider } from "@tanstack/react-query"
 import type { ReactNode } from "react"
 import { renderToStaticMarkup } from "react-dom/server"
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
+import { dataSource } from "../lib/data-source"
 import { api } from "../api/client"
 import { liveState, useLive } from "../api/live"
 import type { AccountBrief, Status } from "../api/types"
@@ -17,7 +18,7 @@ function render(node: ReactNode) {
   client.setQueryData(["plans"], { plans })
   return renderToStaticMarkup(<QueryClientProvider client={client}>{node}</QueryClientProvider>)
 }
-const swing: AccountBrief = { id: "swing-50k", name: "Swing 50k", trading: { ...trading, account_version: "4", plan: "End-of-day 50K", evaluation: "active" } }
+const swing: AccountBrief = { id: "swing-50k", name: "Swing 50k", trading: { ...trading, account_version: "4", plan: "End-of-day 50K", plan_id: "eod-50k", evaluation: "active" } }
 const withAccounts: Status = { ...status, accounts: [{ id: "main", name: "Main", trading }, swing] }
 beforeEach(() => vi.mocked(useLive).mockReturnValue(liveState(withAccounts, null, "open")))
 afterEach(() => { clients.splice(0).forEach((client) => client.clear()); vi.clearAllMocks(); vi.unstubAllGlobals(); activeAccount.set(MAIN_ACCOUNT) })
@@ -66,7 +67,7 @@ describe("switching accounts", () => {
   it("lists every account and offers a new one", () => {
     const html = render(<AccountSwitcher />)
     expect(html).toContain('<option value="main" selected="">Main</option>')
-    expect(html).toContain('<option value="swing-50k">Swing 50k · End-of-day 50K</option>')
+    expect(html).toContain('<option value="swing-50k">Swing 50k · End-of-day 50K · eod-50k</option>')
     expect(html).toContain("New account…")
   })
 
@@ -78,4 +79,19 @@ describe("switching accounts", () => {
     expect(html).not.toContain("Funded Intraday 100K")
     expect(html).toContain("Choose a plan</button>")
   })
+})
+
+
+it("uses live account sources while viewing a replay and sends lifecycle methods", async () => {
+  const fetcher = vi.fn(async () => new Response("{}", { status: 200 }))
+  vi.stubGlobal("fetch", fetcher)
+  dataSource.set("replay")
+  await api.liveAccounts()
+  expect(fetcher).toHaveBeenLastCalledWith("/api/accounts?archived=true", expect.anything())
+  dataSource.set("live")
+  activeAccount.set("unrelated")
+  await api.updateAccount("swing-50k", { name: "Renamed", archived: true }, "open")
+  expect(fetcher).toHaveBeenLastCalledWith("/api/accounts/swing-50k", expect.objectContaining({ method: "PATCH", body: JSON.stringify({ name: "Renamed", archived: true }) }))
+  await api.deleteAccount("swing-50k", "open")
+  expect(fetcher).toHaveBeenLastCalledWith("/api/accounts/swing-50k", expect.objectContaining({ method: "DELETE" }))
 })
