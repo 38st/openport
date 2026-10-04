@@ -1835,7 +1835,7 @@ TEST(ReproducibleRun, ScenarioDayHasIdenticalBytesAcrossSpeedsFastForwardAndVeri
   EXPECT_EQ(invalid_source.message.find(file.directory.string()), std::string::npos);
 }
 
-TEST(ReproducibleRun, ScenarioRunsFromBeforeRevisionsRegenerateTheFirstRevision) {
+TEST(ReproducibleRun, ScenarioRunsKeepTheirSavedRevisionAndLegacyDefault) {
   test::RecordingFile file;
   const auto source = file.directory / "golden.json";
   {
@@ -1843,7 +1843,7 @@ TEST(ReproducibleRun, ScenarioRunsFromBeforeRevisionsRegenerateTheFirstRevision)
     out << R"({"id":"golden","title":"Golden day","description":"Simulated test day","symbols":["SPX"],"session":"regular","date":"2026-11-27","seed":81723,"generator":1,"drift":[[1,0.001]],"volatility":0.12,"iv_shift":0,"spot_vol":-2})";
   }
   const auto scenario = providers::read_scenario(source);
-  for (const int revision : {1, 2}) {
+  for (int revision = 1; revision <= providers::kScenarioRevision; ++revision) {
     SCOPED_TRACE(revision);
     const auto recording = file.directory / ("revision-" + std::to_string(revision) + ".oprec");
     providers::write_scenario_recording(recording, scenario, scenario.date, scenario.seed, revision);
@@ -1851,6 +1851,7 @@ TEST(ReproducibleRun, ScenarioRunsFromBeforeRevisionsRegenerateTheFirstRevision)
     auto identity = json::parse(server::scenario_input(scenario, scenario.date, scenario.seed));
     EXPECT_EQ(identity.at("revision"), providers::kScenarioRevision);
     if (revision == 1) identity.erase("revision");
+    else identity["revision"] = revision;
     const auto journal = file.directory / ("run-" + std::to_string(revision) + ".jsonl");
     {
       md::RecordingReader reader(recording);
