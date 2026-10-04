@@ -58,9 +58,14 @@ jobs:
         run: ctest --test-dir build -j 4 --output-on-failure --timeout 1500
 
   cpp-sanitize:
-    name: C++ (GCC 13, AddressSanitizer + UndefinedBehaviorSanitizer)
+    name: C++ (GCC 13, ASan + UBSan, shard ${{ matrix.shard }}/4)
     runs-on: ubuntu-24.04
-    timeout-minutes: 90
+    timeout-minutes: 30
+    strategy:
+      # Complete every shard even when another finds a sanitizer failure.
+      fail-fast: false
+      matrix:
+        shard: [1, 2, 3, 4]
     steps:
       - uses: actions/checkout@v7
       - name: Install system dependencies
@@ -69,8 +74,11 @@ jobs:
           sudo apt-get install -y --no-install-recommends \
             build-essential cmake ninja-build libboost-dev libssl-dev zlib1g-dev libzstd-dev
       - name: Configure
+        # -O1 avoids expensive optimization of instrumented code; -g1 keeps
+        # function names and line numbers in sanitizer backtraces.
         run: >
           cmake -S . -B build -G Ninja -DCMAKE_BUILD_TYPE=RelWithDebInfo
+          -DCMAKE_CXX_FLAGS_RELWITHDEBINFO="-O1 -g1 -DNDEBUG"
           -DOPENPORT_SANITIZE=ON -DOPENPORT_WERROR=ON -DOPENPORT_BUILD_BENCHMARKS=OFF
       - name: Build
         run: cmake --build build -j 4
@@ -79,7 +87,11 @@ jobs:
           TMPDIR: ${{ runner.temp }}
           ASAN_OPTIONS: detect_leaks=1:abort_on_error=1
           UBSAN_OPTIONS: print_stacktrace=1:halt_on_error=1
-        run: ctest --test-dir build -j 4 --output-on-failure --timeout 1500
+        # Interleave the complete discovered suite across runners, including
+        # full-size generation tests. Every test belongs to exactly one shard.
+        run: >
+          ctest --test-dir build -j 4 --output-on-failure --timeout 1500
+          --no-tests=error -I ${{ matrix.shard }},,${{ strategy.job-total }}
 
   cpp-macos:
     name: C++ (Apple Clang, macOS 15, warnings as errors)

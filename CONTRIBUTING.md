@@ -22,7 +22,14 @@ cd web && npm ci && npx tsc -p tsconfig.json && npx vitest run && npm run build
 CI runs on every push and pull request: the C++ suite with GCC 13 on Ubuntu 24.04 and
 Apple Clang on macOS, both with `-DOPENPORT_WERROR=ON`, again under AddressSanitizer
 and UndefinedBehaviorSanitizer with GCC 13, the web checks, the Python client and a
-Docker smoke test. The macOS build is the release archive's: `-DOPENPORT_STATIC_DEPS=ON`
+Docker smoke test. The sanitizer job uses four parallel runners, each running
+every fourth discovered CTest test with four local processes. All tests keep their
+full-size inputs; none are excluded. Its `RelWithDebInfo` flags are `-O1 -g1 -DNDEBUG`
+to reduce compile time while retaining function names and source lines in sanitizer
+backtraces. To reproduce a shard after configuring with the workflow's flags, run
+`ctest --test-dir build -j 4 --output-on-failure --no-tests=error -I 1,,4`
+(replace `1` with `2`, `3` or `4`); omit `-I` to run the whole suite.
+The macOS build is the release archive's: `-DOPENPORT_STATIC_DEPS=ON`
 links OpenSSL and zstd statically, and CI checks it needs only macOS's own libraries.
 Changes only to `site/`, `docs/` (other than `docs/openapi.yaml`, which the tests
 read) or top-level Markdown files skip CI.
