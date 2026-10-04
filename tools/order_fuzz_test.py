@@ -320,6 +320,36 @@ class FlowTest(unittest.TestCase):
         self.assertEqual(counts["playbook"]["fills"], 1)
         self.assertEqual(counts["playbook"]["time_stop_orders"], 1)
 
+    def test_playbook_plan_refusals_warn_only_for_actual_automatic_attempts(self):
+        class RefusedPlaybook(ScriptAPI):
+            def call(self, method, path, body=None):
+                status, response = super().call(method, path, body)
+                if path.endswith("/mode"):
+                    self.current = state()
+                    self.current["orders"]["orders"] = copy.deepcopy(attempts)
+                return status, response
+        refused = order(actor="system", tags=["playbook:order-fuzz-1@v1"], status="rejected",
+                        filled_quantity=0, remaining_quantity=1, reason=dict(code="BUY_ONLY"))
+        cases = [("buy-only", [refused], True),
+                 ("defined-risk", [dict(refused, reason=dict(code="DEFINED_RISK"))], True),
+                 ("no attempt", [], False),
+                 ("manual", [dict(refused, actor="loopback")], False),
+                 ("another playbook", [dict(refused, tags=["playbook:other@v1"])], False),
+                 ("feed failure", [dict(refused, reason=dict(code="STALE_QUOTE"))], False),
+                 ("unknown reason", [dict(refused, reason=None)], False),
+                 ("unfilled", [dict(refused, status="working", reason=None)], False),
+                 ("mixed", [refused, dict(refused, id="2", reason=dict(code="INVALID_ORDER"))], False)]
+        for label, attempts, warns in cases:
+            with self.subTest(label=label):
+                result, _ = scripted_run(RefusedPlaybook(), repeat=True, playbook=True, plan="intraday-50k")
+                self.assertEqual(result["exit_status"], 0 if warns else 1)
+                for run in result["runs"]:
+                    self.assertEqual(bool(run["warnings"]), warns)
+                    report = run["warnings"] if warns else run["failures"]
+                    self.assertEqual(report[0]["check"], "playbook_coverage")
+                    if warns:
+                        self.assertEqual(report[0]["refusals"], {attempts[0]["reason"]["code"]: 1})
+
     def test_restart_prefix_repeat_and_both_verifiers(self):
         with tempfile.TemporaryDirectory() as directory:
             api = RestartAPI(directory)
@@ -435,6 +465,29 @@ class FlowTest(unittest.TestCase):
             path.write_bytes(b"".join(lines)[:-1])
             with self.assertRaises(fuzz.FuzzError):
                 fuzz.journal_prefix(path, t)
+
+    def test_restart_prefix_uses_command_time_after_a_boundary(self):
+        target = fuzz.market_ns(MID)
+        def command(when):
+            return dict(type="run_input", payload=dict(events=[dict(type="run_input", payload=dict(
+                kind="command", time=when, driver_time=target, command=dict(kind=8)))]))
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory, "source.jsonl")
+            # The command exactly at T belongs; the next input-first command has
+            # account time T but runs at T+2ns, including its later effects.
+            records = [dict(type="run_input", payload=dict(events=[dict(type="run_input", payload=dict(kind="boundary", time=target))])),
+                       command(target), command(target + 2), dict(type="modify"), command(target + 2)]
+            times = [target, target, target, target + 2, target + 2]
+            lines = [json.dumps(dict(r, seq=i, time=t, hash=str(i))).encode() + b"\n"
+                     for i, (r, t) in enumerate(zip(records, times), 1)]
+            path.write_bytes(b"".join(lines))
+            for at in (MID, "2026-09-16T16:45:00.000000001Z"):
+                with self.subTest(at=at):
+                    prefix = fuzz.journal_prefix(path, at)
+                    self.assertEqual(prefix["transactions"], 2)
+                    self.assertEqual(prefix["bytes"], sum(map(len, lines[:2])))
+                    self.assertEqual(prefix["source_bytes"], sum(map(len, lines)))
+            self.assertEqual(fuzz.journal_prefix(path, "2026-09-16T16:45:00.000000002Z")["transactions"], 5)
 
     def test_refusals_repeat_exact_tape_and_pause(self):
         api = ScriptAPI()

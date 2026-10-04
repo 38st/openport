@@ -29,7 +29,8 @@ verification or byte comparison. Verification never repairs or compacts a journa
 
 --playbook creates one live catalogue definition (left off on live accounts), then
 enables the same version in auto on each replay. Tagged orders and their fills are
-counted by actor; no automatic fills is a coverage failure. --restart-check needs
+counted by actor; no automatic fills is a coverage failure unless every automatic
+attempt was refused by plan rules, which is reported as a warning. --restart-check needs
 --openportd and --replays-dir and checks an inclusive, mid-run journal prefix.
 """
 import argparse
@@ -53,6 +54,11 @@ import urllib.request
 
 PREFIX = "/api/replay"
 WORKING = {"working", "partially_filled", "armed"}
+# Documented plan order gates, not malformed orders, feed failures or matching errors.
+PLAN_REFUSALS = {"BUY_ONLY", "DEFINED_RISK", "BUYING_POWER", "LIMIT_ONLY", "STOP_REQUIRED",
+                 "MAX_TRADE_RISK", "MAX_CONTRACTS_HELD", "INSTRUMENT_NOT_ALLOWED", "OUTSIDE_PLAN_HOURS",
+                 "EXPIRY_CUTOFF", "SCALING_LIMIT", "MAX_VOLUME_SHARE", "NEWS_BLACKOUT", "HOLD_RESTRICTED",
+                 "MIN_HOLD", "MICROSCALPING", "HEDGING", "COUNTER_POSITION", "FLAT_TIME", "OVERNIGHT_HOLD"}
 
 
 class FuzzError(Exception):
@@ -283,6 +289,8 @@ def actor_counts(state, definition=None):
         result["playbook"] = dict(tag=tag, orders=len(tagged), fills=len(executions),
                                   orders_by_actor=Counter(o.get("actor", "unknown") for o in tagged),
                                   fills_by_actor=Counter(f.get("actor", "unknown") for f in executions),
+                                  automatic_refusals=Counter((o.get("reason") or {}).get("code", "unknown") for o in tagged
+                                                            if o.get("actor") == "system" and o.get("status") == "rejected"),
                                   time_stop_orders=sum(o.get("note", "").startswith("Playbook automatic time stop;") for o in tagged))
     return result
 
@@ -522,9 +530,9 @@ def restart_time(source):
 
 
 def journal_prefix(path, at):
-    """Locate the end of the LAST transaction <= T, retaining exact file bytes."""
+    """Keep transactions through T, excluding inputs for commands after T."""
     target, offset, previous, count = market_ns(at), 0, -1, 0
-    digest, prefix = hashlib.sha256(), None
+    digest, prefix, past_target = hashlib.sha256(), None, False
     with open(path, "rb") as stream:
         for line in stream:
             digest.update(line)
@@ -536,7 +544,13 @@ def journal_prefix(path, at):
                 raise FuzzError("invalid source journal sequence, time or incomplete record")
             previous = timestamp
             offset += len(line)
-            if timestamp <= target:
+            # Input-first journals stamp a command record with the preceding
+            # account time. Its explicit market time determines whether it runs.
+            later_command = record.get("type") == "run_input" and any(
+                event.get("type") == "run_input" and event["payload"].get("kind") == "command"
+                and event["payload"]["time"] > target for event in record["payload"]["events"])
+            past_target = past_target or timestamp > target or later_command
+            if not past_target:
                 prefix = dict(bytes=offset, transactions=count, head=record["hash"], last_time_ns=timestamp)
     if prefix is None:
         raise FuzzError("source journal has no transaction at or before restart time")
@@ -638,7 +652,7 @@ def compare_runs(runs, directory=None):
 
 def run_once(client, start, ops, fuzz_seed, tape=None, binary=None, directory=None, out=print, playbook=None):
     result = dict(operations=Counter(), refusals=Counter(), preview_refusals=Counter(), checks=Counter(),
-                  failures=[], commands=[], outcomes=[], verification={"status": "not_run"},
+                  failures=[], warnings=[], commands=[], outcomes=[], verification={"status": "not_run"},
                   cli_verification={"status": "not_requested"})
     run_id, step, op, start_attempted = None, 0, None, False
 
@@ -703,7 +717,16 @@ def run_once(client, start, ops, fuzz_seed, tape=None, binary=None, directory=No
         result["end_market_time"] = state["portfolio"]["time"]
         result["actors"] = actor_counts(state, playbook)
         if playbook and not result["actors"]["playbook"]["fills_by_actor"].get("system"):
-            failure("playbook_coverage", message="no automatic playbook fills", actors=result["actors"])
+            coverage = result["actors"]["playbook"]
+            attempts = coverage["orders_by_actor"].get("system", 0)
+            refused = sum(n for code, n in coverage["automatic_refusals"].items() if code in PLAN_REFUSALS)
+            if attempts and refused == attempts:
+                warning = dict(check="playbook_coverage", message="all automatic playbook orders refused by plan rules",
+                               refusals=coverage["automatic_refusals"])
+                result["warnings"].append(warning)
+                out("WARN", dumps(warning).strip())
+            else:
+                failure("playbook_coverage", message="no automatic playbook fills", actors=result["actors"])
     except (FuzzError, KeyError, TypeError, ValueError, InvalidOperation, OSError) as exc:
         failure("execution", message=str(exc))
     finally:
@@ -778,7 +801,7 @@ def main(argv=None):
     for run in result["runs"]:
         out("run", run.get("run_id"), "operations", dict(run["operations"]), "refusals", dict(run["refusals"]),
             "preview refusals", dict(run["preview_refusals"]),
-            "checks", dict(run["checks"]), "failures", len(run["failures"]),
+            "checks", dict(run["checks"]), "failures", len(run["failures"]), "warnings", len(run["warnings"]),
             "actors", run.get("actors", {}),
             "verify", run["verification"]["status"], "CLI", run["cli_verification"]["status"])
     out("determinism", result["determinism"], "exit", result["exit_status"])
