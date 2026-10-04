@@ -991,7 +991,7 @@
       ],
       "get": {
         "summary": "GET /api/trades.csv",
-        "description": "Read the current publication. Trade CSV appends time_stop_orders: a JSON array of objects with order_id, reason and note for related automatic playbook cancellations and closes.",
+        "description": "Read the current publication. Trade CSV includes settlement_value and settlement_source before the final time_stop_orders column: a JSON array of objects with order_id, reason and note for related automatic playbook cancellations and closes.",
         "x-scope": "read",
         "responses": {
           "200": {
@@ -2886,7 +2886,7 @@
       ],
       "get": {
         "summary": "GET /api/trades.csv",
-        "description": "Read the current publication. Trade CSV appends time_stop_orders: a JSON array of objects with order_id, reason and note for related automatic playbook cancellations and closes.",
+        "description": "Read the current publication. Trade CSV includes settlement_value and settlement_source before the final time_stop_orders column: a JSON array of objects with order_id, reason and note for related automatic playbook cancellations and closes.",
         "x-scope": "read",
         "responses": {
           "200": {
