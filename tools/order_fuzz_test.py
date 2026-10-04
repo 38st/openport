@@ -201,6 +201,9 @@ class InvariantTest(unittest.TestCase):
         before["portfolio"].update(cash="-2.00")
         before["portfolio"]["buying_power"]["available"] = "-2.00"
         self.assertNotIn("buying_power", self.checks(after, before=before, accepted_order=True))
+        before["portfolio"].update(cash="0.00")
+        before["portfolio"]["buying_power"]["available"] = "-1.00"
+        self.assertIn("buying_power", self.checks(after, before=before, accepted_order=True))
         after["account"]["rules"]["buying_power"] = False
         self.assertNotIn("buying_power", self.checks(after, before=state(), accepted_order=True))
 

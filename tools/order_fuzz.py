@@ -206,7 +206,7 @@ def check_invariants(state, before=None, accepted_order=False, abandoned=None):
             basis = "equity" if account["rules"].get("margin") == "portfolio" else "cash"
             free = money(portfolio[basis]) - money(portfolio["buying_power"]["requirement"])
             previous_free = money(previous[basis]) - money(previous["buying_power"]["requirement"])
-            if free < previous_free and available < money(previous["buying_power"]["available"]):
+            if free < previous_free and available <= money(previous["buying_power"]["available"]):
                 fail("buying_power", available=str(available), before_available=previous["buying_power"]["available"],
                      free=str(free), before_free=str(previous_free))
     return failures, counts
