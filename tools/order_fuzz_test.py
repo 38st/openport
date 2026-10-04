@@ -140,6 +140,14 @@ class InvariantTest(unittest.TestCase):
         self.assertEqual(counts["equity_skipped_missing_marks"], 1)
         self.assertEqual(failures[0]["check"], "option_quantity")
 
+    def test_consistent_equity_cannot_hide_wrong_position_value(self):
+        s = held_state()
+        s["portfolio"]["positions"][0]["market_value"] = "100.500101"
+        failures, _ = fuzz.check_invariants(balanced(s))
+        self.assertEqual(len(failures), 1)
+        self.assertEqual(failures[0]["check"], "position_market_value")
+        self.assertEqual(failures[0]["difference"], "0.000001")
+
     def test_missing_position_and_unexplained_position(self):
         s = held_state()
         s["portfolio"]["positions"] = []

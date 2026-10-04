@@ -129,6 +129,15 @@ def check_invariants(state, before=None, accepted_order=False, abandoned=None):
     portfolio, account = state["portfolio"], state["account"]
     positions, stocks = portfolio["positions"], portfolio["stocks"]
     marked = positions + stocks
+    for holdings, quantity_field, multiplier in ((positions, "quantity", 100), (stocks, "shares", 1)):
+        for position in holdings:
+            if position["mark"] is None or position["market_value"] is None:
+                continue
+            expected = money(position["mark"]) * money(position[quantity_field]) * multiplier
+            actual = money(position["market_value"])
+            if actual != expected:
+                fail("position_market_value", symbol=position["symbol"], actual=str(actual),
+                     expected=str(expected), difference=str(actual - expected))
     if any(p["mark"] is None or p["market_value"] is None for p in marked):
         counts["equity_skipped_missing_marks"] += 1
     else:
