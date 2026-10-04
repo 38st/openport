@@ -305,6 +305,7 @@ class ManualClock final : public providers::ReplayClock {
   }
   bool wait_until(TimePoint deadline, const std::atomic<bool>& stop) override {
     std::unique_lock lock(mutex);
+    ++generation;
     waiting = deadline;
     changed.notify_all();
     changed.wait(lock, [&] { return stop.load() || current >= deadline; });
@@ -320,10 +321,16 @@ class ManualClock final : public providers::ReplayClock {
     current += by;
     changed.notify_all();
   }
-  /// The deadline of the wait in progress, once one is.
-  std::optional<TimePoint> waiting_for(std::optional<TimePoint> expected = {}) {
+  std::size_t wait_generation() {
+    const std::lock_guard lock(mutex);
+    return generation;
+  }
+  /// Capture the generation before changing controls/time; inspect the next wait's
+  /// actual deadline, so a wrong deadline fails rather than being filtered out.
+  std::optional<TimePoint> waiting_for(std::size_t after = 0) {
     std::unique_lock lock(mutex);
-    changed.wait_for(lock, 5min, [&] { return waiting && (!expected || waiting == expected); });
+    if (!changed.wait_for(lock, 5min, [&] { return waiting && generation > after; }))
+      return std::nullopt;
     return waiting;
   }
 
@@ -332,6 +339,7 @@ class ManualClock final : public providers::ReplayClock {
   std::condition_variable changed;
   TimePoint current{};
   std::optional<TimePoint> waiting;
+  std::size_t generation = 0;
 };
 
 /// Four events a minute apart, then one eight hours later: an overnight close.
@@ -374,25 +382,28 @@ TEST(Replay, ASpeedChangeRescalesTheWaitInProgressAndThePausedTimeDoesNotCount) 
   replay.start({{"SPX"}}, sink);
   const auto start = clock->now();
   // The first quote is a minute after the definition, at 1x.
-  ASSERT_EQ(clock->waiting_for(start + 60s), start + 60s);
+  ASSERT_EQ(clock->waiting_for(), start + 60s);
   EXPECT_EQ(quotes(sink), 0u);
+  auto generation = clock->wait_generation();
   replay.set_speed(60);
   EXPECT_EQ(replay.speed(), 60);
-  ASSERT_EQ(clock->waiting_for(start + 1s), start + 1s) << "a minute at 60x is a second";
+  ASSERT_EQ(clock->waiting_for(generation), start + 1s) << "a minute at 60x is a second";
+  generation = clock->wait_generation();
   clock->advance(1s);
   ASSERT_TRUE(test::recording_eventually([&] { return quotes(sink) == 1; }));
   EXPECT_EQ(replay.time(), 1'060 * md::kNanosPerSecond);
   // The next quote is a minute of replay, a second of wall time at 60x; pause half way.
-  ASSERT_EQ(clock->waiting_for(start + 2s), start + 2s);
+  ASSERT_EQ(clock->waiting_for(generation), start + 2s);
   replay.set_paused(true);
   ASSERT_TRUE(test::recording_eventually([&] { return pause_observed.load(); }));
   EXPECT_TRUE(replay.paused());
   clock->advance(10min);
   std::this_thread::sleep_for(20ms);
   EXPECT_EQ(quotes(sink), 1u) << "nothing plays while paused";
+  generation = clock->wait_generation();
   replay.set_paused(false);
   // Ten paused minutes move the deadline back by ten minutes.
-  ASSERT_EQ(clock->waiting_for(start + 2s + 10min), start + 2s + 10min);
+  ASSERT_EQ(clock->waiting_for(generation), start + 2s + 10min);
   clock->advance(1s);
   ASSERT_TRUE(test::recording_eventually([&] { return quotes(sink) == 2; }));
   replay.stop();
@@ -415,15 +426,16 @@ TEST(Replay, ASpeedChosenWhilePausedAppliesWhenPlayResumes) {
   test::EventCollector sink;
   replay.start({{"SPX"}}, sink);
   const auto start = clock->now();
-  ASSERT_EQ(clock->waiting_for(start + 60s), start + 60s);
+  ASSERT_EQ(clock->waiting_for(), start + 60s);
   replay.set_paused(true);
   ASSERT_TRUE(test::recording_eventually([&] { return pause_observed.load(); }));
   clock->advance(5min);
+  const auto generation = clock->wait_generation();
   replay.set_speed(60);
   replay.set_paused(false);
   // The minute still owed at 1x is a second at 60x, counted from the resume.
   const auto resumed = clock->now();
-  ASSERT_EQ(clock->waiting_for(resumed + 1s), resumed + 1s);
+  ASSERT_EQ(clock->waiting_for(generation), resumed + 1s);
   clock->advance(1s);
   ASSERT_TRUE(test::recording_eventually([&] { return quotes(sink) == 1; }));
   replay.stop();
@@ -477,8 +489,10 @@ TEST(Replay, ResumingAfterLockstepStepsWaitsOneGap) {
   }
   clock->advance(1s);
   const auto resumed = clock->now();
+  // A wait from before the resume must not satisfy the timing assertion.
+  const auto generation = clock->wait_generation();
   replay.set_paused(false);
-  const auto waiting = clock->waiting_for();
+  const auto waiting = clock->waiting_for(generation);
   ASSERT_TRUE(waiting.has_value());
   EXPECT_EQ(*waiting - resumed, std::chrono::duration_cast<ManualClock::TimePoint::duration>(15s));
   replay.stop();
@@ -527,12 +541,14 @@ TEST(Replay, PlayUntilPacesOnTheTestClockAndSettlesExactlyLikeAStep) {
   test::DiscardEvents discard;
   replay.start({{"SPX"}}, discard);
   ASSERT_TRUE(test::recording_eventually([&] { return !replay.fast_forwarding(); }));
+  auto generation = clock->wait_generation();
   replay.play_until(open + 45 * md::kNanosPerSecond, 60);
   EXPECT_EQ(replay.pause_at(), open + 45 * md::kNanosPerSecond);
   EXPECT_FALSE(replay.stepping());
   for (int step = 1; step <= 3; ++step) {
     const auto expected = providers::ReplayClock::TimePoint{} + step * 250ms;
-    ASSERT_EQ(clock->waiting_for(expected), expected);
+    ASSERT_EQ(clock->waiting_for(generation), expected);
+    generation = clock->wait_generation();
     clock->advance(250ms);
     ASSERT_TRUE(test::recording_eventually([&] { return replay.settled_through() == open + step * 15 * md::kNanosPerSecond; }));
   }
@@ -557,14 +573,16 @@ TEST(Replay, SkipCutsAnOvernightGapShortAndTheEndIsReported) {
   providers::ReplayProvider replay({file.path, 60, false, clock});
   test::EventCollector sink;
   replay.start({{"SPX"}}, sink);
+  std::size_t generation = 0;
   for (int i = 0; i < 3; ++i) {
-    ASSERT_TRUE(clock->waiting_for().has_value());
+    ASSERT_EQ(clock->waiting_for(generation), clock->now() + 1s);
+    generation = clock->wait_generation();
     clock->advance(1s);
     ASSERT_TRUE(test::recording_eventually([&] { return quotes(sink) == static_cast<std::size_t>(i + 1); }));
   }
   // Eight hours at 60x is eight minutes; skip plays the next quote now.
   const auto now = clock->now();
-  ASSERT_EQ(clock->waiting_for(now + 8min), now + 8min);
+  ASSERT_EQ(clock->waiting_for(generation), now + 8min);
   replay.skip();
   ASSERT_TRUE(test::recording_eventually([&] { return quotes(sink) == 4; }));
   EXPECT_EQ(replay.time(), (1'000 + 180 + 8 * 3600) * md::kNanosPerSecond);
@@ -581,14 +599,16 @@ TEST(Replay, AMaximumGapPassesTheClosedMarketBetweenSessionsInOneStep) {
   providers::ReplayProvider replay(options);
   test::EventCollector sink;
   replay.start({{"SPX"}}, sink);
+  std::size_t generation = 0;
   for (int i = 0; i < 3; ++i) {
-    ASSERT_TRUE(clock->waiting_for().has_value());
+    ASSERT_EQ(clock->waiting_for(generation), clock->now() + 1s);
+    generation = clock->wait_generation();
     clock->advance(1s);
     ASSERT_TRUE(test::recording_eventually([&] { return quotes(sink) == static_cast<std::size_t>(i + 1); }));
   }
   // The eight hours wait one minute of receipt time, a second at 60x.
   const auto now = clock->now();
-  ASSERT_EQ(clock->waiting_for(now + 1s), now + 1s);
+  ASSERT_EQ(clock->waiting_for(generation), now + 1s);
   clock->advance(1s);
   ASSERT_TRUE(test::recording_eventually([&] { return quotes(sink) == 4; }));
   EXPECT_EQ(replay.time(), (1'000 + 180 + 8 * 3600) * md::kNanosPerSecond);
