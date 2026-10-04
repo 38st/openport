@@ -39,8 +39,8 @@ OrderRequest stopped(OrderRequest request, std::string_view level = "3.00", Trig
 class TradePhases : public ::testing::TestWithParam<Phase> {};
 INSTANTIATE_TEST_SUITE_P(NonFunded, TradePhases,
     ::testing::Values(Phase::Evaluation, Phase::Verification),
-    [](const ::testing::TestParamInfo<Phase>& info) {
-      return info.param == Phase::Verification ? "Verification" : "Evaluation";
+    [](const ::testing::TestParamInfo<Phase>& param) {
+      return param.param == Phase::Verification ? "Verification" : "Evaluation";
     });
 
 TEST_P(TradePhases, TradeConsistencyUsesExactProfitAndHoldsWithoutAProfitableTrade) {

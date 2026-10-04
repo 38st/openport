@@ -56,8 +56,8 @@ server::TradingReply command(server::Desk& desk, server::TradingCommand request,
 class DeskPhases : public ::testing::TestWithParam<trading::Phase> {};
 INSTANTIATE_TEST_SUITE_P(NonFunded, DeskPhases,
     ::testing::Values(trading::Phase::Evaluation, trading::Phase::Verification),
-    [](const ::testing::TestParamInfo<trading::Phase>& info) {
-      return info.param == trading::Phase::Verification ? "Verification" : "Evaluation";
+    [](const ::testing::TestParamInfo<trading::Phase>& param) {
+      return param.param == trading::Phase::Verification ? "Verification" : "Evaluation";
     });
 TEST_P(DeskPhases, VolumeShareGateChecksKnownUnknownStaleVolumeAndOpeningContracts) {
   test::ScriptedMarket market;

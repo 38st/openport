@@ -623,12 +623,16 @@ TEST(Backtest, VerificationTradeObjectivesHoldPassesAndRecoverRecordedEvidence) 
       auto recovered = trading::TradingSession::recover(trading::FileJournal::read(journal.string()));
       const auto snapshot = recovered.snapshot();
       const auto& e = snapshot->evaluation;
-      if (rules.contains("min_trades")) EXPECT_EQ(e.closed_trades, 1U);
+      if (rules.contains("min_trades")) {
+        EXPECT_EQ(e.closed_trades, 1U);
+      }
       if (rules.contains("trade_consistency_percent")) {
         ASSERT_TRUE(e.best_trade);
         EXPECT_EQ(e.best_trade->pnl, Money::parse("77.40"));
       }
-      if (rules.contains("microscalp_percent")) EXPECT_GT(e.short_profit, Money{});
+      if (rules.contains("microscalp_percent")) {
+        EXPECT_GT(e.short_profit, Money{});
+      }
       const auto verified = server::verify_run(journal);
       EXPECT_TRUE(verified.matched) << verified.message;
     }

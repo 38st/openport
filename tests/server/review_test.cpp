@@ -56,7 +56,9 @@ void check_columns(const json& value, const std::set<std::string>& columns, cons
     if (field.is_object()) check_columns(field, columns, path);
     else if (field.is_null()) {
       EXPECT_TRUE(columns.contains(path) || std::any_of(columns.begin(), columns.end(), [&](const auto& c) { return c.starts_with(path + "."); })) << path;
-    } else EXPECT_TRUE(columns.contains(path)) << path;
+    } else {
+      EXPECT_TRUE(columns.contains(path)) << path;
+    }
   }
 }
 

@@ -99,8 +99,8 @@ class EvaluationTimeRules : public ::testing::TestWithParam<Phase> {
 };
 INSTANTIATE_TEST_SUITE_P(ProgramSteps, EvaluationTimeRules,
     ::testing::Values(Phase::Evaluation, Phase::Verification),
-    [](const ::testing::TestParamInfo<Phase>& info) {
-      return info.param == Phase::Verification ? "Verification" : "Evaluation";
+    [](const ::testing::TestParamInfo<Phase>& param) {
+      return param.param == Phase::Verification ? "Verification" : "Evaluation";
     });
 
 TEST_P(EvaluationTimeRules, TimeLimitFailsAfterTheDeadlineOnAnEmptyBatch) {
