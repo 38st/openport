@@ -9467,9 +9467,13 @@
               {
                 "const": "cash_secured",
                 "type": "string"
+              },
+              {
+                "const": "netted",
+                "type": "string"
               }
             ],
-            "description": "naked: a short option alone; vertical: a short with the long that covers it; covered: a short call against 100 long shares or a short put against 100 short shares; straddle: a short put with a short call; short_shares: shares no long call protects; protected_shares: 100 short shares with a long call; worst_loss: positions expiring together at their worst loss at expiry; long: paid in full; cash_secured: a cash account's or IRA's short put, holding its strike."
+            "description": "naked: a short option alone; vertical: a short with the long that covers it; covered: a short call against 100 long shares or a short put against 100 short shares; straddle: a short put with a short call; short_shares: shares no long call protects; protected_shares: 100 short shares with a long call; worst_loss: positions expiring together at their worst loss at expiry; long: paid in full; cash_secured: a cash account's or IRA's short put, holding its strike. netted: joint allocation of covers, straddles and expiry worst losses; whole held positions are listed once."
           },
           "legs": {
             "type": "array",

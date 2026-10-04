@@ -391,8 +391,9 @@ struct MarginPolicy {
 /// pairing across expiries, pairing without straddles (which can preserve a
 /// condor's shared worst loss), and taking each expiry on its own, both with
 /// shares covering nothing and with shares first taking their best covers.
-/// Worst-loss netting is not optimized jointly with pairing: a mixed-expiry
-/// underlying with a worst-loss-netted constituent can exceed the separate sum.
+/// A joint allocation also lets covers, straddles and expiry loss pools share
+/// the book without competing greedily for longs. It optimizes whole contracts
+/// using exact rational bounds and is reported as a Netted part.
 /// Longs need nothing: their premium is paid in full, as long shares are; short
 /// shares hold their value and half again.
 /// A house percentage raises each naked requirement (beyond the buy-back value)
@@ -412,6 +413,7 @@ enum class MarginPartKind {
   WorstLoss,        ///< Positions that expire together, held at their worst loss at expiry.
   Long,             ///< A long option or long shares that nothing else needs: paid in full.
   CashSecured,      ///< A cash account's or IRA's short put alone: its strike, in cash.
+  Netted,           ///< Joint allocation of covers, straddles and expiry worst losses.
 };
 /// One part of an underlying's requirement: which positions hold what.
 struct MarginPart {

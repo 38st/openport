@@ -45,7 +45,7 @@ add_library(openport::trading ALIAS openport_trading)
 target_include_directories(openport_trading PUBLIC
   $<BUILD_INTERFACE:${PROJECT_SOURCE_DIR}/include>)
 target_link_libraries(openport_trading PUBLIC openport::core
-  PRIVATE OpenSSL::Crypto nlohmann_json::nlohmann_json openport::options)
+  PRIVATE Boost::headers OpenSSL::Crypto nlohmann_json::nlohmann_json openport::options)
 set_target_properties(openport_trading PROPERTIES POSITION_INDEPENDENT_CODE ON)
 
 if(OPENPORT_BUILD_PROVIDERS)

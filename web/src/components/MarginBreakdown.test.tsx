@@ -58,6 +58,15 @@ describe("margin breakdown", () => {
     expect(rows()).toEqual([["SPY", "Cash-secured put", "−1 SPY Oct 22 490P", "$49,000.00"]])
   })
 
+  it("names jointly netted positions and their complete requirement", async () => {
+    await act(async () => root.render(<MarginBreakdown margin={[
+      { underlying: "QQQ", requirement: "24900.00", scan: null, parts: [
+        { kind: "netted", legs: [{ symbol: "QQQ   261022C00490000", quantity: -2 }], requirement: "24900.00" },
+      ] },
+    ]} />))
+    expect(rows()).toEqual([["QQQ", "Combined strategies", "−2 QQQ Oct 22 490C", "$24,900.00"]])
+  })
+
   it("labels shares and contracts", () => {
     expect(marginLegLabel({ symbol: "SPY", quantity: -200 }, "SPY")).toBe("−200 SPY shares")
     expect(marginLegLabel({ symbol: "SPXW  261022P04900000", quantity: 2 }, "SPX")).toBe("+2 SPX Oct 22 4900P")

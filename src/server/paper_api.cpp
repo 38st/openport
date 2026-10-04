@@ -608,8 +608,8 @@ Money average_price(const Position& position) {
 /// positions it takes, or the portfolio-margin scan's worst point.
 json margin_json(const std::vector<MarginUnderlying>& margin) {
   constexpr const char* kinds[] = {"naked", "vertical", "covered", "straddle", "short_shares", "protected_shares", "worst_loss", "long",
-                                   "cash_secured"};
-  static_assert(std::size(kinds) == static_cast<std::size_t>(MarginPartKind::CashSecured) + 1);
+                                   "cash_secured", "netted"};
+  static_assert(std::size(kinds) == static_cast<std::size_t>(MarginPartKind::Netted) + 1);
   json result = json::array();
   for (const auto& item : margin) {
     json parts = json::array();

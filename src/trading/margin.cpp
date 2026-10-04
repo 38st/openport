@@ -5,6 +5,7 @@
 #include <functional>
 #include <map>
 #include <vector>
+#include <boost/multiprecision/cpp_int.hpp>
 
 #include "openport/trading/evaluation.hpp"
 #include "openport/trading/risk.hpp"
@@ -406,12 +407,204 @@ Money shares_first(const Book& book, const MarginStock* stock, const MarginPolic
   const auto held = across(pairing, stock, policy.house_percent, parts);
   return held + separate(options, nullptr, policy, parts);
 }
+using Rational = boost::multiprecision::cpp_rational;
+/// Allocate whole contracts and whole share lots. The LP relaxation bounds each
+/// branch; exact two-phase simplex and Bland's rule avoid tolerance decisions
+/// and cycling. The incumbent is the ordinary pairing's feasible requirement.
+class Allocation {
+ public:
+  std::size_t resource(Quantity capacity) {
+    bounds_.push_back(capacity);
+    return bounds_.size() - 1;
+  }
+  void choice(Rational saving, std::vector<std::pair<std::size_t, Rational>> uses, bool integral = true) {
+    costs_.push_back(std::move(saving));
+    columns_.push_back(std::move(uses));
+    integral_.push_back(integral);
+  }
+  Rational saving(Rational incumbent) const {
+    std::vector<Bound> branch;
+    const auto search = [&](const auto& self) -> void {
+      const auto relaxed = solve(branch);
+      if (!relaxed || relaxed->saving <= incumbent) return;
+      for (std::size_t j = 0; j < costs_.size(); ++j) {
+        if (!integral_[j] || denominator(relaxed->values[j]) == 1) continue;
+        const boost::multiprecision::cpp_int whole = numerator(relaxed->values[j]) / denominator(relaxed->values[j]);
+        const auto floor = whole.convert_to<Quantity>();
+        branch.push_back({j, floor, 1});
+        self(self);
+        branch.back() = {j, -(floor + 1), -1};
+        self(self);
+        branch.pop_back();
+        return;
+      }
+      incumbent = relaxed->saving;
+    };
+    search(search);
+    return incumbent;
+  }
+ private:
+  struct Bound { std::size_t variable; Quantity rhs; int sign; };
+  struct Solution { Rational saving; std::vector<Rational> values; };
+  std::optional<Solution> solve(const std::vector<Bound>& branch) const {
+    const auto m = bounds_.size() + branch.size(), n = costs_.size(), rhs = n + 1;
+    constexpr auto artificial = std::numeric_limits<std::size_t>::max();
+    std::vector<std::vector<Rational>> a(m + 2, std::vector<Rational>(n + 2));
+    std::vector<std::size_t> basic(m), nonbasic(n + 1);
+    for (std::size_t i = 0; i < m; ++i) { basic[i] = n + i; a[i][n] = -1; }
+    for (std::size_t i = 0; i < bounds_.size(); ++i) a[i][rhs] = bounds_[i];
+    for (std::size_t i = 0; i < branch.size(); ++i) {
+      a[bounds_.size() + i][branch[i].variable] = branch[i].sign;
+      a[bounds_.size() + i][rhs] = branch[i].rhs;
+    }
+    for (std::size_t j = 0; j < n; ++j) {
+      nonbasic[j] = j;
+      a[m][j] = -costs_[j];
+      for (const auto& [i, coefficient] : columns_[j]) a[i][j] += coefficient;
+    }
+    nonbasic[n] = artificial;
+    a[m + 1][n] = 1;
+    const auto pivot = [&](std::size_t r, std::size_t s) {
+      const Rational divisor = a[r][s];
+      for (std::size_t i = 0; i < m + 2; ++i) {
+        if (i == r || a[i][s] == 0) continue;
+        const Rational ratio = a[i][s] / divisor;
+        for (std::size_t j = 0; j < n + 2; ++j)
+          if (j != s && a[r][j] != 0) a[i][j] -= a[r][j] * ratio;
+        a[i][s] = -ratio;
+      }
+      for (std::size_t j = 0; j < n + 2; ++j)
+        if (j != s) a[r][j] /= divisor;
+      a[r][s] = 1 / divisor;
+      std::swap(basic[r], nonbasic[s]);
+    };
+    const auto simplex = [&](std::size_t objective) {
+      for (;;) {
+        std::size_t s = rhs;
+        for (std::size_t j = 0; j <= n; ++j)
+          if (nonbasic[j] != artificial && a[objective][j] < 0 && (s == rhs || nonbasic[j] < nonbasic[s])) s = j;
+        if (s == rhs) return;
+        std::size_t r = m;
+        for (std::size_t i = 0; i < m; ++i) {
+          if (a[i][s] <= 0) continue;
+          if (r == m || a[i][rhs] / a[i][s] < a[r][rhs] / a[r][s] ||
+              (a[i][rhs] / a[i][s] == a[r][rhs] / a[r][s] && basic[i] < basic[r])) r = i;
+        }
+        if (r == m) throw std::logic_error("Unbounded margin allocation");
+        pivot(r, s);
+      }
+    };
+    std::size_t first = 0;
+    for (std::size_t i = 1; i < m; ++i)
+      if (a[i][rhs] < a[first][rhs]) first = i;
+    if (a[first][rhs] < 0) {
+      pivot(first, n);
+      simplex(m + 1);
+      if (a[m + 1][rhs] != 0) return std::nullopt;
+      for (std::size_t i = 0; i < m; ++i) {
+        if (basic[i] != artificial) continue;
+        std::size_t s = rhs;
+        for (std::size_t j = 0; j <= n; ++j)
+          if (a[i][j] != 0 && (s == rhs || nonbasic[j] < nonbasic[s])) s = j;
+        if (s != rhs) pivot(i, s);
+      }
+    }
+    simplex(m);
+    Solution result{a[m][rhs], std::vector<Rational>(n)};
+    for (std::size_t i = 0; i < m; ++i)
+      if (basic[i] < n) result.values[basic[i]] = a[i][rhs];
+    return result;
+  }
+  std::vector<Quantity> bounds_;
+  std::vector<Rational> costs_;
+  std::vector<std::vector<std::pair<std::size_t, Rational>>> columns_;
+  std::vector<bool> integral_;
+};
+/// Allocate the book jointly between naked shorts, share covers, straddles
+/// and expiry loss pools. A pool can use any later long's intrinsic payoff,
+/// but each contract is used at most once. Its collateral bounds the loss at
+/// zero and every strike, and its call slope must be nonnegative at infinity.
+/// This is the subadditive closure of those strategies: allocations feasible
+/// for separate books remain feasible together. Each contract or share lot is
+/// indivisible; the combined book is reported as one part with held quantities.
+Money joint_requirement(const Book& book, const MarginStock* stock, const MarginPolicy& policy, Money incumbent) {
+  Allocation allocation;
+  std::map<const Unit*, std::size_t> capacity;
+  std::vector<const Unit*> shorts, longs;
+  Rational baseline = other_shares(stock, 0, policy.house_percent, nullptr).micros();
+  const auto unit_cost = [](const Unit& u) -> Rational { return Rational(naked(u, u.size).micros()) / u.size; };
+  for (const auto* side : {&book.short_puts, &book.short_calls, &book.long_puts, &book.long_calls})
+    for (const auto& u : *side) {
+      capacity[&u] = allocation.resource(u.size);
+      if (!u.leg) continue;
+      if (u.leg->quantity < 0) { shorts.push_back(&u); baseline += naked(u, u.size).micros(); }
+      else longs.push_back(&u);
+    }
+  // Shares and straddles compete for the same capacities as the loss pools.
+  for (const auto* s : shorts) {
+    const auto& covers = s->leg->contract.type == OptionType::Put ? book.long_puts : book.long_calls;
+    for (const auto& cover : covers) {
+      if (!cover.stock) continue;
+      const Rational saving = unit_cost(*s) - covered(*s, cover, s->size).micros() / Rational(s->size);
+      if (saving > 0) allocation.choice(saving, {{capacity.at(s), 1}, {capacity.at(&cover), 1}});
+    }
+  }
+  for (const auto& s : book.short_calls) {
+    if (!s.stock) continue;
+    for (const auto& cover : book.long_calls) {
+      if (!cover.leg) continue;
+      const Rational saving = unit_cost(s) - covered(s, cover, 1).micros();
+      if (saving > 0) allocation.choice(saving, {{capacity.at(&s), 1}, {capacity.at(&cover), 1}});
+    }
+  }
+  if (policy.account == AccountType::Margin)
+    for (const auto& put : book.short_puts)
+      for (const auto& call : book.short_calls) {
+        if (!call.leg) continue;
+        const auto saving = straddle_saving(put, call);
+        if (saving > 0) allocation.choice(saving, {{capacity.at(&put), 1}, {capacity.at(&call), 1}});
+      }
+  std::map<Timestamp, std::vector<const Unit*>> expiries;
+  for (const auto* s : shorts) expiries[s->leg->contract.expiry_time()].push_back(s);
+  for (const auto& [expiry, group] : expiries) {
+    std::vector<const Unit*> eligible;
+    for (const auto* l : longs)
+      if (l->leg->contract.expiry_time() >= expiry) eligible.push_back(l);
+    // Puts alone can be bounded too (notably cash-secured IRA ratios).
+    std::vector<std::int64_t> spots{0};
+    for (const auto* s : group) spots.push_back(milli(s->leg->contract.strike));
+    for (const auto* l : eligible) spots.push_back(milli(l->leg->contract.strike));
+    std::sort(spots.begin(), spots.end());
+    spots.erase(std::unique(spots.begin(), spots.end()), spots.end());
+    std::vector<std::size_t> losses;
+    for (std::size_t i = 0; i < spots.size(); ++i) losses.push_back(allocation.resource(0));
+    const auto tail = allocation.resource(0);
+    const auto pool_choice = [&](const Unit* u, bool is_short) {
+      std::vector<std::pair<std::size_t, Rational>> uses{{capacity.at(u), 1}};
+      const auto sign = is_short ? 1 : -1;
+      for (std::size_t i = 0; i < spots.size(); ++i)
+        uses.emplace_back(losses[i], intrinsic(u->leg->contract, spots[i]).micros() * sign);
+      if (u->leg->contract.type == OptionType::Call) uses.emplace_back(tail, sign);
+      allocation.choice(is_short ? unit_cost(*u) : Rational(0), std::move(uses));
+    };
+    for (const auto* s : group) pool_choice(s, true);
+    for (const auto* l : eligible) pool_choice(l, false);
+    std::vector<std::pair<std::size_t, Rational>> collateral;
+    for (const auto row : losses) collateral.emplace_back(row, -1);
+    allocation.choice(-1, std::move(collateral), false);
+  }
+  const Rational requirement = baseline - allocation.saving(baseline - incumbent.micros());
+  const boost::multiprecision::cpp_int rounded = (numerator(requirement) + denominator(requirement) - 1) / denominator(requirement);
+  if (rounded < 0 || rounded > std::numeric_limits<std::int64_t>::max())
+    throw TradingError(Reason::ARITHMETIC_OVERFLOW, "Margin allocation exceeds micro-dollar range");
+  return Money::from_micros(rounded.convert_to<std::int64_t>());
+}
 /// One underlying's requirement: the least of joint pairing across expiries,
 /// verticals and share covers alone (a condor's shared worst loss may hold less
 /// without straddles), and each expiry on its own, both before and after shares
 /// cover. A cash account pairs only with shares; neither it nor an IRA pairs
-/// straddles. Worst-loss savings are evaluated after pairing, so mixed-expiry
-/// books containing a worst-loss group need not be subadditive.
+/// straddles. A joint allocation includes expiry loss pools in the optimization
+/// so adding structures never takes their covers away from those pools.
 Money underlying_requirement(const std::vector<const MarginLeg*>& all, const MarginStock* stock, const MarginPolicy& policy,
                              Parts* parts) {
   const bool spreads = policy.account != AccountType::Cash;
@@ -432,6 +625,14 @@ Money underlying_requirement(const std::vector<const MarginLeg*>& all, const Mar
   if (spreads) {
     consider(separate(all, stock, policy, explain));
     if (stock && magnitude(stock->shares) >= kLot) consider(shares_first(book, stock, policy, explain));
+    if (best > Money{} && all.size() > 2) {
+      const auto joint = joint_requirement(book, stock, policy, best);
+      std::vector<std::pair<std::string, Quantity>> legs;
+      for (const auto* leg : all) legs.emplace_back(leg->contract.osi_symbol(), leg->quantity);
+      if (stock) legs.emplace_back(stock->underlying, stock->shares);
+      add(explain, MarginPartKind::Netted, std::move(legs), joint);
+      consider(joint);
+    }
   }
   if (parts) *parts = std::move(best_parts);
   return best;

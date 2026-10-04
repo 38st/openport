@@ -979,7 +979,7 @@ export interface Portfolio {
 export interface MarginLeg { symbol: string; quantity: number }
 /** Positions that hold part of an underlying's strategy-margin requirement together. */
 export interface MarginPart {
-  kind: "naked" | "vertical" | "covered" | "straddle" | "short_shares" | "protected_shares" | "worst_loss" | "long" | "cash_secured"
+  kind: "naked" | "vertical" | "covered" | "straddle" | "short_shares" | "protected_shares" | "worst_loss" | "long" | "cash_secured" | "netted"
   legs: MarginLeg[]
   requirement: Money
 }
