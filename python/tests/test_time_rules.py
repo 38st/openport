@@ -34,8 +34,12 @@ def test_time_rules_types_and_request_schemas():
                                                               "profit_target": "100.00", "max_drawdown": "1000.00"}
         validator.validate(base)
         enabled = {**base, "time_limit_days": 366, "inactivity_days": 1,
+                   "underlyings": ["SPX", "BRK.B"], "trading_start": "00:00", "trading_end": "24:00",
                    "flat_time": "15:45", "no_overnight": True,
-                   "underlyings": ["SPX", "BRK.B"], "trading_start": "00:00", "trading_end": "24:00"}
+                   "events": [{"kind": "news", "time": "2026-09-23T14:00:00Z"},
+                              {"kind": "split", "time": "2026-09-24", "symbol": "SPX"}],
+                   "news_before_minutes": 5, "news_after_minutes": 10, "news_action": "flatten",
+                   "hold_restrictions": ["earnings", "ex_dividend", "split", "weekend"], "hold_cutoff": "15:40"}
         validator.validate(enabled)
         size_scaling = {"profit_percent": 10, "payouts": 2, "days": 80, "increase_percent": 25,
                         "max_balance": "200000.00"}

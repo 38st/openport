@@ -2846,6 +2846,7 @@ TEST(ReproducibleRun, CalendarRulesCaptureResetCalendarAndVerifyWithoutDriverCha
   feed.write({{4.02, 10.20, 2.02}, {4.02, 10.20, 2.02}, {4.02, 10.20, 2.02},
               {4.02, 10.20, 2.02}, {4.02, 10.20, 2.02}, {4.02, 10.20, 2.02}});
   const auto journal = feed.file.directory / "calendar.jsonl";
+  trading::AccountRules expected;
   {
     server::Desk::Options options;
     options.replay = true; options.run_input = server::recording_input(feed.file.path); options.paper_journal = journal;
@@ -2854,7 +2855,13 @@ TEST(ReproducibleRun, CalendarRulesCaptureResetCalendarAndVerifyWithoutDriverCha
     auto batch = batches.next();
     for (; batch && batch->time == feed.at(0); batch = batches.next()) desk.replay_batch(batch->events, batch->received, batch->time);
     server::TradingCommand reset;
-    reset.kind = server::TradingCommand::Kind::ResetAccount; reset.initial_cash = Money::parse("100000"); reset.reason = "F17 F59";
+    reset.kind = server::TradingCommand::Kind::ResetAccount; reset.initial_cash = Money::parse("100000"); reset.reason = "F6 F17 F59 F31 F58 F62 F15 F60";
+    reset.rules.flat_time = 601; reset.rules.no_overnight = true;
+    reset.rules.profit_target = Money::parse("1000"); reset.rules.max_drawdown = Money::parse("5000");
+    reset.rules.time_limit_days = 30; reset.rules.inactivity_days = 14;
+    reset.rules.underlyings = {"SPX", "SPY"}; reset.rules.trading_start = 570; reset.rules.trading_end = 960;
+    reset.rules.max_contracts_held = 5; reset.rules.require_stop_loss = true;
+    reset.rules.max_trade_risk = Money::parse("2000.123456"); reset.rules.max_trade_risk_percent = 100;
     reset.rules.events = {{"news", md::format_timestamp(feed.at(1)), "SPX", "", "CPI"},
         {"earnings", "2026-09-22", "SPY", "after_close", "Results"}};
     reset.rules.news_after_minutes = 1; reset.rules.news_action = "flatten";
@@ -2864,8 +2871,16 @@ TEST(ReproducibleRun, CalendarRulesCaptureResetCalendarAndVerifyWithoutDriverCha
       const auto reply = command(desk, reset, feed.at(0), feed.at(0));
       ASSERT_TRUE(reply.decision.ok()) << reply.decision.message;
     }
-    ASSERT_TRUE(order(desk, feed.symbol(1), trading::Side::Buy, 1, feed.at(0)).decision.ok());
-    ASSERT_TRUE(order(desk, feed.symbol(2), trading::Side::Buy, 1, feed.at(0)).decision.ok());
+    expected = desk.trading_view()->config.rules;
+    for (const auto index : {1U, 2U}) {
+      server::TradingCommand entry;
+      entry.order = {"combined-" + std::to_string(index), feed.symbol(index), trading::Side::Buy,
+          trading::OrderType::Market, trading::TimeInForce::Ioc, 1, {}, {}, {}, {}};
+      entry.order.bracket = trading::Bracket{trading::ExitSpec{
+          trading::Trigger{trading::TriggerSource::Option, trading::TriggerDirection::AtOrBelow, Money::parse("1")}, {}}, {}};
+      const auto reply = command(desk, entry, feed.at(0), feed.at(0));
+      ASSERT_TRUE(reply.decision.ok()) << reply.decision.message;
+    }
     for (; batch; batch = batches.next()) desk.replay_batch(batch->events, batch->received, batch->time);
     EXPECT_TRUE(desk.trading_view()->snapshot->positions.empty());
     EXPECT_EQ(desk.trading_view()->snapshot->evaluation.event_actions.size(), 2U);
@@ -2878,6 +2893,7 @@ TEST(ReproducibleRun, CalendarRulesCaptureResetCalendarAndVerifyWithoutDriverCha
   EXPECT_TRUE(verified.matched) << verified.message;
   auto recovered = trading::TradingSession::recover(recovery);
   EXPECT_TRUE(recovered.snapshot()->positions.empty());
+  EXPECT_EQ(recovered.config().rules, expected);
   ASSERT_TRUE(recovered.config().rules.hold_calendar);
   ASSERT_EQ(recovered.config().rules.hold_calendar->size(), 1U);
   EXPECT_EQ(recovered.config().rules.hold_calendar->front().name, "Calendar changed after run start");

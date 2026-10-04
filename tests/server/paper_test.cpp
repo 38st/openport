@@ -4583,7 +4583,11 @@ TEST_F(PaperEngine, TimeAndTradeRulesSurviveCreateResetAndPresetMatching) {
   ASSERT_TRUE(wait_for([&] { return engine->trading_view() != nullptr; }));
   seed();
   auto rules = read(*engine, "/api/account")["rules"];
-  rules.update({{"plan", "Combined rules"}, {"plan_id", nullptr}, {"flat_time", "15:45"}, {"no_overnight", true}, {"time_limit_days", 30}, {"inactivity_days", 14},
+  rules.update({{"plan", "Combined rules"}, {"plan_id", nullptr},
+                {"events", {{{"kind", "news"}, {"time", "2026-09-23T14:00:00.000000000Z"}},
+                            {{"kind", "split"}, {"time", "2026-09-24"}, {"symbol", "SPX"}}}},
+                {"news_before_minutes", 5}, {"news_after_minutes", 10}, {"news_action", "flatten"},
+                {"hold_restrictions", {"earnings", "ex_dividend", "split", "weekend"}}, {"hold_cutoff", "15:40"}, {"flat_time", "15:45"}, {"no_overnight", true}, {"time_limit_days", 30}, {"inactivity_days", 14},
                 {"underlyings", {"SPX"}}, {"trading_start", "09:30"}, {"trading_end", "16:00"},
                 {"trade_consistency_percent", 40}, {"min_trades", 12}, {"min_hold_seconds", 60},
                 {"microscalp_seconds", 30}, {"microscalp_percent", 25}, {"no_hedging", true}, {"no_counter_positions", true}, {"max_volume_percent", 25},
@@ -4600,7 +4604,7 @@ TEST_F(PaperEngine, TimeAndTradeRulesSurviveCreateResetAndPresetMatching) {
   ASSERT_EQ(response.status, 200) << response.body;
   EXPECT_EQ(json::parse(response.body)["attempts"].back()["rules"], rules);
   const auto practice = read(*engine, "/api/account")["rules"];
-  for (const auto* field : {"flat_time", "no_overnight", "time_limit_days", "inactivity_days", "underlyings", "trading_start",
+  for (const auto* field : {"events", "news_before_minutes", "news_after_minutes", "news_action", "hold_restrictions", "hold_cutoff", "flat_time", "no_overnight", "time_limit_days", "inactivity_days", "underlyings", "trading_start",
                            "max_contracts_held", "require_stop_loss", "max_trade_risk", "max_trade_risk_percent", "scaling"}) {
     auto borrowed = practice;
     borrowed[field] = rules[field];

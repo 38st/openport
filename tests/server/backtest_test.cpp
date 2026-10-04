@@ -2,6 +2,7 @@
 #include <sstream>
 #include <gtest/gtest.h>
 #include "openport/server/backtest.hpp"
+#include "openport/trading/events.hpp"
 #include "openport/server/plans.hpp"
 #include "openport/server/web_policy.hpp"
 #include "openport/providers/replay_batches.hpp"
@@ -92,6 +93,45 @@ TEST(Backtest, GapAndTrailingRulesMatchFourWorkersAndVerify) {
   for (const auto& attempt : first.at("attempts")) {
     const auto verified = server::verify_run(storage.directory / "one" / attempt.at("journal").get<std::string>());
     EXPECT_TRUE(verified.matched) << verified.message;
+  }
+}
+TEST(Backtest, CombinedPlanRulesSurvivePlaybookRunsRecoveryAndVerification) {
+  test::RecordingFile storage;
+  const auto file = recorded_day(storage.directory, {2026, 9, 22});
+  auto definitions = catalogue();
+  definitions["definitions"]["batch"]["versions"][0]["management"]["stop_credit_multiple"] = 2;
+  const json rules{{"plan", "Combined F6 F17 F59 F31 F58 F62 F15 F60"},
+      {"profit_target", "1000"}, {"max_drawdown", "1000"}, {"time_limit_days", 30}, {"inactivity_days", 14},
+      {"underlyings", {"SPX"}}, {"trading_start", "09:30"}, {"trading_end", "16:00"},
+      {"flat_time", "09:31"}, {"no_overnight", true}, {"max_contracts_held", 5}, {"require_stop_loss", true},
+      {"max_trade_risk", "500.123456"}, {"max_trade_risk_percent", 100},
+      {"news_before_minutes", 1}, {"news_after_minutes", 1}, {"news_action", "flatten"},
+      {"hold_cutoff", "09:31"}, {"hold_restrictions", {"earnings", "ex_dividend", "split", "weekend"}},
+      {"events", {{{"kind", "news"}, {"time", "2026-09-22T13:32:00Z"}},
+                  {{"kind", "split"}, {"time", "2026-09-23"}, {"symbol", "SPX"}}}}};
+  auto request = server::parse_backtest({{"playbook", "batch@1"}, {"days", {{{"file", file.string()}}}},
+      {"plan", {{"initial_cash", "10000"}, {"rules", rules}}}}, definitions, {}, {}, false);
+  request.analytics.fallback_rate = 0;
+  auto expected = request.config.rules;
+  trading::normalize_event_rules(expected, true);
+  const std::atomic_bool cancel{false};
+  const auto root = storage.directory / "combined";
+  const auto report = server::run_backtest(request, root, cancel);
+  ASSERT_EQ(report.at("status"), "completed") << report.dump();
+  ASSERT_EQ(report.at("days").size(), 1U);
+  ASSERT_EQ(report.at("days")[0].at("fills").size(), 4U) << report.dump();
+  for (const auto* rows : {"days", "attempts"}) {
+    ASSERT_FALSE(report.at(rows).empty());
+    for (const auto& row : report.at(rows)) {
+      const auto path = root / row.at("journal").get<std::string>();
+      const auto recovered = trading::TradingSession::recover(trading::FileJournal::read(path.string()));
+      EXPECT_EQ(recovered.config().rules, expected);
+      EXPECT_TRUE(recovered.snapshot()->positions.empty());
+      ASSERT_FALSE(recovered.snapshot()->recent_orders.empty());
+      EXPECT_TRUE(recovered.snapshot()->recent_orders.back().request.client_order_id.starts_with("system:flat_time:"));
+      const auto verified = server::verify_run(path);
+      EXPECT_TRUE(verified.matched) << verified.message;
+    }
   }
 }
 TEST(Backtest, AttemptsCarryBalancesDecidePassAndFailureAndLeaveOpenTail) {
