@@ -112,7 +112,7 @@ export interface AccountRules {
   profitable_day_profit?: Money | null
   /** "HH:MM" New York time the plan's trading day ends, 16:15 to 24:00. */
   day_end?: string
-  /** Calendar days; zero disables. The evaluation time limit is evaluation-only. */
+  /** Calendar days; zero disables. The time limit applies to evaluation and verification; funded requires zero. */
   time_limit_days?: number
   inactivity_days?: number
   /** By underlying, so SPX includes SPXW options; empty allows all. */
@@ -171,6 +171,8 @@ export type PlanRuleReason =
 export type RuleEvidence = { underlying: string; order_dollar_delta: number; held_dollar_delta: number; other_account?: string }
   | { contract: string; contracts: number; volume: number | null; percent: number }
 export interface Decision { evidence?: RuleEvidence; code: PlanRuleReason | string; message: string; actual?: number | string | null; limit?: number | string | null; scope?: string | null }
+/** Plan objectives, decisions and trading restrictions; generic codes may include other reasons. */
+export type PlanReason = "PROFIT_TARGET" | "DRAWDOWN_FLOOR" | "DAILY_LOSS_LIMIT" | "MIN_TRADING_DAYS" | "MIN_PROFITABLE_DAYS" | "CONSISTENCY" | "MAX_CONTRACTS_HELD" | "STOP_REQUIRED" | "MAX_TRADE_RISK" | "TIME_LIMIT" | "INACTIVITY" | "INSTRUMENT_NOT_ALLOWED" | "OUTSIDE_PLAN_HOURS" | "FLAT_TIME" | "OVERNIGHT_HOLD" | "SCALING_LIMIT" | "TRADE_CONSISTENCY" | "MIN_TRADES" | "MIN_HOLD" | "MICROSCALPING" | "HEDGING" | "COUNTER_POSITION" | "MAX_VOLUME_SHARE"
 /** `requirement` is `short_requirement` under a name that fits portfolio margin too; absent on older servers. */
 export interface BuyingPower { available: Money; reserved: Money; short_requirement: Money; requirement?: Money }
 /**

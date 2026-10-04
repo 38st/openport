@@ -136,7 +136,7 @@ export function customPlan(form: PlanForm, base: AccountRules): { initial_cash: 
     return { error: "Maximum resets must be a whole number from 0 to 1000000 (0 is unlimited)" }
   if (!(Number(form.initial_cash) > 0)) return { error: "The starting balance must be above zero" }
   for (const [label, value, most] of [...(form.phase !== "funded" ? [["Microscalp seconds", form.microscalp_seconds, 3600], ["Microscalp percent", form.microscalp_percent, 100], ["Minimum trades", form.min_trades, 10000], ["Trade consistency", form.trade_consistency_percent, 100], ["Consistency", form.consistency_percent, 100], ["Minimum trading days", form.min_trading_days, 366],
-    ["Minimum profitable days", form.min_profitable_days, 366], ["Evaluation time limit", form.time_limit_days, 366]] : []),
+    ["Minimum profitable days", form.min_profitable_days, 366], [form.phase === "verification" ? "Verification time limit" : "Evaluation time limit", form.time_limit_days, 366]] : []),
     ["Inactivity limit", form.inactivity_days, 366]] as [string, string, number][]) {
     const n = count(value)
     if (!Number.isInteger(n) || n < 0 || n > most) return { error: `${label} must be a whole number from 0 to ${most}` }
@@ -308,7 +308,7 @@ export function PlanEditor({ form, onChange, disabled }: { form: PlanForm; onCha
         <Field label="Minimum trading days">{text("min_trading_days", "0")}</Field>
         <Field label="Minimum profitable days">{text("min_profitable_days", "0")}</Field>
         <Field label="A profitable day makes at least" hint="Blank counts any profit">{text("profitable_day_profit", "any")}</Field>
-        <Field label="Evaluation time limit (days)" hint="Calendar days; blank for none">{text("time_limit_days", "none")}</Field>
+        <Field label={`${form.phase === "verification" ? "Verification" : "Evaluation"} time limit (days)`} hint="Calendar days; blank for none">{text("time_limit_days", "none")}</Field>
       </>}
       {form.phase === "funded" && <>
         <Field label="Qualifying day profit" hint="Net realised profit after fees">{text("qualifying_profit")}</Field>

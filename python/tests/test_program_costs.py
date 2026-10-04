@@ -1,11 +1,11 @@
-from typing import get_type_hints
+from typing import get_args, get_type_hints
 
 import jsonschema
 import pytest
 
 from conftest import SPEC, shaped
 from openport import Client
-from openport.types import AccountRules, ProgramCosts
+from openport.types import AccountRules, PlanReason, ProgramCosts, ResetReason
 from tools.contract_test import Contract
 
 
@@ -19,12 +19,16 @@ def test_program_cost_wire_types_and_verification_rules():
     rules = {"profit_target": "1250.00", "max_drawdown": "2000.00", "drawdown_mode": "static",
              "buy_only": False, "buying_power": True, "expiry_cutoff_seconds": 300,
              "phase": "verification", "evaluation_fee": "100.000001", "reset_fee": "25.000001",
-             "activation_fee": "0", "max_resets": 2}
+             "activation_fee": "0", "max_resets": 2,
+             "time_limit_days": 30, "inactivity_days": 14, "underlyings": ["SPX"],
+             "trading_start": "09:30", "trading_end": "16:00", "flat_time": "15:45", "no_overnight": True}
     validator.validate(rules)
-    for key, value in [("phase", "step3"), ("max_resets", -1), ("max_resets", 1.5), ("reset_fee", 50)]:
+    for key, value in [("phase", "step3"), ("max_resets", -1), ("max_resets", 1.5), ("reset_fee", 50),
+                       ("time_limit_days", 1.5), ("inactivity_days", 367), ("no_overnight", 1)]:
         with pytest.raises(jsonschema.ValidationError):
             validator.validate({**rules, key: value})
-    assert "RESET_LIMIT" in SPEC["components"]["schemas"]["ResetReason"]["enum"]
+    for name, declared in (("PlanReason", PlanReason), ("ResetReason", ResetReason)):
+        assert set(get_args(declared)) == set(SPEC["components"]["schemas"][name]["enum"])
 
 
 def test_cost_settings_pass_through_create_and_reset(stub):

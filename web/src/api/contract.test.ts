@@ -240,3 +240,12 @@ it("keeps verification and program cost settings aligned with both request contr
   expect(source).toMatch(/export type CreateAccountRequest = [^\n]+& ProgramCostSettings/)
   expect(source).toContain('"RESET_LIMIT"')
 })
+
+it("keeps plan and reset reason codes aligned with OpenAPI", () => {
+  const schemas = JSON.parse(specText).components.schemas
+  for (const name of ["PlanReason", "ResetReason"]) {
+    const declared = new RegExp(`export type ${name} = ([^\n]+)`).exec(source)![1]!
+    expect([...declared.matchAll(/"([A-Z_]+)"/g)].map((match) => match[1]).sort())
+      .toEqual([...schemas[name].enum].sort())
+  }
+})

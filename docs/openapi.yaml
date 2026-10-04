@@ -9054,7 +9054,7 @@
             "type": "integer",
             "minimum": 0,
             "maximum": 366,
-            "description": "Calendar days; zero disables. Evaluation phase only; expires after the deadline date."
+            "description": "Calendar days; zero disables. Evaluation and verification phases only; expires after the deadline date."
           },
           "inactivity_days": {
             "type": "integer",
@@ -9111,7 +9111,7 @@
           "no_overnight": {
             "type": "boolean",
             "default": false,
-            "description": "Fail an active evaluation or funded attempt with OVERNIGHT_HOLD on a plan date change with held positions, excluding options awaiting settlement. No marks required. Liquidation uses system:overnight:N option orders and rule stock fills. Independent of flat_time. Takes precedence over HOLD_RESTRICTED if both fail at the same rollover."
+            "description": "Fail an active evaluation, verification or funded attempt with OVERNIGHT_HOLD on a plan date change with held positions, excluding options awaiting settlement. No marks required. Liquidation uses system:overnight:N option orders and rule stock fills. Independent of flat_time. Takes precedence over HOLD_RESTRICTED if both fail at the same rollover."
           },
           "events": {
             "type": "array",
@@ -20931,7 +20931,7 @@
             "type": "integer",
             "minimum": 0,
             "maximum": 366,
-            "description": "Calendar days; zero disables. Evaluation phase only; expires after the deadline date."
+            "description": "Calendar days; zero disables. Evaluation and verification phases only; expires after the deadline date."
           },
           "inactivity_days": {
             "type": "integer",
@@ -21133,7 +21133,7 @@
           "no_overnight": {
             "type": "boolean",
             "default": false,
-            "description": "Fail an active evaluation or funded attempt with OVERNIGHT_HOLD on a plan date change with held positions, excluding options awaiting settlement. No marks required. Liquidation uses system:overnight:N option orders and rule stock fills. Independent of flat_time. Takes precedence over HOLD_RESTRICTED if both fail at the same rollover."
+            "description": "Fail an active evaluation, verification or funded attempt with OVERNIGHT_HOLD on a plan date change with held positions, excluding options awaiting settlement. No marks required. Liquidation uses system:overnight:N option orders and rule stock fills. Independent of flat_time. Takes precedence over HOLD_RESTRICTED if both fail at the same rollover."
           },
           "events": {
             "type": "array",
@@ -23517,6 +23517,35 @@
           }
         },
         "additionalProperties": false
+      },
+      "PlanReason": {
+        "type": "string",
+        "enum": [
+          "PROFIT_TARGET",
+          "DRAWDOWN_FLOOR",
+          "DAILY_LOSS_LIMIT",
+          "MIN_TRADING_DAYS",
+          "MIN_PROFITABLE_DAYS",
+          "CONSISTENCY",
+          "MAX_CONTRACTS_HELD",
+          "STOP_REQUIRED",
+          "MAX_TRADE_RISK",
+          "TIME_LIMIT",
+          "INACTIVITY",
+          "INSTRUMENT_NOT_ALLOWED",
+          "OUTSIDE_PLAN_HOURS",
+          "FLAT_TIME",
+          "OVERNIGHT_HOLD",
+          "SCALING_LIMIT",
+          "TRADE_CONSISTENCY",
+          "MIN_TRADES",
+          "MIN_HOLD",
+          "MICROSCALPING",
+          "HEDGING",
+          "COUNTER_POSITION",
+          "MAX_VOLUME_SHARE"
+        ],
+        "description": "Plan objectives, decisions and trading restrictions, also enforced during verification. Generic Decision and Error codes may include other reasons; reset refusals are documented by ResetReason."
       },
       "ResetReason": {
         "type": "string",

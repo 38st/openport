@@ -2,7 +2,7 @@ import { describe, expect, it } from "vitest"
 import type { AccountRules } from "../api/trading-types"
 import { customPlan, planForm } from "../components/PlanEditor"
 import { account, fundedAccount } from "../test/trading-fixtures"
-import { clockText, dailyLossFact, dayEndFact, decisionLabel, drawdownFact, floorMoves, objectiveFacts, objectiveValue, targetFact, planEntryNotice, timeRuleNotices } from "./plan-rules"
+import { clockText, dailyLossFact, dayEndFact, decisionLabel, drawdownFact, floorMoves, objectiveFacts, objectiveValue, targetFact, planEntryNotice, timeRuleFacts, timeRuleNotices } from "./plan-rules"
 
 const rules: AccountRules = { ...account.rules, buy_only: false }
 
@@ -281,4 +281,21 @@ it("validates whole volume percentages and restores the disabled default", () =>
   }
   for (const max_volume_percent of ["-1", "101", "1.5", "NaN"])
     expect(customPlan({ ...form, max_volume_percent }, rules)).toHaveProperty("error")
+})
+
+it("keeps verification restrictions alongside program costs and names its deadline", () => {
+  const base: AccountRules = { ...rules, phase: "verification", time_limit_days: 30, inactivity_days: 14,
+    underlyings: ["SPX"], trading_start: "09:30", trading_end: "16:00", flat_time: "15:45", no_overnight: true,
+    evaluation_fee: "100.000001", reset_fee: "25.000002", activation_fee: "50.000003", max_resets: 2 }
+  const form = planForm({ initial_cash: "100000", rules: base })
+  expect(customPlan(form, base)).toMatchObject({ rules: { ...base, plan: "Custom plan", plan_id: null } })
+  expect(customPlan({ ...form, time_limit_days: "1.5" }, base)).toEqual({ error: "Verification time limit must be a whole number from 0 to 366" })
+  expect(customPlan({ ...form, inactivity_days: "367" }, base)).toHaveProperty("error")
+  const facts = timeRuleFacts(base).join(" ")
+  for (const text of ["Verification ends after 30", "Inactivity limit: 14", "Allowed underlyings: SPX", "09:30–16:00", "Flat by 15:45", "OVERNIGHT_HOLD"])
+    expect(facts).toContain(text)
+  expect(timeRuleNotices({ ...account.evaluation, days_left: 3, deadline: "2026-09-25" }, base))
+    .toEqual(["Verification: 3 calendar days left; deadline 2026-09-25."])
+  expect(customPlan({ ...form, phase: "funded", time_limit_days: "invalid" }, base))
+    .toMatchObject({ rules: { phase: "funded", time_limit_days: 0, inactivity_days: 14, no_overnight: true } })
 })

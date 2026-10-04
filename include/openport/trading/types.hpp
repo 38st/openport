@@ -691,7 +691,7 @@ struct AccountRules {
   Money max_trade_risk;            ///< Per-order loss at its stop or bounded expiry payoff, excluding fees; zero disables.
   std::int64_t max_trade_risk_percent = 0;  ///< Percent of equity less the plan floor, 0-100; zero disables.
   // Optional time and instrument plan rules; defaults preserve older attempts.
-  std::int64_t time_limit_days = 0;  ///< Calendar days from the start; evaluation phase only.
+  std::int64_t time_limit_days = 0;  ///< Calendar days from the start; evaluation and verification only.
   std::int64_t inactivity_days = 0;  ///< Calendar days since an own execution, or the start.
   std::vector<std::string> underlyings;  ///< Empty allows all; options use their underlying, not root.
   std::optional<std::int64_t> trading_start;  ///< New York minutes; both set or both off.

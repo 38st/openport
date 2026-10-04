@@ -1594,7 +1594,7 @@ side, no buying-power check. All rule money is exact.
 | `min_profitable_days` | A pass needs this many days whose profit reaches `profitable_day_profit` and is above zero (0–366) |
 | `profitable_day_profit` | The profit a day needs to count as profitable; zero counts any day above zero |
 | `flat_time`, `no_overnight` | Optional mandatory close minute before day end; independently fail held positions at rollover |
-| `time_limit_days`, `inactivity_days` | Calendar-day limits, 0 (off) to 366; the time limit is evaluation-only |
+| `time_limit_days`, `inactivity_days` | Calendar-day limits, 0 (off) to 366; the time limit applies to evaluation and verification |
 | `underlyings` | Up to 32 allowed underlying symbols; empty permits all |
 | `trading_start`, `trading_end` | Optional New York minutes internally, `HH:MM` or null on the API; both set or both off, start inclusive and end exclusive |
 | `events` | Up to 256 saved news/earnings/ex-dividend/split events; sorted and deduplicated |
@@ -1825,14 +1825,14 @@ plan limit that locked it, if any), appended at `roll_day`.
 ### Evaluation time, inactivity and opening restrictions
 
 Optional `time_limit_days` and `inactivity_days` are whole calendar-day counts,
-0 (off) to 366. `time_limit_days` is evaluation-only; funded plans reject it.
+0 (off) to 366. `time_limit_days` applies to evaluation and verification; funded plans reject it.
 The deadline is the attempt start's **plan trading date** plus N calendar days.
 An active attempt fails with `TIME_LIMIT` on the first transaction whose plan
 trading date is **after** the deadline. A pass decided earlier stands. Dates
 follow `day_end` and the business-day calendar, including weekends, holidays and
 New York daylight saving; the counts between dates are calendar days.
 
-Inactivity works in evaluation and funded phases. The attempt start is the initial
+Inactivity works in evaluation, verification and funded phases. The attempt start is the initial
 activity. Each execution of your own option order (including partial fills and
 bracket exits), or your share trade, resets activity. System liquidations, expiry,
 exercise, assignment, quotes, submissions and cancellations do not. More than N
@@ -1896,8 +1896,8 @@ Reducing orders remain allowed. After `day_end`, the next plan date has not reac
 its flat time yet; its overnight session is not incorrectly locked.
 
 `no_overnight` is independently optional, boolean, default false. On `roll_day`
-or any transaction crossing a plan trading-date boundary, an active evaluation
-or funded attempt holding shares or any option not awaiting settlement fails
+or any transaction crossing a plan trading-date boundary, an active evaluation,
+verification or funded attempt holding shares or any option not awaiting settlement fails
 with `OVERNIGHT_HOLD`, before executions and without requiring marks. An already
 decided attempt stays decided. The normal post-decision liquidation follows:
 `system:overnight:N` market IOC option closes and stock fills with source `rule`,
@@ -2207,7 +2207,8 @@ These bookkeeping costs never change cash, equity, floors, trading fees or outco
   away and back is another purchase, even if this account used that plan earlier.
 
 Same plan means the same starting balance and all `AccountRules`, including its
-name and phase, after ignoring execution settings (slippage, latency, impact,
+name, phase, time and inactivity limits, allowed underlyings, trading hours,
+mandatory flat time and overnight policy, after ignoring execution settings (slippage, latency, impact,
 inside fills and the option fee schedule), broker margin settings (mode, account
 type, house percentage, volatility shock), and these four program cost settings.
 That is also the preset-identity comparison used for locks and plan-name checks.
@@ -3055,7 +3056,7 @@ compilers/architectures, although recovery restores the recorded doubles.
 attempt at rollover if a position crossed the boundary. See F17/F59 above for
 string timestamp/cutoff evidence and the `kind:scope` holding convention.
 
-`TIME_LIMIT` fails an overdue evaluation; `INACTIVITY` fails an attempt after too
+`TIME_LIMIT` fails an overdue evaluation or verification; `INACTIVITY` fails an attempt after too
 many calendar days without an own execution. `INSTRUMENT_NOT_ALLOWED` refuses
 opening options or shares outside the plan whitelist. `OUTSIDE_PLAN_HOURS` refuses
 opening orders and cancels working openings outside the plan window.

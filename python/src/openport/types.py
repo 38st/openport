@@ -45,6 +45,16 @@ class BestTrade(TypedDict):
     pnl: str
 
 
+# Known plan/reset reasons; generic wire codes remain open to other reasons.
+PlanReason = Literal[
+    "PROFIT_TARGET", "DRAWDOWN_FLOOR", "DAILY_LOSS_LIMIT",
+    "MIN_TRADING_DAYS", "MIN_PROFITABLE_DAYS", "CONSISTENCY",
+    "MAX_CONTRACTS_HELD", "STOP_REQUIRED", "MAX_TRADE_RISK",
+    "TIME_LIMIT", "INACTIVITY", "INSTRUMENT_NOT_ALLOWED",
+    "OUTSIDE_PLAN_HOURS", "FLAT_TIME", "OVERNIGHT_HOLD",
+]
+ResetReason = Literal["PLAN_LOCKED", "RESET_LIMIT"]
+
 
 class Provider(TypedDict):
     name: str
@@ -290,7 +300,7 @@ class AccountRules(TypedDict, total=False):
     news_action: Literal["block", "flatten"]
     hold_restrictions: list[Literal["weekend", "earnings", "ex_dividend", "split"]]
     hold_cutoff: str
-    time_limit_days: int
+    time_limit_days: int  # Evaluation and verification only; funded requires zero.
     inactivity_days: int
     underlyings: list[str]
     trading_start: str | None

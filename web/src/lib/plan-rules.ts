@@ -129,7 +129,7 @@ export function timeRuleEntries(r: AccountRules): { title: string; body: string 
     ...((r.news_before_minutes || r.news_after_minutes) ? [{ title: "News blackouts", body: `News: ${r.news_before_minutes ?? 0} minutes before / ${r.news_after_minutes ?? 0} after; ${r.news_action === "flatten" ? "closes positions once" : "blocks openings"}; exits keep working` }] : []),
     ...(r.hold_restrictions?.length ? [{ title: "Holding restrictions", body: `Close before ${r.hold_cutoff ?? "15:45"} ET for ${r.hold_restrictions.join(", ")}; holding across the boundary fails the attempt` }] : []),
     ...(r.events?.length ? [{ title: "Plan event calendar", body: `${r.events.length} saved events: ${r.events.map((e) => `${e.label || e.kind} ${e.symbol || "all underlyings"} ${e.time}${e.session ? ` ${e.session}` : ""}`).join("; ")}` }] : []),
-    ...(r.time_limit_days ? [{ title: "Evaluation time limit", body: `Evaluation ends after ${r.time_limit_days} calendar days` }] : []),
+    ...(r.time_limit_days ? [{ title: `${r.phase === "verification" ? "Verification" : "Evaluation"} time limit`, body: `${r.phase === "verification" ? "Verification" : "Evaluation"} ends after ${r.time_limit_days} calendar days` }] : []),
     ...(r.inactivity_days ? [{ title: "Inactivity limit", body: `Inactivity limit: ${r.inactivity_days} calendar days without your own execution` }] : []),
     ...(r.underlyings?.length ? [{ title: "Allowed underlyings", body: `Allowed underlyings: ${r.underlyings.join(", ")}${r.underlyings.includes("SPX") ? " (SPX includes SPXW options)" : ""}` }] : []),
     ...(r.trading_start && r.trading_end ? [{ title: "Opening hours", body: `Opening hours: ${r.trading_start}–${r.trading_end} ET; exits keep working` }] : []),
@@ -190,7 +190,7 @@ export function timeRuleNotices(e: Evaluation, r: AccountRules, time?: string): 
       : remaining != null && remaining > 0 && remaining <= 30 ? [`Flat by ${r.flat_time} ET, positions will be closed`] : []),
     ...(e.active_events ?? []).filter((w) => w.kind === "news").map((w) => `Active news blackout: ${w.label || "News"}, ${w.symbol || "all underlyings"}, until ${w.end}. Closing orders still work.`),
     ...(e.next_event ? [`${e.next_event.active ? "Active" : "Next"} ${e.next_event.kind === "news" ? "news blackout" : `${e.next_event.kind} holding cutoff`}: ${e.next_event.label || e.next_event.kind}, ${e.next_event.symbol || "all underlyings"}, ${e.next_event.start} until ${e.next_event.end}.`] : []),
-    ...(e.days_left != null && e.deadline ? [`Evaluation: ${e.days_left} calendar days left; deadline ${e.deadline}.`] : []),
+    ...(e.days_left != null && e.deadline ? [`${r.phase === "verification" ? "Verification" : "Evaluation"}: ${e.days_left} calendar days left; deadline ${e.deadline}.`] : []),
     ...(r.inactivity_days && e.inactive_days != null && e.inactivity_deadline && r.inactivity_days - e.inactive_days <= 7
       ? [`Inactivity: ${Math.max(0, r.inactivity_days - e.inactive_days)} calendar days left to execute a trade; deadline ${e.inactivity_deadline}.`] : []),
   ]
