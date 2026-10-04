@@ -11,6 +11,9 @@
 namespace openport::server {
 namespace {
 Engine::Options driver_options(md::Provider& provider, const md::Subscription& subscription, Engine::Options options) {
+  // A hosted replay clears sandbox account state below, but must retain the
+  // sandbox server's no-delivery policy.
+  if (options.sandboxes) options.notifications.reset();
   if (auto* replay = dynamic_cast<providers::ReplayProvider*>(&provider)) {
     options.replay = true;
     options.replay_start = replay->header().started;

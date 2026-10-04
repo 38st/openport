@@ -7,6 +7,7 @@
 #include "openport/server/api.hpp"
 #include "openport/server/engine.hpp"
 #include "openport/server/notifications.hpp"
+#include "openport/server/sandboxes.hpp"
 #include "openport/server/web_policy.hpp"
 #include "support/contract_capture.hpp"
 #include "support/recording.hpp"
@@ -659,6 +660,20 @@ TEST(Notifications, SimulatedOptInEnablesDemoAndReplayEngines) {
     EXPECT_EQ(body.at("event"), "rule_trip");
     EXPECT_EQ(body.at("account"), name == "demo" ? "demo/main" : "replay/main/main");
   }
+}
+TEST(Notifications, SandboxServerStaysSilentWithSimulatedOptIn) {
+  Harness h(json::array({channel()}), 256, true);
+  test::RecordingFile file;
+  NotificationProvider provider; provider.provider_name = "demo";
+  server::Engine::Options options;
+  options.notifications = h.notifications;
+  options.paper_journal = file.directory / "paper.jsonl";
+  options.sandboxes = std::make_shared<server::Sandboxes>(server::Sandboxes::Options{});
+  server::Engine engine(provider, {{"SPX"}}, options);
+  engine.start();
+  EXPECT_EQ(engine.notifications(), nullptr);
+  engine.stop();
+  EXPECT_EQ(h.state().at("queue_depth"), 0);
 }
 TEST(Notifications, WorkerDoesNotHoldQueueMutexDuringHttpAndCancelsShutdown) {
   auto client = std::make_unique<NotificationHttp>();
