@@ -2240,7 +2240,9 @@ That is also the preset-identity comparison used for locks and plan-name checks.
 Account-size growth retains the same funded plan: compare the **original purchased
 starting balance**, original drawdown and daily-loss amounts, and original lock
 balance. Restarting uses those original terms, charges the reset fee and consumes
-the existing allowance; growth never replenishes resets. Buying the grown balance
+the existing allowance; growth never replenishes resets. Submitting the displayed
+live rules unchanged with the original starting balance also restores the original
+loss and lock amounts; it does not adopt the scaled limits as new originals. Buying the grown balance
 as a new starting balance, or changing either scaling rule, is a different purchase.
 Live and archived rules still report the actual loss amounts and starting balance
 at that time. Size-scaling progress exposes `original_max_drawdown` and

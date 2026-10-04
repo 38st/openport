@@ -1551,3 +1551,8 @@ The current size and live rules stay in the attempt summary for historical repor
 Legacy resets without `program_costs` omit this new archive field, preserving their
 recorded state when replayed. Old summaries without original scaling provenance
 cannot extend a reset streak across a size change.
+
+New resets record `restore_scaled_rules: true`: resubmitting unchanged live rules
+at the original starting balance restores original loss and lock amounts from
+size-scaling progress. Commands without this flag retain their previous reset
+behavior during replay; old account journals still recover their recorded rules.

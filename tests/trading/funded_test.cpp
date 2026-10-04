@@ -809,7 +809,15 @@ TEST(TradingFunded, SizeScalingPreservesPurchasedTermsResetCountsAndRecovery) {
   ASSERT_TRUE(grown.reset_account(m("12500"), grown.config().rules, "buy larger plan", f.time).decision.ok());
   EXPECT_EQ(program_costs(*grown.snapshot(), grown.config().rules).resets_used, 0);
   EXPECT_EQ(grown.snapshot()->fee_charged.kind, "evaluation");
-  ASSERT_TRUE(s.reset_account(m("10000"), rules, "restart original plan", f.time).decision.ok());
+  // The terminal resubmits the displayed scaled limits, which must restore the originals.
+  auto legacy = TradingSession::recover(FileJournal::read(path));
+  ASSERT_TRUE(legacy.reset_account(m("10000"), legacy.config().rules, "old reset", f.time, false, true, false).decision.ok());
+  EXPECT_EQ(legacy.config().rules.max_drawdown, m("1250.03"));
+  ASSERT_TRUE(s.reset_account(m("10000"), s.config().rules, "restart original plan", f.time).decision.ok());
+  EXPECT_EQ(s.config().rules, rules);
+  EXPECT_EQ(s.snapshot()->evaluation.size_scaling->original_max_drawdown, rules.max_drawdown);
+  EXPECT_EQ(s.snapshot()->evaluation.size_scaling->original_daily_loss_limit, rules.daily_loss_limit);
+  EXPECT_TRUE(s.snapshot()->evaluation.size_scaling->history.empty());
   EXPECT_EQ(s.snapshot()->fee_charged.kind, "reset");
   EXPECT_EQ(s.snapshot()->fee_charged.amount, rules.reset_fee);
   EXPECT_EQ(s.snapshot()->attempts.back().starting_balance, m("12500"));
@@ -821,7 +829,7 @@ TEST(TradingFunded, SizeScalingPreservesPurchasedTermsResetCountsAndRecovery) {
   auto restored = TradingSession::recover(FileJournal::read(path));
   EXPECT_EQ(restored.snapshot_json(), s.snapshot_json());
   EXPECT_EQ(program_costs(*restored.snapshot(), restored.config().rules).resets_used, 2);
-  const auto refused = restored.reset_account(m("10000"), rules, "exhausted", f.time);
+  const auto refused = restored.reset_account(m("10000"), restored.config().rules, "exhausted", f.time);
   EXPECT_EQ(refused.decision.code, Reason::RESET_LIMIT);
   EXPECT_EQ(refused.decision.actual, 3); EXPECT_EQ(refused.decision.limit, 2);
   const auto recovery = FileJournal::read(path);

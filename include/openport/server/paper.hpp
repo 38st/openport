@@ -221,6 +221,7 @@ struct TradingCommand {
   /// passed (funded presets); empty for no requirement.
   std::string required_pass;
   std::uint64_t program_cost_overrides = 0; ///< Bits 0..3: evaluation/reset/activation fee, max_resets explicitly supplied.
+  bool restore_scaled_rules = false; ///< Reset displayed scaled rules to original terms; absent on older commands.
   bool program_costs = false; ///< New reset semantics; absent on old recorded commands for exact re-execution.
   trading::Money amount;         ///< Payout: the withdrawal.
   trading::OrderChange change;   ///< Modify: the order's new terms.

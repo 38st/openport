@@ -5937,8 +5937,12 @@ CommandResult TradingSession::request_payout(Money amount, Timestamp time) {
     return CommandResult{};
   });
 }
-CommandResult TradingSession::reset_account(Money initial_cash, AccountRules rules, std::string reason, Timestamp time, bool activated, bool archive_payouts) {
+CommandResult TradingSession::reset_account(Money initial_cash, AccountRules rules, std::string reason, Timestamp time, bool activated, bool archive_payouts, bool restore_scaled_rules) {
   require_reason(reason);
+  const auto& current = impl_->state;
+  if (restore_scaled_rules && initial_cash == current.config.initial_cash &&
+      same_program_rules(rules, current.config.rules))
+    rules = original_program_rules(std::move(rules), current.evaluation.starting_balance, current.evaluation.size_scaling);
   normalize_event_rules(rules, true);
   validate_rules(rules);
   if (initial_cash <= Money{}) throw TradingError(Reason::INVALID_MONEY, "Starting balance must be positive");

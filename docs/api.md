@@ -116,7 +116,9 @@ original/max/next size, review start/day count, net profit and payouts versus
 requirements, and `{day, old, size}` history (schemas `SizeScaling`,
 `SizeScalingStatus`). Account creation refuses custom funded rules: a funded account
 starts from an account that passed its evaluation. Withdrawals are added back to
-review profit; growth is not P&L.
+review profit; growth is not P&L. Resetting with the original starting balance and
+unchanged displayed rules restores original loss and lock amounts from scaling
+progress, retains the reset allowance and charges the reset fee.
 
 The web terminal uses these routes, so anything it does can be scripted:
 

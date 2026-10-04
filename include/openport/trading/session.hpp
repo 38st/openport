@@ -518,7 +518,7 @@ class TradingSession {
   /// latch and apply the given rules. Order and fill history is kept.
   /// activated is a caller-verified prerequisite pass; archive_payouts is false only for old replay inputs.
   CommandResult reset_account(Money initial_cash, AccountRules rules, std::string reason, Timestamp time,
-                              bool activated = false, bool archive_payouts = true);
+                              bool activated = false, bool archive_payouts = true, bool restore_scaled_rules = true);
   /// Withdraw a whole-cent amount from a funded account under its payout rules
   /// (see payout_quote). The withdrawal is not a loss: the day's baseline and
   /// an unlocked trailing peak move down with it. Resets the qualifying days.

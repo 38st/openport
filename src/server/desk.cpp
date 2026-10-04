@@ -1785,7 +1785,8 @@ void Desk::apply_command(PendingCommand& pending, md::Timestamp market_time, md:
           const auto original_rules = trading::original_program_rules(session.config().rules,
               before->evaluation.starting_balance, before->evaluation.size_scaling);
           const bool restarting = c.program_costs && c.initial_cash == session.config().initial_cash &&
-              trading::same_program_rules(c.rules, original_rules);
+              (trading::same_program_rules(c.rules, original_rules) ||
+               (c.restore_scaled_rules && trading::same_program_rules(c.rules, session.config().rules)));
           if (!restarting && !c.required_pass.empty() && (before->evaluation.status != EvaluationStatus::Passed || !evaluation ||
                                            !follows_plan(*evaluation, session.config().initial_cash, original_rules)))
             result.decision = {Reason::PLAN_LOCKED, "Pass the " + c.required_pass + (c.program_costs ? " to start this step" : " evaluation to start this funded account"),
@@ -1799,7 +1800,7 @@ void Desk::apply_command(PendingCommand& pending, md::Timestamp market_time, md:
               if (!(c.program_cost_overrides & 4)) rules.activation_fee = current.activation_fee;
               if (!(c.program_cost_overrides & 8)) rules.max_resets = current.max_resets;
             }
-            result = session.reset_account(c.initial_cash, rules, c.reason, market_time_, !restarting && !c.required_pass.empty(), c.program_costs);
+            result = session.reset_account(c.initial_cash, rules, c.reason, market_time_, !restarting && !c.required_pass.empty(), c.program_costs, c.restore_scaled_rules);
           }
           break;
         }

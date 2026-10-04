@@ -38,6 +38,7 @@ inline void to_json(nlohmann::json& j, const TradingCommand& c) {
   if (c.cancel_reason != trading::Reason::USER_CANCEL) j["cancel_reason"] = c.cancel_reason;
   if (c.stock_price) j["stock_price"] = {{"symbol", c.stock_price->symbol}, {"time", c.stock_price->time}, {"price", c.stock_price->price}};
   if (c.do_not_exercise) j["do_not_exercise"] = true;
+  if (c.restore_scaled_rules) j["restore_scaled_rules"] = true;
   if (c.program_costs) j["program_costs"] = true;
   if (c.program_cost_overrides != 0) j["program_cost_overrides"] = c.program_cost_overrides;
   if (!c.trades.empty()) j["trades"] = c.trades;
@@ -58,6 +59,7 @@ inline void from_json(const nlohmann::json& j, TradingCommand& c) {
   j.at("initial_cash").get_to(c.initial_cash);
   j.at("rules").get_to(c.rules);
   j.at("required_pass").get_to(c.required_pass);
+  trading::added_field(j, "restore_scaled_rules", c.restore_scaled_rules);
   trading::added_field(j, "program_costs", c.program_costs);
   trading::added_field(j, "program_cost_overrides", c.program_cost_overrides);
   j.at("amount").get_to(c.amount);

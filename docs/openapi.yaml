@@ -23495,7 +23495,7 @@
       "SizeScaling": {
         "type": "object",
         "additionalProperties": false,
-        "description": "Funded only. Periodic reviews require net realised profit and completed payouts over finished plan days. Growth is a percentage of the original starting balance, capped at max_balance (at least the starting balance). Null disables.",
+        "description": "Funded only. Periodic reviews require net realised profit and completed payouts over finished plan days. Growth is a percentage of the original starting balance, capped at max_balance (at least the starting balance). Resetting at the original starting balance with unchanged displayed rules restores the original loss and lock amounts and retains the reset allowance. Null disables.",
         "properties": {
           "profit_percent": {
             "type": "integer",

@@ -2890,7 +2890,7 @@ TEST_F(PaperEngine, SizeScalingAccountViewReportsTheCapitalCreditAndNewReview) {
   EXPECT_EQ(account["payout"]["profit"], "578.70");
   EXPECT_EQ(account["rules"]["max_drawdown"], "6250.00");
   EXPECT_EQ(account["costs"]["resets_used"], 1);
-  auto response = write(*engine, "POST", "/api/account/reset", {{"initial_cash", "50000"}, {"rules", rules},
+  auto response = write(*engine, "POST", "/api/account/reset", {{"initial_cash", "50000"}, {"rules", account["rules"]},
       {"reason", "restart original size"}});
   ASSERT_EQ(response.status, 200) << response.body;
   test::capture_contract("time-rules", "POST", "/api/account/reset", response);
@@ -2899,6 +2899,8 @@ TEST_F(PaperEngine, SizeScalingAccountViewReportsTheCapitalCreditAndNewReview) {
   EXPECT_EQ(restarted["costs"]["fee_kind"], "reset");
   EXPECT_EQ(restarted["costs"]["fee_charged"], "25.000002");
   EXPECT_EQ(restarted["rules"]["max_resets"], 2);
+  EXPECT_EQ(restarted["rules"]["max_drawdown"], "5000.00");
+  EXPECT_EQ(restarted["evaluation"]["size_scaling"]["original_max_drawdown"], "5000.00");
   EXPECT_EQ(restarted["evaluation"]["starting_balance"], "50000.00");
   EXPECT_EQ(restarted["attempts"].back()["starting_balance"], "62500.00");
   EXPECT_EQ(restarted["attempts"].back()["rules"]["max_drawdown"], "6250.00");

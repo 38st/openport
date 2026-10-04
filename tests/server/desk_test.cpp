@@ -931,10 +931,13 @@ TEST(DeskPlans, ProgramCostCommandDefaultsRetainOldBytes) {
   command.kind = server::TradingCommand::Kind::ResetAccount;
   const nlohmann::json old = command;
   EXPECT_FALSE(old.contains("program_costs"));
+  EXPECT_FALSE(old.contains("restore_scaled_rules"));
   EXPECT_EQ(nlohmann::json(old.get<server::TradingCommand>()).dump(), old.dump());
   command.program_costs = true;
+  command.restore_scaled_rules = true;
   const nlohmann::json current = command;
   EXPECT_TRUE(current.at("program_costs"));
+  EXPECT_TRUE(current.at("restore_scaled_rules"));
   EXPECT_EQ(nlohmann::json(current.get<server::TradingCommand>()).dump(), current.dump());
   const auto* plan = server::find_plan("two-step-25k"); ASSERT_NE(plan, nullptr);
   auto rules = plan->rules;
