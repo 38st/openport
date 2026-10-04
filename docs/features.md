@@ -211,9 +211,6 @@ simulation's limits.
 
 ## Paper trading
 
-- **F60 entry protection and risk:** custom plans require bracket stops and cap per-order risk in dollars or a percentage of room to the floor. Preview shows risk against the limit; required stops cannot be cancelled while their position is held.
-- **F15 contracts held cap:** custom plans cap held option contracts plus working opening quantities across orders, with numeric refusals and preview sizing; shares are excluded.
-
 Custom plans can set an evaluation time window (F62), an inactivity deadline based
 on the trader’s own executions (F58), and allowed underlyings and New York opening
 hours (F31). Dashboard reports deadlines; tickets explain and block restricted
@@ -335,27 +332,39 @@ Demo and new scenario/recorded replays
 settle AM positions on the expiry opening print, an approximation of the official
 special opening quotation; live providers keep manual imports.
 
+### Event restrictions (F17/F59)
+
+Plans share a saved event calendar for scoped news blackouts and weekend,
+earnings, ex-dividend and split holding restrictions. Configure `events`,
+`news_before_minutes`, `news_after_minutes`, `news_action`, `hold_restrictions`
+and `hold_cutoff` in custom plans. Imports use the daemon's `--event-calendar`
+catalogue or known dividend ex-dates; saving freezes them into the plan. Rules,
+Dashboard, chain and tickets explain active/next restrictions and permit reductions.
+Once-only system closes, boundary failures and the holding business calendar are
+journaled for deterministic recovery. See [rule semantics](paper-trading.md#news-blackouts-and-holding-restrictions-f17-f59).
+
+F6, F17 and F59 can be combined with the time, inactivity, underlying, trading-hour,
+contract-count, stop-loss and trade-risk rules. Rollover gives `OVERNIGHT_HOLD`
+precedence over `HOLD_RESTRICTED`; overlapping scheduled closes retain the first
+submitted close's label without duplicating orders.
+
 ## Roadmap
 
 - [x] F39 funded scaling plan: closed-balance thresholds set the next session’s option-contract limit, with working openings, fill checks and terminal editing
 - [x] F63 funded account-size scaling: periodic profit/payout reviews, linear capital growth capped at a maximum, proportional loss limits, journal recovery, custom rule editing and funded progress/history.
-
 - [x] F38 payout buffer: retain starting balance plus a safety net for every payout or the first N
 - [x] F37 payout consistency: net realised best-day limits per payout cycle, escalating percentages and remaining profit
 - [x] F62 evaluation time windows, F58 inactivity limits, and F31 instrument whitelists and trading hours per plan
-
 - [x] F26 stress-scenario authoring: abnormal books, quote stalls and stale marks,
   authored previous closes and market halts, all three circuit-breaker levels,
   wider strike ranges for 10%+ moves and margin floors, and early-close event scaling.
   Demo and stress recordings support market controls in format v4; ordinary live
   recordings retain format v2 compatibility. Authored-halt messages show New York
   resume times and recognize regular and early closes.
-
 - [x] Technical, VIX and gap playbook entries; trailing, DTE, trading-day and debit exits (F52, part 1)
 - [x] F52: backtest comparison, combined independent daily P&L, per-day evaluation rows,
       saved-run deletion, pins and bounded server retention
 - [ ] True joint multi-playbook backtests sharing account buying power and plan limits
-
 - [x] F72: held-size close tickets, confirmed cancellations with persistent results,
       fresh finished runs in the switcher, held-strategy gamma and vega, and sizing labels
       that name the binding floor, buying power or limit
@@ -369,7 +378,6 @@ special opening quotation; live providers keep manual imports.
 - [x] F57: replay tokens reset and configure their isolated accounts
 - [x] F57: sandbox tokens default to their own account
 - [x] F57: token reload without restart (automatic, SIGHUP and admin HTTP); account and token management complete
-
 - [x] Opening share positions for hedges, covered calls and collars, with share previews and terminal shortcuts
 - [x] A flatten that works until flat: spreads close as one order, large closes split,
       remainders work on later quotes and exits stay until flat; buying back shorts quoted
@@ -380,7 +388,6 @@ special opening quotation; live providers keep manual imports.
 - [x] Versioned playbooks, staged orders, replay auto mode, adherence and historical pass-odds estimates
 - [x] Private visitor sandbox accounts on public simulated demos, with idle expiry and rate limits
 - [x] Checked OpenAPI contract, Python client and MCP tools, scoped tokens and actors
-
 - [x] Plan-locked limits, personal guardrails, order previews and size to floor, breach
       estimates, intraday equity history and rule alerts
 - [x] Pricing core: Black-76 and Black-Scholes-Merton with full Greeks, safeguarded IV
@@ -496,49 +503,111 @@ special opening quotation; live providers keep manual imports.
       beta weighting to SPY or SPX, and probability cones with odds of reaching a price by a date
 - [x] F46: fills inside the bid/ask spread and walking limits, with midpoint fills,
       market-time steps, editable caps, previews and durable order history
-
-- **Operational robustness (F68):** filesystem diagnostics with free bytes and
+- [x] F68 operational robustness: filesystem diagnostics with free bytes and
   a 64 MiB reserve; damaged accounts remain readable at their verified prefix;
   repair dry-run and single-file modes; timestamped equity storage errors and
   recovery status; journal size and verification estimates/warnings; equity
   paging in live, replay and archived accounts; indexed recording end lookup
   and replay control queue shutdown.
-
-- [x] F15: a per-plan cap on contracts held at once, counting working entries and combo ratios
-
-- [x] F60: required stop-loss protection and maximum trade risk in dollars or floor-room percent
-
+- [x] F15: custom-plan caps on held option contracts plus working opening quantities,
+      counting combo ratios, with numeric refusals and preview sizing; shares are excluded.
+- [x] F60: custom plans require bracket stops and cap per-order risk in dollars or
+      floor-room percent. Preview shows risk against the limit; required stops cannot
+      be cancelled while their position is held.
 - [x] F6: optional mandatory `flat_time` closes options and shares and blocks openings
       until plan day end; independent `no_overnight` fails held positions at rollover.
       Settlement-pending options are excluded. Journaled triggers and pending closes
       recover deterministically; custom editor, Rules, facts, Dashboard notices and
       option/strategy/share tickets expose both rules.
-
 - [x] F29: per-trade consistency limits the best closed whole option trade to a percentage of attempt profit, with exact net P&L and pass-objective evidence.
-
 - [x] F30: minimum closed whole option trades to pass, including system and settlement closures.
-
 - [x] F61: minimum hold time refuses premature user reductions while protective/system exits execute; microscalping limits positive short-round-trip profit as a pass objective.
-
 - [x] F65: custom plans can ban opening hedges within an account and counter positions across live accounts. Options and shares use current dollar-delta direction; previews and tickets explain refusals. The reducer enforces `no_hedging`; the desk enforces `no_counter_positions` before journaling, excluding archived/replay/sandbox accounts. Enable the latter on each trading account.
-
 - [x] F66: per-contract position caps as a whole percentage of current-date traded option volume, with exact ratio-aware checks, strict unknown/stale refusals, previews and terminal custom-plan controls. The server gate keeps volume outside reducer journals; backtests require recordings carrying volume.
-
 - [x] F27: two-step challenge and verification presets, prerequisite unlocks, phase history and confirmed next-step starts in the terminal.
 - [x] F64: exact evaluation/reset/activation costs, per-plan reset limits, journaled attempt charges, payout net and terminal cost controls.
 
-### Event restrictions (F17/F59)
+## Audit feature index
 
-Plans share a saved event calendar for scoped news blackouts and weekend,
-earnings, ex-dividend and split holding restrictions. Configure `events`,
-`news_before_minutes`, `news_after_minutes`, `news_action`, `hold_restrictions`
-and `hold_cutoff` in custom plans. Imports use the daemon's `--event-calendar`
-catalogue or known dividend ex-dates; saving freezes them into the plan. Rules,
-Dashboard, chain and tickets explain active/next restrictions and permit reductions.
-Once-only system closes, boundary failures and the holding business calendar are
-journaled for deterministic recovery. See [rule semantics](paper-trading.md#news-blackouts-and-holding-restrictions-f17-f59).
+Status of the audit’s F1–F73 features. Links describe the rules and limits.
 
-F6, F17 and F59 can be combined with the time, inactivity, underlying, trading-hour,
-contract-count, stop-loss and trade-risk rules. Rollover gives `OVERNIGHT_HOLD`
-precedence over `HOLD_RESTRICTED`; overlapping scheduled closes retain the first
-submitted close's label without duplicating orders.
+| ID | Feature | Status |
+| --- | --- | --- |
+| F1 | [Multi-day and cross-session replay](scenarios.md#several-sessions) | Done |
+| F2 | [Best-day consistency](paper-trading.md#plan-objectives-and-the-daily-loss-limit) | Done |
+| F3 | [Plan daily loss limits](paper-trading.md#plan-objectives-and-the-daily-loss-limit) | Done |
+| F4 | [Flatten that gets flat](paper-trading.md#changing-cancelling-and-flattening) | Done |
+| F5 | [Minimum trading or profitable days](paper-trading.md#plan-objectives-and-the-daily-loss-limit) | Done |
+| F6 | [Mandatory flat time and no overnight holds](paper-trading.md#mandatory-flat-time-and-no-overnight-holds-f6) | Done |
+| F8 | [Trailing stops](paper-trading.md#conditional-and-bracket-orders) | Done |
+| F9 | [Stop-limit exits](paper-trading.md#conditional-and-bracket-orders) | Done |
+| F10 | [Held-book risk warnings](paper-trading.md#risk-warnings) | Done |
+| F11 | [Protection after partial exits](paper-trading.md#conditional-and-bracket-orders) | Done |
+| F12 | [OCO exits for held single legs](paper-trading.md#conditional-and-bracket-orders) | Done |
+| F13 | [Fill audit trail](paper-trading.md#orders-and-quote-matching) | Done |
+| F14 | [Static and lock-at-start presets](paper-trading.md#plan-presets-with-objectives) | Done |
+| F15 | [Contracts-held cap](paper-trading.md#account-rules-and-evaluations) | Done |
+| F16 | [Closed-balance targets and decision equity](paper-trading.md#plan-objectives-and-the-daily-loss-limit) | Done |
+| F17 | [News-event blackouts](paper-trading.md#news-blackouts-and-holding-restrictions-f17-f59) | Done |
+| F19 | [Executable quotes and remaining size](runtime.md#chain-volume-and-liquidity) | Done |
+| F20 | [Order, change and flatten previews](paper-trading.md#order-preview-and-breach-risk) | Done |
+| F21 | [Order lifecycle and rejection detail](paper-trading.md#changing-cancelling-and-flattening) | Done |
+| F22 | [Order-entry guards](paper-trading.md#orders-and-quote-matching) | Done |
+| F23 | [Position disposal](paper-trading.md#disposing-of-worthless-positions) | Done |
+| F24 | [Protection in all sessions](paper-trading.md#sessions) | Done |
+| F25 | [Realistic fee schedules](paper-trading.md#fees) | Done |
+| F26 | [Stress-scenario authoring](scenarios.md#events) | Done |
+| F27 | [Multi-phase evaluations](paper-trading.md#two-step-programs-f27) | Done |
+| F28 | [Plan trading-day boundaries](paper-trading.md#plan-objectives-and-the-daily-loss-limit) | Done |
+| F29 | [Per-trade consistency](paper-trading.md#plan-objectives-and-the-daily-loss-limit) | Done |
+| F30 | [Minimum trades to pass](paper-trading.md#plan-objectives-and-the-daily-loss-limit) | Done |
+| F31 | [Instrument whitelists and trading hours](paper-trading.md#evaluation-time-inactivity-and-opening-restrictions) | Done |
+| F32 | [Replay control](runtime.md#lockstep-stepping) | Done |
+| F33 | [Post-decision handling and attempt records](paper-trading.md#account-rules-and-evaluations) | Done |
+| F34 | [Guardrail and plan-rule edge handling](paper-trading.md#personal-guardrails) | Done |
+| F35 | [Held-book risk profile by date and IV](paper-trading.md#risk-profile-and-probabilities) | Done |
+| F36 | [What-if adjustments](paper-trading.md#what-if) | Done |
+| F37 | [Payout consistency](paper-trading.md#funded-accounts-and-payouts) | Done |
+| F38 | [Payout buffer](paper-trading.md#funded-accounts-and-payouts) | Done |
+| F39 | [Funded contract scaling](paper-trading.md#funded-accounts-and-payouts) | Done |
+| F40 | [Whole-trade P&L across rolls](paper-trading.md#whole-trades) | Done |
+| F41 | [Roll and adjustment tooling](paper-trading.md#multi-leg-orders) | Done |
+| F42 | [Standalone OCO and OTO chains](paper-trading.md#order-chains-one-cancels-other-and-one-triggers-other) | Done |
+| F43 | [Conditional orders on symbols, studies and time](paper-trading.md#conditional-and-bracket-orders) | Done |
+| F44 | [Richer alerts](paper-trading.md#account-alerts) | Done |
+| F45 | [Visible settlement prints and sources](paper-trading.md#expiry-and-explicit-settlement) | Done |
+| F46 | [Inside fills and walking limits](paper-trading.md#walking-limits) | Done |
+| F47 | [Journal and review improvements](paper-trading.md#trade-review) | Done |
+| F48 | [Run and attempt identity in exports](paper-trading.md#csv-downloads) | Done |
+| F49 | [Margin realism and account types](paper-trading.md#account-rules-and-evaluations) | Done (limitation: mixed-expiry worst-loss pools are evaluated after pairing, not optimized jointly; see paper-trading.md) |
+| F50 | [In-app run verification](runtime.md#verifying-a-run) | Done |
+| F51 | [Live forward testing and playbook ergonomics](playbooks.md#forward-tests-on-live-paper) | Done |
+| F52 | [Backtest breadth](playbooks.md#batch-backtests) | Done (combined backtests add independent daily P&L; joint multi-playbook backtests sharing buying power remain open) |
+| F53 | [Beta weighting to SPY or SPX](paper-trading.md#risk-profile-and-probabilities) | Done |
+| F54 | [Probability cones and reaching a price](paper-trading.md#risk-profile-and-probabilities) | Done |
+| F55 | [Return on buying power](paper-trading.md#return-on-buying-power) | Done |
+| F56 | [Opening share positions](playbooks.md#practising-strategies-with-shares) | Done |
+| F57 | [Account and token management](paper-trading.md#accounts) | Done |
+| F58 | [Inactivity rules](paper-trading.md#evaluation-time-inactivity-and-opening-restrictions) | Done |
+| F59 | [Weekend and corporate-event holding restrictions](paper-trading.md#news-blackouts-and-holding-restrictions-f17-f59) | Done |
+| F60 | [Required stops and maximum trade risk](paper-trading.md#account-rules-and-evaluations) | Done |
+| F61 | [Minimum hold time and microscalping](paper-trading.md#plan-objectives-and-the-daily-loss-limit) | Done |
+| F62 | [Evaluation time windows](paper-trading.md#evaluation-time-inactivity-and-opening-restrictions) | Done |
+| F63 | [Funded account-size scaling](paper-trading.md#funded-accounts-and-payouts) | Done |
+| F64 | [Reset and activation costs and limits](paper-trading.md#program-costs-and-reset-limits-f64) | Done |
+| F65 | [Hedging and counter-position bans](paper-trading.md#direction-rules-f65) | Done |
+| F66 | [Position size relative to traded volume](paper-trading.md#volume-share-rule-f66) | Done |
+| F68 | [Operational robustness](paper-trading.md#journal-recovery-and-failure-handling) | Done |
+| F69 | [Demo and replay coverage](scenarios.md) | Done |
+| F70 | [API codes and messages](paper-trading.md#reason-codes) | Done |
+| F71 | [Throughput and documented limits](paper-trading.md#commands-and-views) | Done |
+| F72 | [UI polish](paper-trading.md#order-preview-and-breach-risk) | Done |
+| F73 | [Seeded demo soak and JSON output](../CONTRIBUTING.md#python-and-api-contract) | Done |
+
+### Out of scope
+
+| ID | Feature | Reason |
+| --- | --- | --- |
+| F7 | [Real-time data out of the box for paper trading](configuration.md#providers) | Real-time OPRA option quotes need a paid, licensed feed that an open-source project cannot bundle or redistribute. Traders bring their own provider (Databento, Massive, Tradier or tastytrade). The default Cboe feed stays 15-minute delayed; a pass on it is practice. |
+| F18 | [Years of historical option data built in](runtime.md#importing-a-historical-day) | Historical OPRA data is licensed and cannot be redistributed with the project. Recorded sessions, generated scenarios and local Databento/ThetaData historical-day imports with the trader’s own key cover replay and backtests. |
+| F67 | [Futures and futures options (/ES options)](paper-trading.md#instruments-and-prices) | A new asset class with its own contract specifications, exchange sessions, SPAN-style margin, settlement into futures and data sources. OpenPort trades equity, ETF and index options and shares only. |
