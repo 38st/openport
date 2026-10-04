@@ -1994,6 +1994,8 @@ The age starts at the round trip's first opening fill; adding and partially clos
 do not restart it. Time is elapsed market timestamps (including overnight), never
 wall-clock time. Exactly `min_hold_seconds` is allowed. Every closing leg is checked
 before accepting a combo. Preview returns the same refusal and seconds evidence.
+Messages show at most one decimal place without trailing zeros (for example,
+`Held 12.5 seconds`); numeric `actual` and `limit` retain full precision.
 Protective conditional triggers, bracket stops/targets, OCO and trailing stops,
 flatten (including limit flatten), daily-loss exits, expiry cutoff, liquidation,
 exercise, assignment and settlement remain executable. Minimum hold applies in
@@ -3639,7 +3641,9 @@ account journal. Recovery never reads other accounts. Both direction reasons
 include `actual` (order dollar delta), `limit` (held dollar delta, a comparison
 rather than a cap), `scope` (underlying), and structured `evidence` with
 `underlying`, `order_dollar_delta`, `held_dollar_delta`, and, for a counter position,
-`other_account`. Messages show the same evidence in terminal tickets. Rule fields
+`other_account`. Messages show signed whole dollars with thousands separators
+(for example, `-$30,316` and `+$29,576`) in terminal tickets; numeric `actual`,
+`limit`, and evidence fields retain full precision. Rule fields
 are journaled only when true; plans with both off retain their journal bytes and hashes.
 
 ### Volume-share rule (F66)

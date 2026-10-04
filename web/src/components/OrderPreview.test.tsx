@@ -186,8 +186,8 @@ it("shows trade risk and the plan cap alongside existing preview numbers", async
 
 it("shows direction and volume refusal evidence from the server in tickets", async () => {
   for (const [code, message] of [
-    ["HEDGING", "Opening SPY dollar delta -500 opposes held dollar delta 1000"],
-    ["COUNTER_POSITION", "Opening SPY dollar delta -500 opposes account other held dollar delta 1000"],
+    ["HEDGING", "Opening SPY dollar delta -$30,316 opposes held dollar delta +$29,576"],
+    ["COUNTER_POSITION", "Opening SPY dollar delta -$30,316 opposes account other held dollar delta +$29,576"],
     ["MAX_VOLUME_SHARE", "SPY option: held plus opening contracts 2 exceeds 10% of current-date volume unknown (missing, invalid or stale)"],
   ] as const) {
     const data = { ...preview, decision: code, reason: { code, message, actual: null, limit: null, scope: "SPY" } }

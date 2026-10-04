@@ -4,6 +4,7 @@
 #include "openport/server/plans.hpp"
 
 #include "openport/pricing/black.hpp"
+#include "openport/trading/format.hpp"
 #include "openport/server/run.hpp"
 #include "metric_cache.hpp"
 #include "run_json.hpp"
@@ -1475,8 +1476,8 @@ Decision Desk::counter_position_gate(const PaperAccount& account, const std::map
       if (!held) return {Reason::MISSING_VALUATION, "Fresh held valuations required for account " + other.id +
           " on " + underlying, {}, {}, underlying};
       if (*held != 0 && (*held > 0) != (delta > 0))
-        return {Reason::COUNTER_POSITION, "Opening " + underlying + " dollar delta " + std::to_string(delta) +
-            " opposes account " + other.id + " held dollar delta " + std::to_string(*held), delta, *held, underlying,
+        return {Reason::COUNTER_POSITION, "Opening " + underlying + " dollar delta " + format_dollar_delta(delta) +
+            " opposes account " + other.id + " held dollar delta " + format_dollar_delta(*held), delta, *held, underlying,
             RuleEvidence{underlying, delta, *held, other.id}};
     }
   }

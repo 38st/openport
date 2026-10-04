@@ -4,6 +4,7 @@
 #include <algorithm>
 #include <array>
 #include <cctype>
+#include <charconv>
 #include <cmath>
 #include <cstdio>
 #include <cstdlib>
@@ -14,6 +15,7 @@
 #include <stdexcept>
 #include <utility>
 
+#include "openport/trading/format.hpp"
 #include "openport/trading/history.hpp"
 #include "state.hpp"
 #include "review.hpp"
@@ -499,8 +501,8 @@ Decision hedging_direction_check(const State& s, const std::string& underlying, 
   const auto held_delta = held_direction(s, underlying);
   if (!held_delta) return failure(Reason::MISSING_VALUATION, "Fresh held valuations required to determine hedging direction");
   if (*held_delta == 0 || (*held_delta > 0) == (delta > 0)) return {};
-  return {Reason::HEDGING, "Opening " + underlying + " dollar delta " + std::to_string(delta) +
-      " opposes held dollar delta " + std::to_string(*held_delta), delta, *held_delta, underlying,
+  return {Reason::HEDGING, "Opening " + underlying + " dollar delta " + format_dollar_delta(delta) +
+      " opposes held dollar delta " + format_dollar_delta(*held_delta), delta, *held_delta, underlying,
       RuleEvidence{underlying, delta, *held_delta}};
 }
 Decision hedging_check(const State& s, const Order& order) {
@@ -2043,8 +2045,13 @@ Decision hold_age_check(const State& s, Timestamp opened, const std::string& sym
   const auto elapsed = std::max<Timestamp>(0, s.time - opened);
   if (required == 0 || elapsed >= required * md::kNanosPerSecond) return {};
   const double seconds = static_cast<double>(elapsed) / md::kNanosPerSecond;
-  return {Reason::MIN_HOLD, "Held " + std::to_string(seconds) + " seconds; this plan requires " +
-          std::to_string(required) + " seconds before a user reduction", seconds, static_cast<double>(required), symbol};
+  std::array<char, 32> text{};  // Refusals are below the 3600-second rule maximum.
+  const auto result = std::to_chars(text.data(), text.data() + text.size(), seconds, std::chars_format::fixed, 1);
+  std::string held(text.data(), result.ptr);
+  if (held.ends_with(".0")) held.resize(held.size() - 2);
+  return {Reason::MIN_HOLD, "Held " + held + (held == "1" ? " second" : " seconds") + "; this plan requires " +
+          std::to_string(required) + (required == 1 ? " second" : " seconds") + " before a user reduction",
+          seconds, static_cast<double>(required), symbol};
 }
 Decision min_hold_check(const State& s, const Order& o) {
   if (s.config.rules.min_hold_seconds == 0 || o.system || kept_within(o) || o.request.exits_only ||

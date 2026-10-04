@@ -265,7 +265,8 @@ TEST(Desk, CounterPositionsIncludeShareEntriesAndAllowShareReductions) {
   create.kind = server::TradingCommand::Kind::CreateAccount;
   create.name = "Other"; create.initial_cash = Money::parse("100000");
   ASSERT_EQ(command(desk, create, market.time, market.time).account, "other");
-  desk.replay_batch({md::UnderlyingQuote{"SPY", market.time, 500, 500, 500}, md::SnapshotComplete{"SPY", market.time}}, market.time);
+  desk.replay_batch({md::UnderlyingQuote{"SPY", market.time, 500.123456, 500.123456, 500.123456},
+                    md::SnapshotComplete{"SPY", market.time}}, market.time);
   server::TradingCommand stock;
   stock.kind = server::TradingCommand::Kind::TradeStock;
   stock.symbol = "SPY"; stock.quantity = 10;
@@ -273,7 +274,16 @@ TEST(Desk, CounterPositionsIncludeShareEntriesAndAllowShareReductions) {
   stock.account = "other";
   ASSERT_TRUE(command(desk, stock, market.time, market.time).decision.ok());
   stock.account.clear(); stock.quantity = -11;
-  EXPECT_EQ(command(desk, stock, market.time, market.time).decision.code, trading::Reason::COUNTER_POSITION);
+  const auto refused = command(desk, stock, market.time, market.time);
+  EXPECT_EQ(refused.decision.code, trading::Reason::COUNTER_POSITION);
+  EXPECT_EQ(refused.decision.message, "Opening SPY dollar delta -$5,501 opposes account other held dollar delta +$5,001");
+  ASSERT_TRUE(refused.decision.actual);
+  ASSERT_TRUE(refused.decision.limit);
+  EXPECT_DOUBLE_EQ(*refused.decision.actual, -5501.358016);
+  EXPECT_DOUBLE_EQ(*refused.decision.limit, 5001.23456);
+  ASSERT_TRUE(refused.decision.evidence);
+  EXPECT_EQ(refused.decision.evidence->order_dollar_delta, refused.decision.actual);
+  EXPECT_EQ(refused.decision.evidence->held_dollar_delta, refused.decision.limit);
   stock.kind = server::TradingCommand::Kind::PreviewStock;
   const auto preview = command(desk, stock, market.time, market.time);
   ASSERT_TRUE(preview.stock_preview);

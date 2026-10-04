@@ -4807,6 +4807,7 @@ TEST_F(PaperEngine, HoldingRulesRoundTripAndRefuseWithEvidence) {
   ASSERT_EQ(preview.status, 200) << preview.body;
   const auto p = json::parse(preview.body);
   EXPECT_EQ(p["reason"]["code"], "MIN_HOLD");
+  EXPECT_EQ(p["reason"]["message"], "Held 0 seconds; this plan requires 60 seconds before a user reduction");
   EXPECT_EQ(p["reason"]["actual"], 0);
   EXPECT_EQ(p["reason"]["limit"], 60);
   const auto refused = write(*engine, "POST", "/api/orders", close);

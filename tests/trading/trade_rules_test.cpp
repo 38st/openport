@@ -159,7 +159,18 @@ TEST(TradeRules, MinimumHoldUsesFirstFillExactMarketAgeAndRecovers) {
     TradingSession s(config(rules), f.time, FileJournal::create(file.path));
     f.seed(s);
     ASSERT_TRUE(s.submit(f.market("open"), f.time).decision.ok());
-    f.time += 30 * md::kNanosPerSecond; ++f.observation; f.seed(s);
+    for (const auto& [age, text] : {std::pair{0LL, "0 seconds"}, {1'000'000'000LL, "1 second"},
+                                  {12'500'000'000LL, "12.5 seconds"}, {12'540'000'000LL, "12.5 seconds"},
+                                  {12'560'000'000LL, "12.6 seconds"}}) {
+      f.time = opened + age; ++f.observation; f.seed(s);
+      const auto preview = s.preview(f.market("early", 1, Side::Sell), f.time);
+      EXPECT_EQ(preview.decision.code, Reason::MIN_HOLD);
+      EXPECT_EQ(preview.decision.message, std::string("Held ") + text +
+          "; this plan requires 60 seconds before a user reduction");
+      EXPECT_EQ(preview.decision.actual, static_cast<double>(age) / md::kNanosPerSecond);
+      EXPECT_EQ(preview.decision.limit, 60);
+    }
+    f.time = opened + 30 * md::kNanosPerSecond; ++f.observation; f.seed(s);
     ASSERT_TRUE(s.submit(f.market("add"), f.time).decision.ok());
     const auto preview = s.preview(f.market("early", 1, Side::Sell), f.time);
     EXPECT_EQ(preview.decision.code, Reason::MIN_HOLD);
@@ -723,14 +734,17 @@ TEST(TradeRules, HedgingChecksNetDeltaAndAllowsReductionsAndSystemExitsAcrossRec
   JournalFile file;
   TradingSession s(config(rules), call.time, FileJournal::create(file.path));
   call.seed(s); put.seed(s);
-  s.on_quotes({}, {put.valuation(-0.5)}, put.time);
+  s.on_quotes({}, {call.valuation(0.059152861928), put.valuation(-0.060631543814)}, put.time);
   ASSERT_TRUE(s.submit(call.market("long"), call.time).decision.ok());
   const auto refused = s.submit(put.market("hedge"), put.time);
   EXPECT_EQ(refused.decision.code, Reason::HEDGING);
+  EXPECT_EQ(refused.decision.message, "Opening SPX dollar delta -$30,316 opposes held dollar delta +$29,576");
   ASSERT_TRUE(refused.decision.evidence);
   EXPECT_EQ(refused.decision.evidence->underlying, "SPX");
-  EXPECT_EQ(refused.decision.evidence->order_dollar_delta, -250000);
-  EXPECT_EQ(refused.decision.evidence->held_dollar_delta, 250000);
+  EXPECT_DOUBLE_EQ(refused.decision.evidence->order_dollar_delta, -30315.771907);
+  EXPECT_DOUBLE_EQ(refused.decision.evidence->held_dollar_delta, 29576.430964);
+  EXPECT_EQ(refused.decision.actual, refused.decision.evidence->order_dollar_delta);
+  EXPECT_EQ(refused.decision.limit, refused.decision.evidence->held_dollar_delta);
   EXPECT_EQ(s.preview(put.market("preview"), put.time).decision.code, Reason::HEDGING);
   auto recovered = TradingSession::recover(FileJournal::read(file.path));
   EXPECT_EQ(recovered.snapshot_json(), s.snapshot_json());
@@ -741,6 +755,7 @@ TEST(TradeRules, HedgingChecksNetDeltaAndAllowsReductionsAndSystemExitsAcrossRec
   ASSERT_TRUE(s.submit(put.market("new-direction"), put.time).decision.ok());
   ASSERT_TRUE(s.close_positions({}, put.time).decision.ok());
   // A delta-neutral combo has no opposite direction.
+  s.on_quotes({}, {call.valuation(), put.valuation(-0.5)}, call.time);
   ASSERT_TRUE(s.submit(call.market("held-for-neutral"), call.time).decision.ok());
   auto neutral = call.market("neutral"); neutral.symbol.clear();
   neutral.legs = {{call.symbol(), Side::Buy, 1}, {put.symbol(), Side::Buy, 1}};
