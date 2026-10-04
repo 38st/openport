@@ -103,12 +103,8 @@ def test_real_cpp_handler_responses_without_network(tmp_path):
                             capture_output=True, text=True, timeout=120)
     assert result.returncode == 0, result.stdout + result.stderr
     files = list(tmp_path.glob("*.jsonl"))
-<<<<<<< HEAD
-    assert len(files) == 7, "Rebuild C++ tests with the contract fixtures"
-=======
-    assert len(files) == 6, "Rebuild C++ tests with the contract fixtures, including scaling resets"
+    assert len(files) == 8, "Rebuild C++ tests with the contract fixtures, including scaling resets"
     assert (tmp_path / "time-rules.jsonl") in files
->>>>>>> 4a17ea09 (Tests: include scaled resets in captured API contracts)
     contract = Contract("", None, SPEC)
     for file in files:
         for line in file.read_text().splitlines():
