@@ -238,9 +238,10 @@ days are single sessions.
 Start **Three-day slide** (`three-day-slide`) at its default date, 2026-09-14,
 paused with the `eod-100k` plan. In the replay's plan editor set **Evaluation time
 limit (days)** to `1` and reset the replay account to apply it. The API equivalent
-is to read `/api/replay/account`, keep its `rules`, set `rules.time_limit_days` to
-`1`, then POST `/api/replay/account/reset` with those rules, `initial_cash: "100000"`
-and a reason. Presets leave this optional limit off.
+is to read `/api/replay/account`, keep its `rules`, set `rules.plan` to a custom
+name such as `Deadline rehearsal` and `rules.time_limit_days` to `1`, then POST
+`/api/replay/account/reset` with those rules, `initial_cash: "100000"` and a reason.
+Presets leave this optional limit off.
 
 Step to `2026-09-15T16:00`: the attempt remains active, `deadline` is `2026-09-15`
 and `days_left` is zero. Then step to `2026-09-16T09:30`. The first batch beyond

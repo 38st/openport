@@ -346,6 +346,7 @@ TEST(MultiDayReplay, EvaluationDeadlineFailsAfterItsLastDateAndRestartReproduces
   ASSERT_TRUE(test::recording_eventually(ready));
   const auto account = [&] { return json::parse(call(host, "GET", "/api/replay/account").body); };
   auto rules = account().at("rules");
+  rules["plan"] = "Deadline rehearsal";
   rules["time_limit_days"] = 1;
   const auto reset = call(host, "POST", "/api/replay/account/reset",
       {{"initial_cash", "100000"}, {"rules", rules}, {"reason", "rehearse the evaluation deadline"}});
