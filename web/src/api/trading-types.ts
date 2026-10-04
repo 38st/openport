@@ -161,20 +161,20 @@ export interface AccountRules {
 }
 export type ProfitBasis = "equity" | "balance"
 export type DailyLossBasis = "equity" | "balance" | "higher" | "peak"
-/**
- * A reason code with numeric or calendar evidence (NEWS_BLACKOUT ISO UTC timestamps; HOLD_RESTRICTED HH:MM limit and kind:scope): `actual` against `limit` for a numeric
- * check, and `scope`, the underlying or "aggregate" it applies to. The evidence is
- * absent on older servers and null when a check has none.
- */
-/** Codes include PLAYBOOK_TIME_STOP, PLAYBOOK_TRAILING_STOP, PLAYBOOK_DTE_STOP and PLAYBOOK_DAYS_IN_TRADE_STOP for automatic entry/exit cancellations; older runs use USER_CANCEL. */
-export type PlanRuleReason =
-  | "TIME_LIMIT" | "INACTIVITY" | "INSTRUMENT_NOT_ALLOWED" | "OUTSIDE_PLAN_HOURS" | "FLAT_TIME" | "OVERNIGHT_HOLD" | "SCALING_LIMIT"
-  | "TRADE_CONSISTENCY" | "MIN_TRADES" | "MIN_HOLD" | "MICROSCALPING" | "HEDGING" | "COUNTER_POSITION" | "MAX_VOLUME_SHARE" | "NEWS_BLACKOUT" | "HOLD_RESTRICTED"
+/** Plan objectives, decisions and trading restrictions in evaluation and verification. */
+export type PlanReason = "PROFIT_TARGET" | "DRAWDOWN_FLOOR" | "DAILY_LOSS_LIMIT" | "MIN_TRADING_DAYS" | "MIN_PROFITABLE_DAYS" | "CONSISTENCY" | "MAX_CONTRACTS_HELD" | "STOP_REQUIRED" | "MAX_TRADE_RISK" | "TIME_LIMIT" | "INACTIVITY" | "INSTRUMENT_NOT_ALLOWED" | "OUTSIDE_PLAN_HOURS" | "FLAT_TIME" | "OVERNIGHT_HOLD" | "SCALING_LIMIT" | "TRADE_CONSISTENCY" | "MIN_TRADES" | "MIN_HOLD" | "MICROSCALPING" | "HEDGING" | "COUNTER_POSITION" | "MAX_VOLUME_SHARE" | "NEWS_BLACKOUT" | "HOLD_RESTRICTED"
+/** Compatibility name for the complete plan-reason set. */
+export type PlanRuleReason = PlanReason
 export type RuleEvidence = { underlying: string; order_dollar_delta: number; held_dollar_delta: number; other_account?: string }
   | { contract: string; contracts: number; volume: number | null; percent: number }
-export interface Decision { evidence?: RuleEvidence; code: PlanRuleReason | string; message: string; actual?: number | string | null; limit?: number | string | null; scope?: string | null }
-/** Plan objectives, decisions and trading restrictions; generic codes may include other reasons. */
-export type PlanReason = "PROFIT_TARGET" | "DRAWDOWN_FLOOR" | "DAILY_LOSS_LIMIT" | "MIN_TRADING_DAYS" | "MIN_PROFITABLE_DAYS" | "CONSISTENCY" | "MAX_CONTRACTS_HELD" | "STOP_REQUIRED" | "MAX_TRADE_RISK" | "TIME_LIMIT" | "INACTIVITY" | "INSTRUMENT_NOT_ALLOWED" | "OUTSIDE_PLAN_HOURS" | "FLAT_TIME" | "OVERNIGHT_HOLD" | "SCALING_LIMIT" | "TRADE_CONSISTENCY" | "MIN_TRADES" | "MIN_HOLD" | "MICROSCALPING" | "HEDGING" | "COUNTER_POSITION" | "MAX_VOLUME_SHARE"
+/**
+ * Generic reason codes include plan/reset refusals and PLAYBOOK_TIME_STOP,
+ * PLAYBOOK_TRAILING_STOP, PLAYBOOK_DTE_STOP and PLAYBOOK_DAYS_IN_TRADE_STOP
+ * cancellations (older runs use USER_CANCEL). Numeric evidence compares actual
+ * against limit, with the underlying or aggregate scope; absent on older servers
+ * and null when a check has none. Structured evidence is omitted when inapplicable.
+ */
+export interface Decision { evidence?: RuleEvidence; code: string; message: string; actual?: number | string | null; limit?: number | string | null; scope?: string | null }
 /** `requirement` is `short_requirement` under a name that fits portfolio margin too; absent on older servers. */
 export interface BuyingPower { available: Money; reserved: Money; short_requirement: Money; requirement?: Money }
 /**

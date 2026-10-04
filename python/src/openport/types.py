@@ -6,10 +6,6 @@ Unknown fields are preserved. Money and identifiers stay strings, not floats.
 from typing import Any, Literal, TypedDict
 
 JSON = dict[str, Any]
-PlanRuleReason = Literal[
-    "TIME_LIMIT", "INACTIVITY", "INSTRUMENT_NOT_ALLOWED", "OUTSIDE_PLAN_HOURS", "FLAT_TIME", "OVERNIGHT_HOLD", "SCALING_LIMIT",
-    "TRADE_CONSISTENCY", "MIN_TRADES", "MIN_HOLD", "MICROSCALPING", "HEDGING", "COUNTER_POSITION", "MAX_VOLUME_SHARE", "NEWS_BLACKOUT", "HOLD_RESTRICTED",
-]
 
 
 class RuleEvidence(TypedDict, total=False):
@@ -52,7 +48,11 @@ PlanReason = Literal[
     "MAX_CONTRACTS_HELD", "STOP_REQUIRED", "MAX_TRADE_RISK",
     "TIME_LIMIT", "INACTIVITY", "INSTRUMENT_NOT_ALLOWED",
     "OUTSIDE_PLAN_HOURS", "FLAT_TIME", "OVERNIGHT_HOLD", "SCALING_LIMIT",
+    "TRADE_CONSISTENCY", "MIN_TRADES", "MIN_HOLD", "MICROSCALPING", "HEDGING", "COUNTER_POSITION", "MAX_VOLUME_SHARE",
+    "NEWS_BLACKOUT", "HOLD_RESTRICTED",
 ]
+# Compatibility name for the complete plan-reason set.
+PlanRuleReason = PlanReason
 ResetReason = Literal["PLAN_LOCKED", "RESET_LIMIT"]
 
 

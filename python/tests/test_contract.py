@@ -103,8 +103,10 @@ def test_real_cpp_handler_responses_without_network(tmp_path):
                             capture_output=True, text=True, timeout=120)
     assert result.returncode == 0, result.stdout + result.stderr
     files = list(tmp_path.glob("*.jsonl"))
-    assert len(files) == 8, "Rebuild C++ tests with the contract fixtures, including scaling resets"
-    assert (tmp_path / "time-rules.jsonl") in files
+    assert {file.name for file in files} == {
+        "analytics.jsonl", "paper.jsonl", "replay.jsonl", "backtests.jsonl", "playbooks.jsonl",
+        "time-rules.jsonl", "direction-rules.jsonl", "volume-rule.jsonl",
+    }, "Rebuild C++ tests with all contract fixtures, including scaling resets, direction and volume"
     contract = Contract("", None, SPEC)
     for file in files:
         for line in file.read_text().splitlines():

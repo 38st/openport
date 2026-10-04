@@ -243,6 +243,7 @@ it("keeps verification and program cost settings aligned with both request contr
 
 it("keeps plan and reset reason codes aligned with OpenAPI", () => {
   const schemas = JSON.parse(specText).components.schemas
+  expect(source).toContain("export type PlanRuleReason = PlanReason")
   for (const name of ["PlanReason", "ResetReason"]) {
     const declared = new RegExp(`export type ${name} = ([^\n]+)`).exec(source)![1]!
     expect([...declared.matchAll(/"([A-Z_]+)"/g)].map((match) => match[1]).sort())

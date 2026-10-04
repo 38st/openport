@@ -5,7 +5,7 @@ import jsonschema
 import pytest
 
 from conftest import ROOT, SPEC
-from openport.types import AccountRules, OrderPreview, PlanRuleReason
+from openport.types import AccountRules, OrderPreview, PlanReason, PlanRuleReason
 from tools.contract_test import Contract
 
 
@@ -29,10 +29,12 @@ def test_trade_rule_wire_types_and_optional_defaults():
 
 
 def test_new_reason_codes_and_microscalp_pair():
-    expected = {"TIME_LIMIT", "INACTIVITY", "INSTRUMENT_NOT_ALLOWED", "OUTSIDE_PLAN_HOURS", "FLAT_TIME", "OVERNIGHT_HOLD", "SCALING_LIMIT",
-                "TRADE_CONSISTENCY", "MIN_TRADES", "MIN_HOLD", "MICROSCALPING", "HEDGING", "COUNTER_POSITION", "MAX_VOLUME_SHARE", "NEWS_BLACKOUT", "HOLD_RESTRICTED"}
+    expected = set(SPEC["components"]["schemas"]["PlanReason"]["enum"])
+    assert PlanRuleReason is PlanReason
     assert set(get_args(PlanRuleReason)) == expected
-    typescript = (ROOT / "web/src/api/trading-types.ts").read_text().split("export type PlanRuleReason =", 1)[1].split("export type RuleEvidence", 1)[0]
+    source = (ROOT / "web/src/api/trading-types.ts").read_text()
+    assert "export type PlanRuleReason = PlanReason" in source
+    typescript = source.split("export type PlanReason =", 1)[1].split("\n", 1)[0]
     assert set(re.findall(r'"([A-Z_]+)"', typescript)) == expected
     contract = Contract("", None, SPEC)
     validator = jsonschema.Draft202012Validator(
@@ -93,3 +95,14 @@ def test_direction_and_volume_evidence_wire_contract(code, evidence):
         validator = jsonschema.Draft202012Validator(
             {"$ref": f"urn:openport#/components/schemas/{schema}"}, registry=contract.registry)
         validator.validate(value)
+
+
+@pytest.mark.parametrize("evidence", [
+    {}, {"underlying": "SPY"}, {"contract": "SPY   261022C00500000", "contracts": 2, "percent": 10},
+    {"underlying": "SPY", "order_dollar_delta": -500, "held_dollar_delta": 1000, "volume": 10},
+])
+def test_rule_evidence_rejects_incomplete_or_mixed_shapes(evidence):
+    validator = jsonschema.Draft202012Validator(
+        {"$ref": "urn:openport#/components/schemas/RuleEvidence"}, registry=Contract("", None, SPEC).registry)
+    with pytest.raises(jsonschema.ValidationError):
+        validator.validate(evidence)

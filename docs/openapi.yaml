@@ -9209,7 +9209,7 @@
             "type": "integer",
             "minimum": 0,
             "maximum": 100,
-            "description": "Maximum share of attempt profit from positive net P&L of short closed option/share round trips. Set with microscalp_seconds; 0 disables, 1-100 enables. Evaluation only."
+            "description": "Maximum share of attempt profit from positive net P&L of short closed option/share round trips. Set with microscalp_seconds; 0 disables, 1-100 enables. Evaluation and verification only."
           },
           "no_hedging": {
             "type": "boolean",
@@ -18521,7 +18521,7 @@
                         "type": "integer",
                         "minimum": 0,
                         "maximum": 100,
-                        "description": "Maximum share of attempt profit from positive net P&L of short closed option/share round trips. Set with microscalp_seconds; 0 disables, 1-100 enables. Evaluation only."
+                        "description": "Maximum share of attempt profit from positive net P&L of short closed option/share round trips. Set with microscalp_seconds; 0 disables, 1-100 enables. Evaluation and verification only."
                       },
                       "evaluation_fee": {
                         "type": "string",
@@ -20350,7 +20350,8 @@
               "COUNTER_POSITION",
               "MAX_VOLUME_SHARE",
               "NEWS_BLACKOUT",
-              "HOLD_RESTRICTED"
+              "HOLD_RESTRICTED",
+              "RESET_LIMIT"
             ]
           },
           "message": {
@@ -21257,7 +21258,7 @@
             "type": "integer",
             "minimum": 0,
             "maximum": 100,
-            "description": "Maximum share of attempt profit from positive net P&L of short closed option/share round trips. Set with microscalp_seconds; 0 disables, 1-100 enables. Evaluation only."
+            "description": "Maximum share of attempt profit from positive net P&L of short closed option/share round trips. Set with microscalp_seconds; 0 disables, 1-100 enables. Evaluation and verification only."
           },
           "no_hedging": {
             "type": "boolean",
@@ -23514,45 +23515,66 @@
         ]
       },
       "RuleEvidence": {
-        "type": "object",
-        "properties": {
-          "underlying": {
-            "type": "string"
-          },
-          "order_dollar_delta": {
-            "type": "number"
-          },
-          "held_dollar_delta": {
-            "type": "number"
-          },
-          "other_account": {
-            "type": "string",
-            "description": "Other live account ID for COUNTER_POSITION."
-          },
-          "contract": {
-            "type": "string",
-            "description": "Canonical OSI for MAX_VOLUME_SHARE."
-          },
-          "contracts": {
-            "type": "integer",
-            "minimum": 0,
-            "description": "Absolute held contracts plus this leg’s opening contracts."
-          },
-          "volume": {
-            "type": [
-              "integer",
-              "null"
+        "oneOf": [
+          {
+            "type": "object",
+            "properties": {
+              "underlying": {
+                "type": "string"
+              },
+              "order_dollar_delta": {
+                "type": "number"
+              },
+              "held_dollar_delta": {
+                "type": "number"
+              },
+              "other_account": {
+                "type": "string",
+                "description": "Other live account ID for COUNTER_POSITION."
+              }
+            },
+            "required": [
+              "underlying",
+              "order_dollar_delta",
+              "held_dollar_delta"
             ],
-            "minimum": 0,
-            "description": "Current-date traded contracts; null when unknown, invalid, future or stale."
+            "additionalProperties": false
           },
-          "percent": {
-            "type": "integer",
-            "minimum": 1,
-            "maximum": 100
+          {
+            "type": "object",
+            "properties": {
+              "contract": {
+                "type": "string",
+                "description": "Canonical OSI for MAX_VOLUME_SHARE."
+              },
+              "contracts": {
+                "type": "integer",
+                "minimum": 0,
+                "description": "Absolute held contracts plus this leg’s opening contracts."
+              },
+              "volume": {
+                "type": [
+                  "integer",
+                  "null"
+                ],
+                "minimum": 0,
+                "description": "Current-date traded contracts; null when unknown, invalid, future or stale."
+              },
+              "percent": {
+                "type": "integer",
+                "minimum": 1,
+                "maximum": 100
+              }
+            },
+            "required": [
+              "contract",
+              "contracts",
+              "volume",
+              "percent"
+            ],
+            "additionalProperties": false
           }
-        },
-        "additionalProperties": false
+        ]
       },
       "PlanReason": {
         "type": "string",
@@ -23579,7 +23601,9 @@
           "MICROSCALPING",
           "HEDGING",
           "COUNTER_POSITION",
-          "MAX_VOLUME_SHARE"
+          "MAX_VOLUME_SHARE",
+          "NEWS_BLACKOUT",
+          "HOLD_RESTRICTED"
         ],
         "description": "Plan objectives, decisions and trading restrictions, also enforced during verification. Generic Decision and Error codes may include other reasons; reset refusals are documented by ResetReason."
       },
