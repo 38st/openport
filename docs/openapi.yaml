@@ -18146,7 +18146,7 @@
                         "type": "integer",
                         "minimum": 0,
                         "maximum": 366,
-                        "description": "Calendar days; zero disables. Evaluation phase only; expires after the deadline date."
+                        "description": "Calendar days; zero disables. Evaluation and verification only; funded requires zero."
                       },
                       "inactivity_days": {
                         "type": "integer",
@@ -18192,6 +18192,10 @@
                         "anyOf": [
                           {
                             "const": "evaluation",
+                            "type": "string"
+                          },
+                          {
+                            "const": "verification",
                             "type": "string"
                           },
                           {
@@ -18518,11 +18522,33 @@
                         "minimum": 0,
                         "maximum": 100,
                         "description": "Maximum share of attempt profit from positive net P&L of short closed option/share round trips. Set with microscalp_seconds; 0 disables, 1-100 enables. Evaluation only."
+                      },
+                      "evaluation_fee": {
+                        "type": "string",
+                        "pattern": "^\\d+(\\.\\d{1,6})?$",
+                        "description": "Nonnegative bookkeeping program cost; defaults to zero and does not change paper balances."
+                      },
+                      "reset_fee": {
+                        "type": "string",
+                        "pattern": "^\\d+(\\.\\d{1,6})?$",
+                        "description": "Nonnegative bookkeeping program cost; defaults to zero and does not change paper balances."
+                      },
+                      "activation_fee": {
+                        "type": "string",
+                        "pattern": "^\\d+(\\.\\d{1,6})?$",
+                        "description": "Nonnegative bookkeeping program cost; defaults to zero and does not change paper balances."
+                      },
+                      "max_resets": {
+                        "type": "integer",
+                        "minimum": 0,
+                        "maximum": 1000000,
+                        "default": 0,
+                        "description": "Same-plan reset allowance; zero (default) is unlimited."
                       }
                     },
                     "required": [],
                     "additionalProperties": false,
-                    "description": "Unspecified rules use AccountRules defaults; expiry_cutoff is nanoseconds. Custom funded rules accept phase: funded and payouts (decimal money, consistency_percents and buffer_payouts integers). Funded backtests do not withdraw automatically; funded preset IDs remain refused.",
+                    "description": "Unspecified rules use AccountRules defaults; expiry_cutoff is nanoseconds. Custom evaluation and verification rules require a positive target. Custom funded rules require payouts and can enable size_scaling; they do not withdraw automatically. Locked verification and funded preset IDs remain refused. Program fees are decimal-string bookkeeping costs, independent of paper balances.",
                     "allOf": [
                       {
                         "if": {

@@ -44,3 +44,20 @@ def test_cost_settings_pass_through_create_and_reset(stub):
     assert stub.requests[-1][3] == {"reason": "cost test", **settings}
     client.create_account("Challenge", **settings)
     assert stub.requests[-1][3] == {"name": "Challenge", **settings}
+
+
+def test_verification_backtests_keep_scaling_and_program_fee_contracts():
+    contract = Contract("", None, SPEC)
+    validator = jsonschema.Draft202012Validator(
+        {"$ref": "urn:openport#/components/schemas/BacktestRequest"}, registry=contract.registry)
+    rules = {"phase": "verification", "profit_target": "2500.00", "time_limit_days": 30,
+             "scaling": [{"profit": "0.00", "contracts": 2}], "size_scaling": None,
+             "evaluation_fee": "100.000001", "reset_fee": "25.000002", "activation_fee": "50.000003", "max_resets": 2}
+    request = {"playbook": "sample", "scenarios": 1, "seed": 0, "plan": {"initial_cash": "50000.00", "rules": rules}}
+    validator.validate(request)
+    for key, value in [("reset_fee", 25), ("evaluation_fee", "-1"), ("max_resets", 1.5),
+                       ("phase", "unknown"), ("payouts", {"qualifying_days": 1}),
+                       ("size_scaling", {"profit_percent": 1, "payouts": 0, "days": 1,
+                                         "increase_percent": 25, "max_balance": "100000"})]:
+        with pytest.raises(jsonschema.ValidationError):
+            validator.validate({**request, "plan": {**request["plan"], "rules": {**rules, key: value}}})

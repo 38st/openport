@@ -420,7 +420,8 @@ BacktestRequest parse_backtest(const json& body, const json& catalogue,
     for (const auto& [key, value] : plan.at("rules").items()) {
       if (!rules.contains(key)) throw std::invalid_argument("Unknown plan rule: " + key);
       if (key == "profit_target" || key == "max_drawdown" || key == "lock_balance" || key == "daily_loss_limit" ||
-          key == "profitable_day_profit" || key == "max_trade_risk")
+          key == "profitable_day_profit" || key == "max_trade_risk" ||
+          key == "evaluation_fee" || key == "reset_fee" || key == "activation_fee")
         rules[key] = decimal(value, "plan rules " + key).micros();
       else if (key == "drawdown_mode") {
         choice(value, key, {"intraday", "end_of_day", "static"});
@@ -455,8 +456,9 @@ BacktestRequest parse_backtest(const json& body, const json& catalogue,
         if (value != "margin" && value != "cash" && value != "ira") throw std::invalid_argument("Unknown account_type");
         rules[key] = value;
       } else if (key == "phase") {
-        choice(value, key, {"evaluation", "funded"});
-        rules[key] = value == "funded" ? trading::Phase::Funded : trading::Phase::Evaluation;
+        choice(value, key, {"evaluation", "verification", "funded"});
+        rules[key] = value == "funded" ? trading::Phase::Funded
+                   : value == "verification" ? trading::Phase::Verification : trading::Phase::Evaluation;
       } else if (key == "size_scaling") {
         if (value.is_null()) { rules[key] = nullptr; continue; }
         keys(value, {"profit_percent", "payouts", "days", "increase_percent", "max_balance"});
@@ -500,9 +502,11 @@ BacktestRequest parse_backtest(const json& body, const json& catalogue,
   if (result.config.rules.size_scaling && result.config.rules.size_scaling->max_balance < result.config.initial_cash)
     throw trading::TradingError(trading::Reason::INVALID_RULES, "Account size scaling maximum must be at least the starting balance");
   const bool custom_funded = plan.is_object() && result.config.rules.phase == trading::Phase::Funded;
+  const bool target_phase = result.config.rules.phase == trading::Phase::Evaluation ||
+      (plan.is_object() && result.config.rules.phase == trading::Phase::Verification);
   if (result.config.initial_cash <= Money{} || result.config.fee_per_contract < Money{} ||
-      (!custom_funded && (result.config.rules.phase != trading::Phase::Evaluation || result.config.rules.profit_target <= Money{})))
-    throw std::invalid_argument("Backtests require positive cash, nonnegative fees and an evaluation target or custom funded rules");
+      (!custom_funded && (!target_phase || result.config.rules.profit_target <= Money{})))
+    throw std::invalid_argument("Backtests require positive cash, nonnegative fees and an evaluation/verification target or custom funded rules");
   if (body.contains("days") == body.contains("scenarios")) throw std::invalid_argument("Supply days or scenarios, exclusively");
   json days;
   if (body.contains("scenarios")) {

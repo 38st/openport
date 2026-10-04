@@ -304,6 +304,7 @@ it("renders size reviews, history, plan facts and the existing rule notice", () 
     profit_percent: 10, payouts: 2, days: 80, increase_percent: 25, max_balance: "100000.00" },
     time_limit_days: 0, inactivity_days: 14, underlyings: ["SPX"], trading_start: "09:30", trading_end: "16:00",
     flat_time: "15:45", no_overnight: true,
+    evaluation_fee: "100.000001", reset_fee: "25.000002", activation_fee: "50.000003", max_resets: 2,
     scaling: [{ profit: "0.00", contracts: 2 }] },
     evaluation: { ...planned.evaluation, day: "2026-09-24", size_scaling } }
   const text = renderToStaticMarkup(<SizeScalingProgress status={size_scaling} />)
@@ -316,6 +317,8 @@ it("renders size reviews, history, plan facts and the existing rule notice", () 
   for (const text of ["Scaling plan", "Inactivity limit", "Allowed underlyings", "Opening hours", "Mandatory flat time", "No overnight holds"])
     expect(allRules).toContain(text)
   for (const text of ["Scaling", "Inactivity limit", "Allowed underlyings", "Opening hours", "Flat by 15:45", "OVERNIGHT_HOLD"])
+    expect(facts).toContain(text)
+  for (const text of ["Purchase $100.00", "reset $25.00", "activation $50.00", "2 resets per plan"])
     expect(facts).toContain(text)
   expect(ruleAlerts(scaled, risk).map((a) => a.title)).toContain("Account size increased")
   expect(ruleAlerts({ ...scaled, evaluation: { ...scaled.evaluation, day: "2026-09-25" } }, risk).map((a) => a.title)).not.toContain("Account size increased")

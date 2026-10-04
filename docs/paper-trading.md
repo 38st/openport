@@ -2161,7 +2161,10 @@ and `unlocks` (preset IDs); `GET /api/account` exposes `next_plans`, an empty li
 unless its current passed preset unlocks a next step. Resetting consumes that
 current pass; an older attempt's pass cannot unlock a different step later.
 Custom rules can use `phase: "verification"` and the same optional target, floor,
-daily-loss and objective rules as evaluation. They cannot borrow a preset's name
+daily-loss and objective rules as evaluation. Custom backtests also accept
+verification with a positive target, contract scaling and program fees; payouts
+and account-size growth remain funded-only. Locked verification and funded preset
+IDs are still refused by backtests. They cannot borrow a preset's name
 with different trading rules, or use read-back rules to bypass its lock.
 
 | Step | Phase | Closed-balance target | Minimum trading days | Loss rules |

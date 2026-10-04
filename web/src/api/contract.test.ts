@@ -249,3 +249,15 @@ it("keeps plan and reset reason codes aligned with OpenAPI", () => {
       .toEqual([...schemas[name].enum].sort())
   }
 })
+
+it("accepts verification backtests with contract scaling and exact program fees", () => {
+  const request: BacktestStart = { playbook: "sample", scenarios: 1, seed: "0", plan: { initial_cash: "50000",
+    rules: { phase: "verification", profit_target: "2500", time_limit_days: 30,
+      scaling: [{ profit: "0.00", contracts: 2 }], size_scaling: null,
+      evaluation_fee: "100.000001", reset_fee: "25.000002", activation_fee: "50.000003", max_resets: 2 } } }
+  expect(request.plan).toHaveProperty("rules.phase", "verification")
+  const rules = JSON.parse(specText).components.schemas.BacktestRequest.properties.plan.oneOf[1].properties.rules.properties
+  expect(wireType(rules.phase)).toBe(normalize('"evaluation" | "verification" | "funded"'))
+  for (const key of ["evaluation_fee", "reset_fee", "activation_fee"]) expect(wireType(rules[key])).toBe("string")
+  expect(wireType(rules.max_resets)).toBe("integer")
+})

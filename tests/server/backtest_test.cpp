@@ -531,8 +531,10 @@ TEST(Backtest, CustomFundedSizeScalingAcceptsExactMoneyAndValidatesTypesAndRange
     auto bad = rules; bad["size_scaling"][key] = value;
     EXPECT_THROW((void)parse(bad), std::exception);
   }
-  auto evaluation = rules; evaluation["phase"] = "evaluation"; evaluation.erase("payouts"); evaluation["profit_target"] = "100";
-  EXPECT_THROW((void)parse(evaluation), trading::TradingError);
+  for (const auto* phase : {"evaluation", "verification"}) {
+    auto evaluation = rules; evaluation["phase"] = phase; evaluation.erase("payouts"); evaluation["profit_target"] = "100";
+    EXPECT_THROW((void)parse(evaluation), trading::TradingError);
+  }
   rules["size_scaling"] = nullptr;
   EXPECT_FALSE(parse(rules).config.rules.size_scaling);
 }
@@ -554,6 +556,42 @@ TEST(Backtest, CustomScalingRulesKeepExactThresholdsAndValidateSteps) {
     auto invalid = rules; invalid["scaling"] = bad;
     EXPECT_THROW((void)parse(invalid), std::exception);
   }
+}
+
+TEST(Backtest, VerificationKeepsScalingTimeRulesAndExactProgramCosts) {
+  const auto definitions = catalogue();
+  const auto& scenarios = providers::builtin_scenarios();
+  json rules{{"phase", "verification"}, {"profit_target", "100"}, {"time_limit_days", 30},
+      {"scaling", {{{"profit", "0"}, {"contracts", 2}}}}, {"size_scaling", nullptr},
+      {"evaluation_fee", "100.000001"}, {"reset_fee", "25.000002"}, {"activation_fee", "50.000003"}, {"max_resets", 2}};
+  const auto parse = [&](const json& settings) {
+    return server::parse_backtest({{"playbook", "batch"}, {"plan", {{"initial_cash", "10000"}, {"rules", settings}}},
+        {"scenarios", 1}, {"seed", 0}}, definitions, scenarios, {});
+  };
+  auto parsed = parse(rules);
+  EXPECT_EQ(parsed.config.rules.phase, trading::Phase::Verification);
+  EXPECT_EQ(parsed.config.rules.time_limit_days, 30);
+  EXPECT_EQ(parsed.config.rules.scaling.front().contracts, 2);
+  EXPECT_EQ(parsed.config.rules.evaluation_fee, Money::parse("100.000001"));
+  EXPECT_EQ(parsed.config.rules.reset_fee, Money::parse("25.000002"));
+  EXPECT_EQ(parsed.config.rules.activation_fee, Money::parse("50.000003"));
+  EXPECT_EQ(parsed.config.rules.max_resets, 2);
+  for (const auto& [key, value] : std::vector<std::pair<std::string, json>>{
+      {"evaluation_fee", -1}, {"evaluation_fee", "-1"}, {"reset_fee", 25}, {"activation_fee", "-0.000001"},
+      {"max_resets", 1.5}, {"max_resets", -1}, {"max_resets", 1000001}, {"phase", "unknown"},
+      {"payouts", {{"qualifying_days", 1}}}, {"profit_target", "0"}}) {
+    auto bad = rules; bad[key] = value;
+    EXPECT_THROW((void)parse(bad), std::exception) << key;
+  }
+  for (const auto* preset : {"two-step-verify-25k", "two-step-funded-25k"})
+    EXPECT_THROW((void)server::parse_backtest({{"playbook", "batch"}, {"plan", preset}, {"scenarios", 1}, {"seed", 0}},
+        definitions, scenarios, {}), std::invalid_argument);
+  test::RecordingFile storage;
+  parsed.days = request_for({recorded_day(storage.directory, {2026, 9, 14})}).days;
+  const std::atomic_bool cancel{false};
+  const auto report = server::run_backtest(parsed, storage.directory / "verification", cancel);
+  EXPECT_EQ(report.at("status"), "completed") << report.dump();
+  ASSERT_FALSE(report.at("attempts").empty());
 }
 
 TEST(Backtest, ScalingRefusesAutomaticEntriesAndTheJournalVerifies) {
