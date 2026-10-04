@@ -637,6 +637,7 @@ void Desk::start_trading() {
         {"calendar", md::scheduled_days()}, {"analytics", options_.analytics}, {"dividends", dividends_}, {"symbols", subscription_.underlyings}};
     if (options_.instant_batches) start["driver"] = !options_.closing_rollover ? 2 : inputs_first() ? (options_.opening_settlement ? (options_.playbook_cancel_labels ? 6 : 5) : 4) : 3;
     if (options_.opening_rule_checks) start["opening_rule_checks"] = true;
+    if (options_.opening_rule_checks && options_.compact_opening_rule_inputs) start["compact_opening_rule_inputs"] = true;
     if (playbooks_ && (!options_.initial_playbooks.empty() || !playbooks_->catalogue().at("definitions").empty())) start["playbooks"] = playbooks_->catalogue();
     record_input(start.dump(), options_.initial_actor);
     if (options_.resume) {
@@ -1221,7 +1222,7 @@ void Desk::update_trading(const std::vector<md::Event>& batch,
     // last session of the one before (curb) does, or at the plan's own boundary.
     const auto day = session.trading_date(market_time_);
     try {
-      session.set_opening_rule_inputs(opening_rule_inputs(account, market_time_));
+      session.set_opening_rule_inputs(opening_rule_inputs(account, market_time_), options_.compact_opening_rule_inputs);
       const auto roll = [&] {
         if (!batch.empty() && day > session.trading_day() &&
             md::market_session(md::new_york_to_utc(day, 12, 0)).open &&
@@ -1388,7 +1389,7 @@ void Desk::update_trading(const std::vector<md::Event>& batch,
         const auto price = quote_price(value);
         if (price) indicators.push_back({symbol, study, current(symbol) ? market_time_ : m->as_of, *price});
       }
-      session.set_opening_rule_inputs(opening_rule_inputs(account, market_time_));
+      session.set_opening_rule_inputs(opening_rule_inputs(account, market_time_), options_.compact_opening_rule_inputs);
       session.on_quotes(quotes, valuations, market_time_, stocks, indicators);
       sample_equity(account);
       // Each account keeps the closing print its PM positions will settle on, so
@@ -1669,7 +1670,7 @@ void Desk::apply_command(PendingCommand& pending, md::Timestamp market_time, md:
       return {};
     };
     try {
-      session.set_opening_rule_inputs(opening_rule_inputs(*account, market_time_));
+      session.set_opening_rule_inputs(opening_rule_inputs(*account, market_time_), options_.compact_opening_rule_inputs);
       CommandResult result;
       switch (c.kind) {
         case TradingCommand::Kind::Playbook: playbook_command(c, reply, driver_time); break;
@@ -1938,7 +1939,11 @@ Desk::Desk(std::string provider, md::Capabilities capabilities, md::Subscription
       capabilities_(capabilities), dividends_(options_.dividends) {
   if (options_.resume) {
     const auto inputs = run_inputs(*options_.resume);
-    if (!inputs.empty()) options_.opening_rule_checks = nlohmann::json::parse(inputs.front()).value("opening_rule_checks", false);
+    if (!inputs.empty()) {
+      const auto start = nlohmann::json::parse(inputs.front());
+      options_.opening_rule_checks = start.value("opening_rule_checks", false);
+      options_.compact_opening_rule_inputs = start.value("compact_opening_rule_inputs", false);
+    }
   }
   if (!options_.run_input.empty() && options_.analytics.discount_curve)
     throw std::invalid_argument("Reproducible runs require curves inferred from their input, not an external discount curve");

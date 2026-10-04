@@ -851,6 +851,45 @@ TEST(TradeRules, VolumeFillsSeeOtherOrdersFilledEarlierInTheSameBatch) {
   EXPECT_EQ(snapshot->recent_fills.size(), 1U);
 }
 
+TEST(TradeRules, OpeningFillJournalContainsOnlyTheAttemptedLegsAndUnderlyings) {
+  for (const bool compact : {false, true}) {
+    JournalFile file;
+    ScriptedMarket f, other;
+    other.contract.strike += 5;
+    AccountRules rules; rules.max_volume_percent = 10; rules.no_counter_positions = true;
+    TradingSession s(config(rules), f.time, FileJournal::create(file.path));
+    f.seed(s); other.seed(s);
+    OpeningRuleInputs inputs;
+    inputs.volumes = {{f.symbol(), 100}, {other.symbol(), std::nullopt}, {"unused", 9000}};
+    inputs.counter_positions = {{"unrelated", "QQQ", std::nullopt}, {"first", "SPX", 100},
+                               {"second", "SPY", 100}, {"third", "SPX", 200}};
+    s.set_opening_rule_inputs(inputs, compact);
+    auto request = f.market("combo");
+    request.symbol.clear(); request.legs = {{f.symbol(), Side::Buy, 1}, {other.symbol(), Side::Buy, 1}};
+    ASSERT_TRUE(s.submit(request, f.time).decision.ok());
+    EXPECT_EQ(s.snapshot()->recent_orders.back().reason.code, Reason::MAX_VOLUME_SHARE);
+    const auto recovery = FileJournal::read(file.path);
+    EXPECT_EQ(TradingSession::recover(recovery).snapshot_json(), s.snapshot_json());
+    std::size_t count = 0;
+    for (const auto& record : recovery.records) {
+      const auto payload = Json::parse(record.payload);
+      for (const auto& event : payload.at("events")) {
+        if (event.at("type") != "opening_rule_inputs") continue;
+        ++count;
+        const auto& recorded = event.at("payload").at("inputs");
+        auto expected = Json(inputs);
+        if (compact) {
+          expected["volumes"].erase("unused");
+          expected["counter_positions"].erase(2);
+          expected["counter_positions"].erase(0);
+        }
+        EXPECT_EQ(recorded, expected);
+      }
+    }
+    EXPECT_EQ(count, 1U);
+  }
+}
+
 TEST(TradeRules, ComboFillChecksEveryRatioAndKeepsRuleCancellationCode) {
   ScriptedMarket f, other;
   other.contract.strike += 5;

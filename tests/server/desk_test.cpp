@@ -293,6 +293,90 @@ TEST(Desk, VolumeFillRechecksVerifyAndOlderRecordedRunsKeepAcceptanceOnlyFills) 
   }
 }
 
+TEST(Desk, CompactAndFullOpeningInputRunsRecoverVerifyAndResumeByteIdentically) {
+  test::RecordingFile file;
+  test::ScriptedMarket market, unused;
+  unused.contract.strike += 5;
+  auto header = test::recording_header();
+  header.started = market.time; header.capabilities.delay = 0s;
+  md::RecordingSink::Options recording;
+  recording.clock = [&] { return market.time; };
+  test::DiscardEvents discard;
+  {
+    md::RecordingSink sink(file.path, header, discard, recording);
+    for (const double ask : {4.2, 4.0}) {
+      auto batch = market_batch(market, unused, ask);
+      batch.insert(batch.end() - 1, md::OptionVolume{0, market.time, 100});
+      batch.insert(batch.end() - 1, md::OptionVolume{1, market.time, 100});
+      for (const auto& event : batch) sink.publish(event);
+      market.next();
+    }
+    sink.close();
+  }
+  for (const bool compact : {false, true}) {
+    server::Desk::Options options;
+    options.analytics.fallback_rate = 0;
+    options.replay = true; options.compact_opening_rule_inputs = compact;
+    options.paper.rules.max_volume_percent = 10;
+    options.run_input = server::recording_input(file.path);
+    options.paper_journal = file.directory / (compact ? "compact.jsonl" : "full.jsonl");
+    std::string snapshot;
+    {
+      server::Desk desk("replay", header.capabilities, header.subscription, options);
+      desk.start_trading();
+      md::RecordingReader reader(file.path);
+      providers::ReplayBatches batches(reader, header.subscription);
+      bool submitted = false;
+      while (const auto batch = batches.next()) {
+        desk.replay_batch(batch->events, batch->received, batch->time);
+        if (submitted) continue;
+        server::TradingCommand entry; entry.order = unused.limit("unused", 1, "0.90");
+        const auto resting = command(desk, entry, desk.market_time(), batch->received);
+        ASSERT_TRUE(resting.decision.ok()) << resting.decision.message;
+        server::TradingCommand cancel; cancel.kind = server::TradingCommand::Kind::Cancel;
+        cancel.order_id = *resting.order_id;
+        ASSERT_TRUE(command(desk, cancel, desk.market_time(), batch->received).decision.ok());
+        entry.order = market.limit("fill", 1, "4.00");
+        ASSERT_TRUE(command(desk, entry, desk.market_time(), batch->received).decision.ok());
+        submitted = true;
+      }
+      snapshot = json(*desk.trading_view()->snapshot).dump();
+      desk.stop();
+    }
+    const auto recovery = trading::FileJournal::read(options.paper_journal);
+    EXPECT_EQ(trading::TradingSession::recover(recovery).snapshot_json(), snapshot);
+    const auto start = json::parse(server::run_inputs(recovery).front());
+    EXPECT_EQ(start.contains("compact_opening_rule_inputs"), compact);
+    std::size_t checks = 0;
+    for (const auto& record : recovery.records) {
+      const auto payload = json::parse(record.payload);
+      for (const auto& event : payload.at("events")) {
+        if (event.at("type") != "opening_rule_inputs") continue;
+        ++checks;
+        const auto& volumes = event.at("payload").at("inputs").at("volumes");
+        EXPECT_EQ(volumes.size(), compact ? 1U : 2U);
+        EXPECT_EQ(volumes.contains(unused.symbol()), !compact);
+      }
+    }
+    EXPECT_EQ(checks, 1U);
+    const auto verified = server::verify_run(options.paper_journal);
+    EXPECT_TRUE(verified.matched) << verified.message;
+    const auto original = read_file(options.paper_journal);
+    options.resume = std::make_shared<trading::JournalRecovery>(recovery);
+    options.compact_opening_rule_inputs = !compact; // Resume must use the recorded choice.
+    {
+      server::Desk desk("replay", header.capabilities, header.subscription, options);
+      desk.start_trading();
+      md::RecordingReader reader(file.path);
+      providers::ReplayBatches batches(reader, header.subscription);
+      while (const auto batch = batches.next()) desk.replay_batch(batch->events, batch->received, batch->time);
+      EXPECT_EQ(json(*desk.trading_view()->snapshot).dump(), snapshot);
+      desk.stop();
+    }
+    EXPECT_EQ(read_file(options.paper_journal), original);
+  }
+}
+
 TEST(Desk, OrderChainsDefineUnreferencedContractsBeforeAcceptanceAndFill) {
   test::ScriptedMarket market;
   test::ScriptedMarket other;

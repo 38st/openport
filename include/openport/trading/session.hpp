@@ -398,7 +398,8 @@ class TradingSession {
   void set_actor(std::string actor);
   /// Owner-thread fill context. Null retains legacy acceptance-only behavior.
   /// This supplies values, never a callback; checks journal the values they use.
-  void set_opening_rule_inputs(std::optional<OpeningRuleInputs> inputs);
+  /// Full records are retained only when reproducing runs predating compact inputs.
+  void set_opening_rule_inputs(std::optional<OpeningRuleInputs> inputs, bool compact = true);
   /// Journal a driver input without introducing a clock or an external dependency.
   void record_input(std::string_view input, Timestamp time);
   TradingSession(TradingSession&&) noexcept;

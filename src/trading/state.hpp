@@ -728,6 +728,7 @@ struct State {
   std::optional<TradeObjectives> trade_objectives;
   std::string actor = "system"; ///< Transient command context, not persisted as account state.
   std::optional<OpeningRuleInputs> opening_rule_inputs; ///< Transient explicit fill inputs; recorded as events.
+  bool compact_opening_rule_inputs = true; ///< Transient wire compatibility for recorded runs.
   std::set<std::string> walked; ///< Transient symbols to match after this transaction's market is in place.
   SessionConfig config;
   Timestamp time = 0;

@@ -540,7 +540,15 @@ Decision opening_fill_check(const State& s, const Order& order, Quantity quantit
   request.quantity = quantity;
   const auto exposure = opening_exposure(s, request);
   if (!exposure.opening) return {};
-  event(events, "opening_rule_inputs", Json{{"order_id", order.id}, {"quantity", quantity}, {"inputs", inputs}});
+  OpeningRuleInputs used;
+  if (s.compact_opening_rule_inputs) {
+    for (const auto& [symbol, opening] : exposure.contracts)
+      if (const auto it = inputs.volumes.find(symbol); it != inputs.volumes.end()) used.volumes.insert(*it);
+    for (const auto& other : inputs.counter_positions)
+      if (exposure.dollar_delta.contains(other.underlying)) used.counter_positions.push_back(other);
+  }
+  event(events, "opening_rule_inputs", Json{{"order_id", order.id}, {"quantity", quantity},
+      {"inputs", s.compact_opening_rule_inputs ? used : inputs}});
   if (!exposure.decision.ok() && (counter || exposure.decision.code != Reason::MISSING_VALUATION)) return exposure.decision;
   if (counter)
     if (const auto d = counter_position_check(exposure.dollar_delta, inputs.counter_positions); !d.ok()) return d;
@@ -4820,6 +4828,7 @@ PayoutQuote payout_quote(const TradingSnapshot& s, const AccountRules& rules) {
 struct TradingSession::Impl {
   State state;
   std::optional<OpeningRuleInputs> opening_rule_inputs;
+  bool compact_opening_rule_inputs = true;
   std::string actor = "system";
   std::shared_ptr<Journal> journal;
   std::shared_ptr<const TradingSnapshot> snapshot;
@@ -4847,6 +4856,7 @@ struct TradingSession::Impl {
     if (stopped) throw TradingError(Reason::JOURNAL_IO, "Trading stopped after journal failure; recover first");
     State next = state;
     next.opening_rule_inputs = opening_rule_inputs;
+    next.compact_opening_rule_inputs = compact_opening_rule_inputs;
     Events events;
     advance(next, time, events);
     // Quote batches install their new book before monitor_rules closes positions.
@@ -4938,8 +4948,9 @@ TradingSession::TradingSession(SessionConfig config, Timestamp time, std::shared
 TradingSession::TradingSession(std::unique_ptr<Impl> impl) : impl_(std::move(impl)) {}
 TradingSession::~TradingSession() = default;
 void TradingSession::set_actor(std::string actor) { impl_->actor = std::move(actor); }
-void TradingSession::set_opening_rule_inputs(std::optional<OpeningRuleInputs> inputs) {
+void TradingSession::set_opening_rule_inputs(std::optional<OpeningRuleInputs> inputs, bool compact) {
   impl_->opening_rule_inputs = std::move(inputs);
+  impl_->compact_opening_rule_inputs = compact;
 }
 void TradingSession::record_input(std::string_view input, Timestamp time) {
   const auto data = Json::parse(input);

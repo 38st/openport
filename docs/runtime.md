@@ -1573,7 +1573,13 @@ behavior during replay; old account journals still recover their recorded rules.
 
 New run starts record optional `opening_rule_checks: true`. Verification and crash
 resume use its recorded value; absence preserves older runs’ acceptance-only
-volume checks. At fill, `opening_rule_inputs` events record the external values
-used by the deterministic reducer. These are transaction inputs, not callbacks or
+volume checks. New starts also record `compact_opening_rule_inputs: true`: at fill,
+`opening_rule_inputs` events retain volume entries only for the attempted order's
+legs and counter exposures only for the underlyings in its direction calculation,
+in their original order. Missing volume entries remain missing. The check still
+uses the complete supplied inputs, including whether any counter exposures exist
+when direction cannot be established. Older runs without this flag reproduce
+their full input maps byte for byte during verification and crash resume; both
+event forms recover as recorded outcomes. These are transaction inputs, not callbacks or
 persistent account settings. Restarted live desks supply fresh inputs before
 matching; archived, replay and sandbox accounts remain outside cross-account checks.
