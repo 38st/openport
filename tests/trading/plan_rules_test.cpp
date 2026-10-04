@@ -309,10 +309,13 @@ TEST(ProgramCosts, TradingRestrictionsStartANewPurchaseButExecutionMarginAndCost
   auto rules = plan(); rules.phase = Phase::Verification; rules.buying_power = true;
   rules.evaluation_fee = m("100.000001"); rules.reset_fee = m("25.000002"); rules.max_resets = 1;
   rules.trading_start = 9 * 60; rules.trading_end = 16 * 60;
+  rules.microscalp_seconds = 30;
   const Json encoded = rules;
   const Json restrictions{{"time_limit_days", 30}, {"inactivity_days", 14}, {"underlyings", {"SPX"}},
       {"trading_start", 9 * 60 + 30}, {"trading_end", 15 * 60}, {"flat_time", 15 * 60 + 45},
-      {"no_overnight", true}};
+      {"no_overnight", true}, {"trade_consistency_percent", 40}, {"min_trades", 2},
+      {"min_hold_seconds", 60}, {"microscalp_seconds", 60}, {"microscalp_percent", 25},
+      {"no_hedging", true}, {"no_counter_positions", true}, {"max_volume_percent", 25}};
   for (const auto& [key, value] : restrictions.items()) {
     SCOPED_TRACE(key);
     auto altered = encoded; altered[key] = value;

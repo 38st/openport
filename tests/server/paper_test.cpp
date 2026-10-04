@@ -4590,62 +4590,70 @@ TEST(PaperAvailability, EquityPagesKeepEqualTimeSamplesAndUnpagedReads) {
 }  // namespace
 
 TEST_F(PaperEngine, VolumeRuleRoundTripsAndExplainsUnknownVolumeInPreview) {
-  seed();
-  auto rules = read(*engine, "/api/account")["rules"];
-  rules["plan"] = "Volume share"; rules["max_volume_percent"] = 25;
-  const auto reset = [&](const json& r) {
-    return write(*engine, "POST", "/api/account/reset", {{"reason", "volume"}, {"initial_cash", "100000"}, {"rules", r}});
-  };
-  ASSERT_EQ(reset(rules).status, 200);
-  EXPECT_EQ(read(*engine, "/api/account")["rules"]["max_volume_percent"], 25);
-  const auto before = read(*engine, "/api/orders")["orders"];
-  const auto request = order(market, "unknown-volume", "4.20");
-  const auto preview = write(*engine, "POST", "/api/orders/preview", request);
-  ASSERT_EQ(preview.status, 200) << preview.body;
-  const auto reason = json::parse(preview.body)["reason"];
-  EXPECT_EQ(reason["code"], "MAX_VOLUME_SHARE");
-  EXPECT_EQ(reason["evidence"], (json{{"contract", market.symbol()}, {"contracts", 1}, {"volume", nullptr}, {"percent", 25}}));
-  const auto refused = write(*engine, "POST", "/api/orders", request);
-  ASSERT_EQ(refused.status, 422) << refused.body;
-  EXPECT_EQ(json::parse(refused.body)["error"]["evidence"], reason["evidence"]);
-  EXPECT_EQ(read(*engine, "/api/orders")["orders"], before);
-  test::capture_contract("volume-rule", "POST", "/api/orders/preview", preview);
-  test::capture_contract("volume-rule", "POST", "/api/orders", refused);
-  for (const auto& value : {json(-1), json(101), json(1.5), json(true), json(nullptr)}) {
-    auto bad = rules; bad["max_volume_percent"] = value;
-    EXPECT_EQ(reset(bad).status, 400);
+  for (const auto phase : {"evaluation", "verification"}) {
+    SCOPED_TRACE(phase);
+    seed();
+    auto rules = read(*engine, "/api/account")["rules"];
+    rules["phase"] = phase;
+    rules["plan"] = "Volume share"; rules["max_volume_percent"] = 25;
+    const auto reset = [&](const json& r) {
+      return write(*engine, "POST", "/api/account/reset", {{"reason", "volume"}, {"initial_cash", "100000"}, {"rules", r}});
+    };
+    ASSERT_EQ(reset(rules).status, 200);
+    EXPECT_EQ(read(*engine, "/api/account")["rules"]["max_volume_percent"], 25);
+    const auto before = read(*engine, "/api/orders")["orders"];
+    const auto request = order(market, "unknown-volume", "4.20");
+    const auto preview = write(*engine, "POST", "/api/orders/preview", request);
+    ASSERT_EQ(preview.status, 200) << preview.body;
+    const auto reason = json::parse(preview.body)["reason"];
+    EXPECT_EQ(reason["code"], "MAX_VOLUME_SHARE");
+    EXPECT_EQ(reason["evidence"], (json{{"contract", market.symbol()}, {"contracts", 1}, {"volume", nullptr}, {"percent", 25}}));
+    const auto refused = write(*engine, "POST", "/api/orders", request);
+    ASSERT_EQ(refused.status, 422) << refused.body;
+    EXPECT_EQ(json::parse(refused.body)["error"]["evidence"], reason["evidence"]);
+    EXPECT_EQ(read(*engine, "/api/orders")["orders"], before);
+    test::capture_contract("volume-rule", "POST", "/api/orders/preview", preview);
+    test::capture_contract("volume-rule", "POST", "/api/orders", refused);
+    for (const auto& value : {json(-1), json(101), json(1.5), json(true), json(nullptr)}) {
+      auto bad = rules; bad["max_volume_percent"] = value;
+      EXPECT_EQ(reset(bad).status, 400);
+    }
   }
 }
 
 TEST_F(PaperEngine, DirectionRulesRoundTripAndHedgingPreviewEvidence) {
-  seed();
-  auto rules = read(*engine, "/api/account")["rules"];
-  rules["plan"] = "Directions"; rules["no_hedging"] = true; rules["no_counter_positions"] = true;
-  const auto reset = [&](const json& r) {
-    return write(*engine, "POST", "/api/account/reset", {{"reason", "directions"}, {"initial_cash", "100000"}, {"rules", r}});
-  };
-  ASSERT_EQ(reset(rules).status, 200);
-  auto account = read(*engine, "/api/account");
-  EXPECT_EQ(account["rules"]["no_hedging"], true);
-  EXPECT_EQ(account["rules"]["no_counter_positions"], true);
-  ASSERT_EQ(write(*engine, "POST", "/api/orders", order(market, "long", "4.20")).status, 201);
-  auto reverse = order(market, "reverse", "4.00");
-  reverse["side"] = "sell"; reverse["quantity"] = 2;
-  const auto preview = write(*engine, "POST", "/api/orders/preview", reverse);
-  ASSERT_EQ(preview.status, 200) << preview.body;
-  const auto reason = json::parse(preview.body)["reason"];
-  EXPECT_EQ(reason["code"], "HEDGING");
-  EXPECT_EQ(reason["evidence"]["underlying"], "SPX");
-  EXPECT_LT(reason["evidence"]["order_dollar_delta"].get<double>(), 0);
-  EXPECT_GT(reason["evidence"]["held_dollar_delta"].get<double>(), 0);
-  const auto refused = write(*engine, "POST", "/api/orders", reverse);
-  ASSERT_EQ(refused.status, 422) << refused.body;
-  EXPECT_EQ(json::parse(refused.body)["error"]["evidence"], reason["evidence"]);
-  test::capture_contract("direction-rules", "POST", "/api/orders/preview", preview);
-  test::capture_contract("direction-rules", "POST", "/api/orders", refused);
-  for (const auto* key : {"no_hedging", "no_counter_positions"}) {
-    auto bad = rules; bad[key] = 1;
-    expect_error(reset(bad), 400, "INVALID_REQUEST");
+  for (const auto phase : {"evaluation", "verification"}) {
+    SCOPED_TRACE(phase);
+    seed();
+    auto rules = read(*engine, "/api/account")["rules"];
+    rules["phase"] = phase;
+    rules["plan"] = "Directions"; rules["no_hedging"] = true; rules["no_counter_positions"] = true;
+    const auto reset = [&](const json& r) {
+      return write(*engine, "POST", "/api/account/reset", {{"reason", "directions"}, {"initial_cash", "100000"}, {"rules", r}});
+    };
+    ASSERT_EQ(reset(rules).status, 200);
+    auto account = read(*engine, "/api/account");
+    EXPECT_EQ(account["rules"]["no_hedging"], true);
+    EXPECT_EQ(account["rules"]["no_counter_positions"], true);
+    ASSERT_EQ(write(*engine, "POST", "/api/orders", order(market, "long", "4.20")).status, 201);
+    auto reverse = order(market, "reverse", "4.00");
+    reverse["side"] = "sell"; reverse["quantity"] = 2;
+    const auto preview = write(*engine, "POST", "/api/orders/preview", reverse);
+    ASSERT_EQ(preview.status, 200) << preview.body;
+    const auto reason = json::parse(preview.body)["reason"];
+    EXPECT_EQ(reason["code"], "HEDGING");
+    EXPECT_EQ(reason["evidence"]["underlying"], "SPX");
+    EXPECT_LT(reason["evidence"]["order_dollar_delta"].get<double>(), 0);
+    EXPECT_GT(reason["evidence"]["held_dollar_delta"].get<double>(), 0);
+    const auto refused = write(*engine, "POST", "/api/orders", reverse);
+    ASSERT_EQ(refused.status, 422) << refused.body;
+    EXPECT_EQ(json::parse(refused.body)["error"]["evidence"], reason["evidence"]);
+    test::capture_contract("direction-rules", "POST", "/api/orders/preview", preview);
+    test::capture_contract("direction-rules", "POST", "/api/orders", refused);
+    for (const auto* key : {"no_hedging", "no_counter_positions"}) {
+      auto bad = rules; bad[key] = 1;
+      expect_error(reset(bad), 400, "INVALID_REQUEST");
+    }
   }
 }
 
@@ -4999,61 +5007,72 @@ TEST(EventCalendarApi, CsvAndFilteredReadRoute) {
 }  // namespace
 
 TEST_F(PaperEngine, TradeConsistencyCustomRulesRoundTrip) {
-  seed();
-  auto rules = read(*engine, "/api/account")["rules"];
-  rules["plan"] = "Trade consistency"; rules["trade_consistency_percent"] = 40; rules["min_trades"] = 2;
-  const auto reset = [&](const json& r) { return write(*engine, "POST", "/api/account/reset",
-      {{"reason", "F29"}, {"initial_cash", "100000"}, {"rules", r}}); };
-  ASSERT_EQ(reset(rules).status, 200);
-  const auto account = read(*engine, "/api/account");
-  EXPECT_EQ(account["rules"]["min_trades"], 2);
-  EXPECT_EQ(account["evaluation"]["closed_trades"], 0);
-  EXPECT_EQ(account["rules"]["trade_consistency_percent"], 40);
-  EXPECT_EQ(account["evaluation"]["best_trade"], nullptr);
-  EXPECT_EQ(account["evaluation"]["objectives"].back()["code"], "TRADE_CONSISTENCY");
-  rules["trade_consistency_percent"] = 101;
-  expect_error(reset(rules), 400, "INVALID_RULES");
-  rules["trade_consistency_percent"] = 1.5;
-  expect_error(reset(rules), 400, "INVALID_REQUEST");
+  for (const auto phase : {"evaluation", "verification"}) {
+    SCOPED_TRACE(phase);
+    seed();
+    auto rules = read(*engine, "/api/account")["rules"];
+    rules["phase"] = phase;
+    rules["plan"] = "Trade consistency"; rules["trade_consistency_percent"] = 40; rules["min_trades"] = 2;
+    rules["microscalp_seconds"] = 60; rules["microscalp_percent"] = 25;
+    const auto reset = [&](const json& r) { return write(*engine, "POST", "/api/account/reset",
+        {{"reason", "F29"}, {"initial_cash", "100000"}, {"rules", r}}); };
+    ASSERT_EQ(reset(rules).status, 200);
+    const auto account = read(*engine, "/api/account");
+    EXPECT_EQ(account["rules"]["min_trades"], 2);
+    EXPECT_EQ(account["evaluation"]["closed_trades"], 0);
+    EXPECT_EQ(account["evaluation"]["short_profit"], "0.00");
+    EXPECT_EQ(account["evaluation"]["objectives"].size(), 3U);
+    EXPECT_EQ(account["rules"]["trade_consistency_percent"], 40);
+    EXPECT_EQ(account["evaluation"]["best_trade"], nullptr);
+    EXPECT_EQ(account["evaluation"]["objectives"].back()["code"], "TRADE_CONSISTENCY");
+    rules["trade_consistency_percent"] = 101;
+    expect_error(reset(rules), 400, "INVALID_RULES");
+    rules["trade_consistency_percent"] = 1.5;
+    expect_error(reset(rules), 400, "INVALID_REQUEST");
+  }
 }
 
 TEST_F(PaperEngine, HoldingRulesRoundTripAndRefuseWithEvidence) {
-  seed();
-  auto rules = read(*engine, "/api/account")["rules"];
-  rules["plan"] = "Holding rules"; rules["min_hold_seconds"] = 60;
-  rules["microscalp_seconds"] = 30; rules["microscalp_percent"] = 25;
-  const auto reset = [&](const json& r) { return write(*engine, "POST", "/api/account/reset",
-      {{"reason", "F61"}, {"initial_cash", "100000"}, {"rules", r}}); };
-  ASSERT_EQ(reset(rules).status, 200);
-  const auto account = read(*engine, "/api/account");
-  EXPECT_EQ(account["rules"]["min_hold_seconds"], 60);
-  EXPECT_EQ(account["rules"]["microscalp_seconds"], 30);
-  EXPECT_EQ(account["rules"]["microscalp_percent"], 25);
-  EXPECT_EQ(account["evaluation"]["short_profit"], "0.00");
-  ASSERT_EQ(write(*engine, "POST", "/api/orders", order(market, "open-held", "4.20")).status, 201);
-  auto close = order(market, "young-close", "4.00"); close["side"] = "sell";
-  const auto preview = write(*engine, "POST", "/api/orders/preview", close);
-  ASSERT_EQ(preview.status, 200) << preview.body;
-  const auto p = json::parse(preview.body);
-  EXPECT_EQ(p["reason"]["code"], "MIN_HOLD");
-  EXPECT_EQ(p["reason"]["message"], "Held 0 seconds; this plan requires 60 seconds before a user reduction");
-  EXPECT_EQ(p["reason"]["actual"], 0);
-  EXPECT_EQ(p["reason"]["limit"], 60);
-  const auto refused = write(*engine, "POST", "/api/orders", close);
-  expect_error(refused, 422, "MIN_HOLD");
-  EXPECT_EQ(json::parse(refused.body)["error"]["scope"], market.contract.underlying);
-  for (const auto* key : {"min_hold_seconds", "microscalp_seconds", "microscalp_percent", "min_trades", "trade_consistency_percent"}) {
-    auto invalid = rules; invalid[key] = nullptr;
-    expect_error(reset(invalid), 400, "INVALID_REQUEST");
+  for (const auto phase : {"evaluation", "verification"}) {
+    SCOPED_TRACE(phase);
+    seed();
+    auto rules = read(*engine, "/api/account")["rules"];
+    rules["phase"] = phase;
+    rules["plan"] = "Holding rules"; rules["min_hold_seconds"] = 60;
+    rules["microscalp_seconds"] = 30; rules["microscalp_percent"] = 25;
+    const auto reset = [&](const json& r) { return write(*engine, "POST", "/api/account/reset",
+        {{"reason", "F61"}, {"initial_cash", "100000"}, {"rules", r}}); };
+    ASSERT_EQ(reset(rules).status, 200);
+    const auto account = read(*engine, "/api/account");
+    EXPECT_EQ(account["rules"]["min_hold_seconds"], 60);
+    EXPECT_EQ(account["rules"]["microscalp_seconds"], 30);
+    EXPECT_EQ(account["rules"]["microscalp_percent"], 25);
+    EXPECT_EQ(account["evaluation"]["short_profit"], "0.00");
+    ASSERT_EQ(write(*engine, "POST", "/api/orders", order(market, "open-held", "4.20")).status, 201);
+    auto close = order(market, "young-close", "4.00"); close["side"] = "sell";
+    const auto preview = write(*engine, "POST", "/api/orders/preview", close);
+    ASSERT_EQ(preview.status, 200) << preview.body;
+    const auto p = json::parse(preview.body);
+    EXPECT_EQ(p["reason"]["code"], "MIN_HOLD");
+    EXPECT_EQ(p["reason"]["message"], "Held 0 seconds; this plan requires 60 seconds before a user reduction");
+    EXPECT_EQ(p["reason"]["actual"], 0);
+    EXPECT_EQ(p["reason"]["limit"], 60);
+    const auto refused = write(*engine, "POST", "/api/orders", close);
+    expect_error(refused, 422, "MIN_HOLD");
+    EXPECT_EQ(json::parse(refused.body)["error"]["scope"], market.contract.underlying);
+    for (const auto* key : {"min_hold_seconds", "microscalp_seconds", "microscalp_percent", "min_trades", "trade_consistency_percent"}) {
+      auto invalid = rules; invalid[key] = nullptr;
+      expect_error(reset(invalid), 400, "INVALID_REQUEST");
+    }
+    auto unpaired = rules; unpaired.erase("microscalp_percent");
+    expect_error(reset(unpaired), 400, "INVALID_RULES");
+    auto disabled = rules; disabled["microscalp_percent"] = 0;
+    ASSERT_EQ(reset(disabled).status, 200);
+    rules["microscalp_seconds"] = 0;
+    expect_error(reset(rules), 400, "INVALID_RULES");
+    rules["microscalp_seconds"] = 30; rules["min_hold_seconds"] = 1.5;
+    expect_error(reset(rules), 400, "INVALID_REQUEST");
   }
-  auto unpaired = rules; unpaired.erase("microscalp_percent");
-  expect_error(reset(unpaired), 400, "INVALID_RULES");
-  auto disabled = rules; disabled["microscalp_percent"] = 0;
-  ASSERT_EQ(reset(disabled).status, 200);
-  rules["microscalp_seconds"] = 0;
-  expect_error(reset(rules), 400, "INVALID_RULES");
-  rules["microscalp_seconds"] = 30; rules["min_hold_seconds"] = 1.5;
-  expect_error(reset(rules), 400, "INVALID_REQUEST");
 }
 
 TEST(PaperAccounts, CreationAcceptsTradeAndHoldingObjectives) {

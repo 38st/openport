@@ -42,9 +42,16 @@ server::TradingReply command(server::Desk& desk, server::TradingCommand request,
   if (!result) throw std::runtime_error("Desk did not complete command");
   return *result;
 }
-TEST(Desk, VolumeShareGateChecksKnownUnknownStaleVolumeAndOpeningContracts) {
+class DeskPhases : public ::testing::TestWithParam<trading::Phase> {};
+INSTANTIATE_TEST_SUITE_P(NonFunded, DeskPhases,
+    ::testing::Values(trading::Phase::Evaluation, trading::Phase::Verification),
+    [](const ::testing::TestParamInfo<trading::Phase>& info) {
+      return info.param == trading::Phase::Verification ? "Verification" : "Evaluation";
+    });
+TEST_P(DeskPhases, VolumeShareGateChecksKnownUnknownStaleVolumeAndOpeningContracts) {
   test::ScriptedMarket market;
   server::Desk::Options options;
+  options.paper.rules.phase = GetParam();
   options.analytics.fallback_rate = 0;
   options.paper.rules.max_volume_percent = 10;
   options.paper.limits.aggregate = {1e9, 1e9}; options.paper.limits.per_underlying = {1e9, 1e9};
@@ -147,10 +154,11 @@ TEST(Desk, VolumeShareChecksEveryComboRatioWithAnExactPercentBoundaryInReplay) {
   desk.stop();
 }
 
-TEST(Desk, CounterPositionsGatePreviewsChangesChainsAndIgnoresArchivedAccounts) {
+TEST_P(DeskPhases, CounterPositionsGatePreviewsChangesChainsAndIgnoresArchivedAccounts) {
   test::RecordingFile file;
   test::ScriptedMarket market;
   server::Desk::Options options;
+  options.paper.rules.phase = GetParam();
   options.analytics.fallback_rate = 0;
   options.paper_journal = file.directory / "paper.jsonl";
   options.paper_accounts = file.directory / "accounts";

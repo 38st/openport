@@ -1250,7 +1250,7 @@ Evaluation fresh_evaluation(const State& s, std::uint64_t attempt) {
   e.cycle_started = s.time;
   e.first_order = static_cast<OrderId>(s.orders.size() + 1);
   e.first_fill = s.fills.size() + 1;
-  if (s.config.rules.phase == Phase::Evaluation && s.config.rules.microscalp_percent > 0)
+  if (s.config.rules.phase != Phase::Funded && s.config.rules.microscalp_percent > 0)
     e.first_stock_fill = s.stock_fills.size() + 1;
   e.day = s.day;
   e.day_open_equity = e.starting_balance;
@@ -3123,7 +3123,7 @@ PlanInputs plan_inputs(const State& s, Money equity) {
 // Whole trades use the same grouping as the trade journal, so rolls count once.
 void refresh_trade_objectives(State& s) {
   const auto& rules = s.config.rules;
-  if (rules.phase != Phase::Evaluation || (rules.trade_consistency_percent == 0 && rules.min_trades == 0 && rules.microscalp_percent == 0)) return;
+  if (rules.phase == Phase::Funded || (rules.trade_consistency_percent == 0 && rules.min_trades == 0 && rules.microscalp_percent == 0)) return;
   auto& e = s.evaluation;
   struct Whole { Money pnl; bool closed = true; std::uint64_t first = 0; };
   const State::TradeObjectives inputs{s.fills.size(), s.closures.size(), s.stock_fills.size(), s.dividends.size(),

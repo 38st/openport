@@ -36,8 +36,15 @@ OrderRequest stopped(OrderRequest request, std::string_view level = "3.00", Trig
   return request;
 }
 
-TEST(TradeRules, TradeConsistencyUsesExactProfitAndHoldsWithoutAProfitableTrade) {
-  AccountRules rules; rules.trade_consistency_percent = 50;
+class TradePhases : public ::testing::TestWithParam<Phase> {};
+INSTANTIATE_TEST_SUITE_P(NonFunded, TradePhases,
+    ::testing::Values(Phase::Evaluation, Phase::Verification),
+    [](const ::testing::TestParamInfo<Phase>& info) {
+      return info.param == Phase::Verification ? "Verification" : "Evaluation";
+    });
+
+TEST_P(TradePhases, TradeConsistencyUsesExactProfitAndHoldsWithoutAProfitableTrade) {
+  AccountRules rules; rules.phase = GetParam(); rules.trade_consistency_percent = 50;
   Evaluation e; e.starting_balance = m("10000");
   PlanInputs now{m("10200"), m("10200"), m("200"), true};
   EXPECT_TRUE(evaluation_objectives(e, rules, now).back().met);
@@ -58,9 +65,9 @@ TEST(TradeRules, TradeConsistencyUsesExactProfitAndHoldsWithoutAProfitableTrade)
   EXPECT_THROW(validate_rules(rules), TradingError);
 }
 
-TEST(TradeRules, BestWholeTradeWaitsForEveryLegAndRecovers) {
+TEST_P(TradePhases, BestWholeTradeWaitsForEveryLegAndRecovers) {
   ScriptedMarket f, g; g.contract.strike += 5;
-  AccountRules rules; rules.trade_consistency_percent = 50; rules.min_trades = 2; rules.profit_target = m("10000");
+  AccountRules rules; rules.phase = GetParam(); rules.trade_consistency_percent = 50; rules.min_trades = 2; rules.profit_target = m("10000");
   JournalFile file;
   {
     TradingSession s(config(rules), f.time, FileJournal::create(file.path));
@@ -87,9 +94,9 @@ TEST(TradeRules, BestWholeTradeWaitsForEveryLegAndRecovers) {
   EXPECT_EQ(s.snapshot()->evaluation.best_trade->pnl, m("157.40"));
 }
 
-TEST(TradeRules, MinimumTradesCountsLossesAndFlattenOnce) {
+TEST_P(TradePhases, MinimumTradesCountsLossesAndFlattenOnce) {
   ScriptedMarket f;
-  AccountRules rules; rules.min_trades = 2;
+  AccountRules rules; rules.phase = GetParam(); rules.min_trades = 2;
   TradingSession s(config(rules), f.time);
   f.seed(s);
   ASSERT_TRUE(s.submit(f.market("open", 2), f.time).decision.ok());
@@ -110,9 +117,9 @@ TEST(TradeRules, MinimumTradesCountsLossesAndFlattenOnce) {
   EXPECT_THROW(validate_rules(rules), TradingError);
 }
 
-TEST(TradeRules, CachedObjectivesMatchColdRecoveryAfterTradesAndMarketTicks) {
+TEST_P(TradePhases, CachedObjectivesMatchColdRecoveryAfterTradesAndMarketTicks) {
   ScriptedMarket f;
-  AccountRules rules;
+  AccountRules rules; rules.phase = GetParam();
   rules.trade_consistency_percent = 50;
   rules.min_trades = 10;
   rules.microscalp_seconds = 60;
@@ -150,9 +157,9 @@ TEST(TradeRules, CachedObjectivesMatchColdRecoveryAfterTradesAndMarketTicks) {
   }
 }
 
-TEST(TradeRules, MinimumHoldUsesFirstFillExactMarketAgeAndRecovers) {
+TEST_P(TradePhases, MinimumHoldUsesFirstFillExactMarketAgeAndRecovers) {
   ScriptedMarket f;
-  AccountRules rules; rules.min_hold_seconds = 60;
+  AccountRules rules; rules.phase = GetParam(); rules.min_hold_seconds = 60;
   JournalFile file;
   const auto opened = f.time;
   {
@@ -236,8 +243,8 @@ TEST(TradeRules, MinimumHoldAllowsBracketsOcoFlattenAndDailyLossLiquidation) {
   EXPECT_EQ(t.snapshot()->evaluation.closed_trades, 1);
 }
 
-TEST(TradeRules, MicroscalpingUsesExactPositiveNetProfitAndFinalCloseAge) {
-  AccountRules rules; rules.microscalp_seconds = 60; rules.microscalp_percent = 50;
+TEST_P(TradePhases, MicroscalpingUsesExactPositiveNetProfitAndFinalCloseAge) {
+  AccountRules rules; rules.phase = GetParam(); rules.microscalp_seconds = 60; rules.microscalp_percent = 50;
   Evaluation e; e.starting_balance = m("10000");
   PlanInputs now{m("10200"), m("10200"), m("200"), true};
   EXPECT_TRUE(evaluation_objectives(e, rules, now).front().met);
@@ -253,9 +260,9 @@ TEST(TradeRules, MicroscalpingUsesExactPositiveNetProfitAndFinalCloseAge) {
   EXPECT_TRUE(evaluation_objectives(e, rules, now).empty());
 }
 
-TEST(TradeRules, MicroscalpProfitSurvivesRecoveryAndExcludesLossesAndBoundary) {
+TEST_P(TradePhases, MicroscalpProfitSurvivesRecoveryAndExcludesLossesAndBoundary) {
   ScriptedMarket f;
-  AccountRules rules; rules.microscalp_seconds = 60; rules.microscalp_percent = 50;
+  AccountRules rules; rules.phase = GetParam(); rules.microscalp_seconds = 60; rules.microscalp_percent = 50;
   JournalFile file;
   {
     TradingSession s(config(rules), f.time, FileJournal::create(file.path));
@@ -283,10 +290,10 @@ TEST(TradeRules, MicroscalpProfitSurvivesRecoveryAndExcludesLossesAndBoundary) {
   EXPECT_EQ(s.snapshot()->evaluation.short_profit, m("78.70"));
 }
 
-TEST(TradeRules, SettlementClosesWholeTradesDespiteMinimumHold) {
+TEST_P(TradePhases, SettlementClosesWholeTradesDespiteMinimumHold) {
   ScriptedMarket f;
   f.time = f.contract.last_trade_time() - 30 * md::kNanosPerSecond;
-  AccountRules rules; rules.min_hold_seconds = 60; rules.min_trades = 1;
+  AccountRules rules; rules.phase = GetParam(); rules.min_hold_seconds = 60; rules.min_trades = 1;
   rules.trade_consistency_percent = 100; rules.microscalp_seconds = 60; rules.microscalp_percent = 100;
   TradingSession s(config(rules), f.time);
   f.seed(s);
@@ -298,9 +305,9 @@ TEST(TradeRules, SettlementClosesWholeTradesDespiteMinimumHold) {
   EXPECT_EQ(s.snapshot()->evaluation.short_profit, m("79.35"));
 }
 
-TEST(TradeRules, MicroscalpingSharesResetsAtSameTimestampAndRecoversBoundary) {
+TEST_P(TradePhases, MicroscalpingSharesResetsAtSameTimestampAndRecoversBoundary) {
   ScriptedMarket f;
-  AccountRules rules; rules.microscalp_seconds = 60; rules.microscalp_percent = 50; rules.min_trades = 2;
+  AccountRules rules; rules.phase = GetParam(); rules.microscalp_seconds = 60; rules.microscalp_percent = 50; rules.min_trades = 2;
   JournalFile file;
   {
     TradingSession s(config(rules), f.time, FileJournal::create(file.path));
@@ -334,8 +341,8 @@ TEST(TradeRules, HoldingRulesValidatePairsAndRanges) {
   r.microscalp_percent = 0; EXPECT_NO_THROW(validate_rules(r));
 }
 
-TEST(TradeRules, CombinedObjectivesHoldOnlyThePassAtExactBoundaries) {
-  AccountRules rules; rules.profit_target = m("100"); rules.min_trades = 2;
+TEST_P(TradePhases, CombinedObjectivesHoldOnlyThePassAtExactBoundaries) {
+  AccountRules rules; rules.phase = GetParam(); rules.profit_target = m("100"); rules.min_trades = 2;
   rules.trade_consistency_percent = 50; rules.microscalp_seconds = 60; rules.microscalp_percent = 25;
   Evaluation e; e.starting_balance = m("10000"); e.peak = e.starting_balance;
   e.best_trade = BestTrade{"1", m("100")}; e.short_profit = m("50"); e.closed_trades = 1;
@@ -349,9 +356,9 @@ TEST(TradeRules, CombinedObjectivesHoldOnlyThePassAtExactBoundaries) {
   EXPECT_EQ(evaluate_plan(e, rules, now).status, EvaluationStatus::Active);
 }
 
-TEST(TradeRules, RolledWholeTradeClosesOnlyAfterItsNewLeg) {
+TEST_P(TradePhases, RolledWholeTradeClosesOnlyAfterItsNewLeg) {
   ScriptedMarket f, g; g.contract.strike += 5;
-  AccountRules rules; rules.min_trades = 1; rules.trade_consistency_percent = 100;
+  AccountRules rules; rules.phase = GetParam(); rules.min_trades = 1; rules.trade_consistency_percent = 100;
   JournalFile file;
   {
     TradingSession s(config(rules), f.time, FileJournal::create(file.path));
@@ -373,8 +380,8 @@ TEST(TradeRules, RolledWholeTradeClosesOnlyAfterItsNewLeg) {
   EXPECT_EQ(s.snapshot()->evaluation.best_trade->pnl, m("157.40"));
 }
 
-TEST(TradeRules, TradePercentagesCompareWideProductsWithoutFloatingRounding) {
-  AccountRules rules; rules.trade_consistency_percent = 50;
+TEST_P(TradePhases, TradePercentagesCompareWideProductsWithoutFloatingRounding) {
+  AccountRules rules; rules.phase = GetParam(); rules.trade_consistency_percent = 50;
   rules.microscalp_seconds = 60; rules.microscalp_percent = 50;
   Evaluation e;
   e.best_trade = BestTrade{"1", Money::from_micros(4'000'000'000'000'000'000)};
@@ -727,10 +734,10 @@ TEST(TradeRules, ContractCapValidatesItsRange) {
   EXPECT_NO_THROW(validate_rules(rules));
 }
 
-TEST(TradeRules, HedgingChecksNetDeltaAndAllowsReductionsAndSystemExitsAcrossRecovery) {
+TEST_P(TradePhases, HedgingChecksNetDeltaAndAllowsReductionsAndSystemExitsAcrossRecovery) {
   ScriptedMarket call, put;
   put.contract.type = pricing::OptionType::Put;
-  AccountRules rules; rules.no_hedging = true;
+  AccountRules rules; rules.phase = GetParam(); rules.no_hedging = true;
   JournalFile file;
   TradingSession s(config(rules), call.time, FileJournal::create(file.path));
   call.seed(s); put.seed(s);
@@ -762,10 +769,10 @@ TEST(TradeRules, HedgingChecksNetDeltaAndAllowsReductionsAndSystemExitsAcrossRec
   ASSERT_TRUE(s.submit(neutral, call.time).decision.ok());
 }
 
-TEST(TradeRules, HedgingIncludesSharesAndRejectsUnknownDelta) {
+TEST_P(TradePhases, HedgingIncludesSharesAndRejectsUnknownDelta) {
   ScriptedMarket f;
   f.contract = *md::parse_osi("SPY261022P00500000");
-  AccountRules rules; rules.no_hedging = true;
+  AccountRules rules; rules.phase = GetParam(); rules.no_hedging = true;
   TradingSession s(config(rules), f.time);
   f.seed(s);
   s.on_quotes({}, {f.valuation(-0.5)}, f.time, {{"SPY", f.time, m("500")}});

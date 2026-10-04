@@ -893,8 +893,8 @@ json account_json(const TradingView& view) {
               {"profitable_days", stats.profitable_days},
               {"best_day", stats.best_day ? json{{"day", md::format_date(stats.best_day_date)}, {"profit", stats.best_day->str()}}
                                           : json(nullptr)},
-              {"short_profit", r.phase == Phase::Evaluation && r.microscalp_percent > 0 ? json(e.short_profit.str()) : json(nullptr)},
-              {"closed_trades", r.phase == Phase::Evaluation && r.min_trades > 0 ? json(e.closed_trades) : json(nullptr)},
+              {"short_profit", r.phase != Phase::Funded && r.microscalp_percent > 0 ? json(e.short_profit.str()) : json(nullptr)},
+              {"closed_trades", r.phase != Phase::Funded && r.min_trades > 0 ? json(e.closed_trades) : json(nullptr)},
               {"best_trade", e.best_trade ? json{{"id", e.best_trade->id}, {"pnl", e.best_trade->pnl.str()}} : json(nullptr)},
               {"consistency_target", money(consistency_target(e, r, in))},
               {"daily_loss", daily_loss},

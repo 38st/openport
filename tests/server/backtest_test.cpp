@@ -594,6 +594,47 @@ TEST(Backtest, VerificationKeepsScalingTimeRulesAndExactProgramCosts) {
   ASSERT_FALSE(report.at("attempts").empty());
 }
 
+TEST(Backtest, VerificationTradeObjectivesHoldPassesAndRecoverRecordedEvidence) {
+  test::RecordingFile storage;
+  const auto file = recorded_day(storage.directory, {2026, 9, 14}, false, false, 100);
+  const std::atomic_bool cancel{false};
+  for (const auto* phase : {"evaluation", "verification"}) {
+    for (const auto* objective : {"none", "min_trades", "trade_consistency_percent", "microscalp_percent"}) {
+      SCOPED_TRACE(std::string(phase) + "/" + objective);
+      json rules{{"phase", phase}, {"profit_target", "50"}, {"profit_basis", "balance"},
+          {"min_hold_seconds", 60}, {"no_hedging", true}, {"no_counter_positions", true}, {"max_volume_percent", 25}};
+      if (std::string_view(objective) == "min_trades") rules[objective] = 2;
+      if (std::string_view(objective) == "trade_consistency_percent") rules[objective] = 50;
+      if (std::string_view(objective) == "microscalp_percent") {
+        rules[objective] = 25; rules["microscalp_seconds"] = 3600;
+      }
+      auto request = server::parse_backtest({{"playbook", "batch"},
+          {"plan", {{"initial_cash", "10000"}, {"rules", rules}}}, {"days", {{{"file", file.string()}}}}}, catalogue(), {}, {}, false);
+      request.analytics.fallback_rate = 0;
+      const auto root = storage.directory / (std::string(phase) + "-" + objective);
+      const auto report = server::run_backtest(request, root, cancel);
+      ASSERT_EQ(report.at("status"), "completed") << report.dump();
+      ASSERT_EQ(report.at("attempts").size(), 1U);
+      const auto& attempt = report.at("attempts")[0];
+      EXPECT_EQ(attempt.at("outcome"), std::string_view(objective) == "none" ? "passed" : "open");
+      // The recorded playbook close meets minimum hold in both phases.
+      EXPECT_EQ(attempt.at("fills").size(), 4U);
+      const auto journal = root / attempt.at("journal").get<std::string>();
+      auto recovered = trading::TradingSession::recover(trading::FileJournal::read(journal.string()));
+      const auto snapshot = recovered.snapshot();
+      const auto& e = snapshot->evaluation;
+      if (rules.contains("min_trades")) EXPECT_EQ(e.closed_trades, 1U);
+      if (rules.contains("trade_consistency_percent")) {
+        ASSERT_TRUE(e.best_trade);
+        EXPECT_EQ(e.best_trade->pnl, Money::parse("77.40"));
+      }
+      if (rules.contains("microscalp_percent")) EXPECT_GT(e.short_profit, Money{});
+      const auto verified = server::verify_run(journal);
+      EXPECT_TRUE(verified.matched) << verified.message;
+    }
+  }
+}
+
 TEST(Backtest, ScalingRefusesAutomaticEntriesAndTheJournalVerifies) {
   test::RecordingFile storage;
   const auto file = recorded_day(storage.directory, {2026, 9, 14});

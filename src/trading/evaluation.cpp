@@ -117,7 +117,7 @@ std::vector<Objective> objectives_with(const Evaluation& e, const AccountRules& 
                      (balance ? " on the closed balance" : "");
     out.push_back(std::move(o));
   }
-  if (rules.phase == Phase::Evaluation && rules.microscalp_percent > 0) {
+  if (rules.phase != Phase::Funded && rules.microscalp_percent > 0) {
     Objective o{Reason::MICROSCALPING, e.short_profit == Money{} || consistent(e.short_profit, rules.microscalp_percent, profit),
                 std::nullopt, static_cast<double>(rules.microscalp_percent),
                 "Net positive profit " + dollars(e.short_profit) + " from round trips held under " +
@@ -126,12 +126,12 @@ std::vector<Objective> objectives_with(const Evaluation& e, const AccountRules& 
     if (profit > Money{}) o.actual = e.short_profit.dollars() / profit.dollars() * 100;
     out.push_back(std::move(o));
   }
-  if (rules.phase == Phase::Evaluation && rules.min_trades > 0) {
+  if (rules.phase != Phase::Funded && rules.min_trades > 0) {
     out.push_back({Reason::MIN_TRADES, e.closed_trades >= static_cast<std::uint64_t>(rules.min_trades),
                    static_cast<double>(e.closed_trades), static_cast<double>(rules.min_trades),
                    std::to_string(e.closed_trades) + " of " + std::to_string(rules.min_trades) + " closed whole trades"});
   }
-  if (rules.phase == Phase::Evaluation && rules.trade_consistency_percent > 0) {
+  if (rules.phase != Phase::Funded && rules.trade_consistency_percent > 0) {
     Objective o{Reason::TRADE_CONSISTENCY, true, std::nullopt, static_cast<double>(rules.trade_consistency_percent),
                 "No profitable closed whole trade yet"};
     if (profit > Money{}) o.actual = e.best_trade ? e.best_trade->pnl.dollars() / profit.dollars() * 100 : 0;

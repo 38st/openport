@@ -1585,9 +1585,9 @@ side, no buying-power check. All rule money is exact.
 | `daily_loss_action` | `Lock` (default): close every position and refuse opening orders until the next trading day. `Fail`: fail the attempt |
 | `min_hold_seconds` | F61: ordinary user reductions need this many seconds of market time since the round trip's first opening fill (0–3600; 0 disables), for options and shares; `MIN_HOLD` reports seconds held and required |
 | `microscalp_seconds` | F61: a round trip closed strictly before this age is short (1–3600); set with `microscalp_percent`, or leave both zero |
-| `microscalp_percent` | F61: maximum whole percent of attempt profit from positive net P&L of short closed round trips (0–100); 0 disables; evaluation only |
-| `min_trades` | F30: minimum closed whole option trades to pass (0–10000; 0 disables); evaluation only |
-| `trade_consistency_percent` | F29: best profitable closed whole option trade, net of fees, at most this whole percent of attempt profit under `profit_basis` (1–100; 0 disables); evaluation only |
+| `microscalp_percent` | F61: maximum whole percent of attempt profit from positive net P&L of short closed round trips (0–100); 0 disables; evaluation and verification only |
+| `min_trades` | F30: minimum closed whole option trades to pass (0–10000; 0 disables); evaluation and verification only |
+| `trade_consistency_percent` | F29: best profitable closed whole option trade, net of fees, at most this whole percent of attempt profit under `profit_basis` (1–100; 0 disables); evaluation and verification only |
 | `consistency_percent` | A pass needs the best day's profit at most this whole percent (1–100) of `consistency_basis`; zero disables |
 | `consistency_basis` | `Total` (default): the attempt's profit. `PositiveDays`: the profitable days' profits added up |
 | `min_trading_days` | A pass needs this many trading days with an execution of the trader's own orders (0–366) |
@@ -2064,6 +2064,8 @@ journals the plan rules, a decision's code (other than the target's or the floor
 which the status implies), the day's lock and its executions only when they are set,
 so a plan without these rules keeps the journal bytes it had.
 
+The following pass objectives apply equally in evaluation and verification. Minimum hold, direction and volume-share restrictions also apply in verification, with the same live-account and market-data requirements.
+
 **Trade consistency (F29).** `TRADE_CONSISTENCY` is satisfied with no profitable closed whole
 option trade; otherwise it requires `best_trade.pnl × 100 <= trade_consistency_percent ×
 attempt profit`, with exact integer micro-dollar products. A trade is closed only
@@ -2082,7 +2084,7 @@ closed whole option trades. Every group counts once, only after all its round tr
 are flat, including losing and breakeven trades. Settlement, expiry, assignment,
 protective exits, flatten and the account's own liquidation all count; shares are
 outside option trade groups. Counts reset with the attempt and recover from its
-journal. Funded plans ignore this evaluation objective. Pass odds keep the count so
+journal. Funded plans ignore this evaluation/verification objective. Pass odds keep the count so
 far and add no simulated trades; a still-unmet minimum therefore prevents a simulated
 pass. The API reports `closed_trades` (null while this rule is off).
 
@@ -2097,7 +2099,7 @@ Messages show at most one decimal place without trailing zeros (for example,
 Protective conditional triggers, bracket stops/targets, OCO and trailing stops,
 flatten (including limit flatten), daily-loss exits, expiry cutoff, liquidation,
 exercise, assignment and settlement remain executable. Minimum hold applies in
-both evaluation and funded phases.
+evaluation, verification and funded phases.
 
 `MICROSCALPING` sums only positive net P&L of completed option and share round trips
 whose final close is strictly before `microscalp_seconds` from first opening fill.

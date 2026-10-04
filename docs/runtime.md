@@ -1461,6 +1461,8 @@ planner, and `max_order_contracts` splitting; stock fills use source `rule`.
 Account evaluation exposes `flat_time` and `flat_now`. Disabled plans keep their
 prior journal bytes; no replay driver or scenario revision changes.
 
+Evaluation and verification use the same trade-objective derivation and restriction gates. Verification journals now retain enabled best-trade, closed-trade and short-profit evidence, including the share-fill attempt boundary; rule-disabled and funded journals keep their existing encoding.
+
 F29 journals `trade_consistency_percent` only when nonzero and evaluation `best_trade` only when a positive closed whole trade exists under that rule. Summaries derive from reducer fills, closures and groups, including system closures; recovery repeats the same calculation. Off plans keep their bytes and hashes; driver/scenario revisions are unchanged.
 
 F30 adds `min_trades` only when nonzero and evaluation `closed_trades` only when nonzero under that rule. Counts derive from current-attempt reducer history; plans without it add no state or journal fields.
