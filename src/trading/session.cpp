@@ -6225,6 +6225,8 @@ CommandResult TradingSession::abandon(const std::string& symbol, Timestamp time)
     if (s.config.rules.buying_power) {
       State projected = s;
       apply(projected);
+      Events ignored;
+      cancel_sales(projected, ignored);
       const auto power = buying_power(projected).total;
       if (free_power(projected) < free_power(s) && power.available < Money{})
         return CommandResult{{Reason::BUYING_POWER, "Abandoning this long leaves the short it covers needing more buying power than the account has",

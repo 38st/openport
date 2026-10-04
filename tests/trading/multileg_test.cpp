@@ -1013,6 +1013,27 @@ TEST(TradingAccountType, AbandonCancelsItsOwnSalesBeforeCountingCovers) {
   }
 }
 
+TEST(TradingAccountType, AbandonReleasesTheCancelledSalesCashReservation) {
+  Chain f;
+  AccountRules rules;
+  rules.account_type = AccountType::Ira;
+  rules.buying_power = true;
+  TradingSession s(config("500000", rules), f.time);
+  f.define(s, {P4900, P4890});
+  f.quote(s, {{P4900, "5.00", "5.20", -0.3}, {P4890, "4.00", "4.20", -0.28}});
+  ASSERT_TRUE(s.submit(combo("spread", {leg(P4900, Side::Sell), leg(P4890, Side::Buy)}, 1, {}), f.time).decision.ok());
+  ASSERT_TRUE(s.submit(single("sell long", P4890, Side::Sell, "4.50"), f.time).decision.ok());
+  f.time += md::kNanosPerSecond;
+  s.on_quotes({{P4890, ++f.observation, f.time, std::nullopt, m("0.05"), 0, 10}}, {}, f.time);
+  // The one remaining short put is fully cash-secured. The cancelled sale
+  // must not also reserve cash as though it could open another short put.
+  const auto result = s.abandon(P4890, f.time);
+  ASSERT_TRUE(result.decision.ok()) << result.decision.message;
+  EXPECT_EQ(s.snapshot()->buying_power.short_requirement, m("490000"));
+  EXPECT_GT(s.snapshot()->buying_power.available, Money{});
+  EXPECT_TRUE(s.snapshot()->open_orders.empty());
+}
+
 TEST(TradingAccountType, IraBracketExitsReserveTheirLongOnlyOnce) {
   Chain f;
   AccountRules rules;
