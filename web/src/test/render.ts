@@ -1,8 +1,9 @@
 import { act } from "react"
 import { vi } from "vitest"
+import { testTimeout } from "./timeout"
 
 // These deadlines guard liveness, not rendering speed.
-export const renderTimeout = 5 * 60_000
+export const renderTimeout = testTimeout
 
 export async function waitForRender(check: () => void) {
   await vi.waitFor(async () => {
