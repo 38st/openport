@@ -97,6 +97,9 @@ class PaperEngine : public testing::Test {
       return metrics && metrics->as_of == market.time && !metrics->slices.empty() &&
              metrics->slices[0].strikes[0].call.ask == Money::parse(ask).dollars();
     }));
+    // Analytics publish before the account's view of the same quotes. Flush the
+    // whole batch so seed() and later quote() calls return with both ready.
+    engine->synchronize().get();
   }
   void expect_error(const server::ApiResponse& response, int status, const char* code) {
     EXPECT_EQ(response.status, status) << response.body;
@@ -292,7 +295,6 @@ TEST_F(PaperEngine, AlertsWatchUntradedContractsAndUnderlyingStudiesAndKeepAccou
   EXPECT_TRUE(read(*engine, "/api/orders")["orders"].empty());
   market.next();
   quote("4.50", "4.70");
-  engine->synchronize().get();
   alert = read(*engine, "/api/alerts")["alerts"][0];
   EXPECT_EQ(alert["fired"], 1);
   EXPECT_EQ(alert["value"], "4.50");
@@ -359,8 +361,6 @@ TEST_F(PaperEngine, AlertsRejectMalformedBodiesAndRefuseUnknownContractsOrAFullB
 
 TEST_F(PaperEngine, PreviewIsPureEvenBeforeContractRegistration) {
   seed();
-  // Analytics publish before the account's view of the same quotes; wait for both.
-  engine->synchronize().get();
   const auto before = engine->trading_view();
   ASSERT_TRUE(before->contracts.empty());
   auto request = order(market, "preview-client", "4.20");
@@ -3767,7 +3767,6 @@ TEST_F(PaperEngine, OrdersConditionalOnAnotherUnderlyingAStudyOrTheTimeOverHttp)
   ASSERT_EQ(placed.status, 201) << placed.body;
   EXPECT_EQ(json::parse(placed.body)["order"]["trigger"]["symbol"], "SPX");
   quote();
-  engine->synchronize().get();
   EXPECT_EQ(read(*engine, "/api/orders")["orders"][0]["status"], "filled");
 
   auto timed = order(market, "timed", "4.10");
@@ -3928,7 +3927,6 @@ TEST_F(PaperEngine, OrderChainsOverHttp) {
   EXPECT_EQ(open[0]["status"], "armed");
   EXPECT_EQ(write(*engine, "POST", "/api/orders", dip).status, 200);  // a retry answers once
   quote("3.80", "3.90");
-  engine->synchronize().get();  // The trading snapshot follows the analytics quote.
   const auto all = read(*engine, "/api/orders?status=all")["orders"];
   ASSERT_EQ(all.size(), 3);
   EXPECT_EQ(all[0]["client_order_id"], "dip:then");
