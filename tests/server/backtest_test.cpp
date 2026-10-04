@@ -1,5 +1,7 @@
+#include <cstdio>
 #include <fstream>
 #include <sstream>
+#include <sys/wait.h>
 #include <gtest/gtest.h>
 #include "openport/server/backtest.hpp"
 #include "openport/trading/events.hpp"
@@ -1203,5 +1205,181 @@ TEST(BacktestApi, JointPostRunsPinnedDefinitionsAndListsEveryMember) {
   const auto listing = json::parse(call(host, {"GET", "/api/backtests?playbook=zeta"}).body);
   ASSERT_EQ(listing.at("runs").size(), 1U);
   EXPECT_EQ(listing.at("runs")[0].at("mode"), "joint");
+}
+}  // namespace
+
+namespace {
+std::filesystem::path joint_recorded_day(const std::filesystem::path& directory, md::Date date, bool loss = false) {
+  const auto path = directory / (md::format_date(date) + ".oprec");
+  std::vector<md::OptionContract> contracts;
+  for (const auto* symbol : {"SPXW  260916P05000000", "SPXW  260916P04995000", "SPY   260916P00500000", "SPY   260916P00495000"}) {
+    auto contract = *md::parse_osi(symbol);
+    contract.expiry = date;
+    contracts.push_back(contract);
+  }
+  md::RecordingHeader header;
+  header.provider = "simulated joint test";
+  header.subscription.underlyings = {"SPX", "SPY"};
+  header.started = md::new_york_to_utc(date, 9, 30);
+  header.capabilities.poll_interval = std::chrono::seconds(60);
+  md::Timestamp time = header.started;
+  md::RecordingSink::Options options;
+  options.clock = [&] { return time; };
+  test::DiscardEvents discard;
+  md::RecordingSink sink(path, header, discard, options);
+  for (std::size_t index = 0; index < contracts.size(); ++index)
+    sink.publish(md::ContractDefinition{static_cast<md::InstrumentId>(index), contracts[index]});
+  for (int minute = 0; minute < 3; ++minute) {
+    time = header.started + minute * md::kNanosPerMinute;
+    for (const auto* symbol : {"SPX", "SPY"}) {
+      const bool spy = std::string_view(symbol) == "SPY";
+      const double spot = spy ? 500 : 5000, high = minute == 0 ? 10 : loss ? 13 : 9;
+      const md::InstrumentId id = spy ? 2 : 0;
+      sink.publish(md::UnderlyingQuote{symbol, time, spot, spot, spot});
+      sink.publish(md::OptionQuote{id, time, high, high + .1, 20, 20});
+      sink.publish(md::OptionQuote{id + 1, time, 8, 8.1, 20, 20});
+      sink.publish(md::SnapshotComplete{symbol, time});
+    }
+  }
+  sink.close();
+  return path;
+}
+server::BacktestRequest joint_recorded_request(const json& days, const json& plan) {
+  auto definitions = joint_catalogue();
+  auto& alpha = definitions["definitions"]["alpha"]["versions"][0];
+  alpha["structure"]["template"]["target"] = {{"mode", "strike"}, {"value", 5000}};
+  auto& zeta = definitions["definitions"]["zeta"]["versions"][0];
+  zeta["name"] = "Zeta SPY put";
+  zeta["underlyings"] = {"SPY"};
+  zeta["structure"]["template"]["type"] = "put";
+  zeta["structure"]["template"]["target"] = {{"mode", "strike"}, {"value", 500}};
+  auto request = server::parse_backtest({{"playbooks", {"zeta", "alpha"}}, {"plan", plan}, {"days", days}}, definitions, {}, {}, false);
+  request.analytics.fallback_rate = 0;
+  return request;
+}
+server::BacktestRequest alone(server::BacktestRequest request, const std::string& id) {
+  const auto definitions = request.playbooks.at("definitions");
+  request.playbook = id;
+  request.playbooks["definitions"] = {{id, definitions.at(id)}};
+  request.playbooks["modes"]["main"] = {{id, "auto"}};
+  return request;
+}
+TEST(Backtest, JointBuyingPowerBlocksSecondPlaybookThatCouldTradeAlone) {
+  test::RecordingFile storage;
+  const auto file = joint_recorded_day(storage.directory, {2026, 9, 14});
+  const auto request = joint_recorded_request(json::array({{{"file", file.string()}}}),
+      {{"initial_cash", "500"}, {"rules", {{"profit_target", "1000"}, {"max_drawdown", "0"}, {"buying_power", true}}}});
+  const std::atomic_bool cancel{false};
+  const auto joint = server::run_backtest(request, storage.directory / "joint", cancel);
+  ASSERT_EQ(joint.at("status"), "completed") << joint.dump();
+  for (const auto* collection : {"days", "attempts"}) {
+    const auto& result = joint.at(collection)[0];
+    EXPECT_EQ(result.at("per_playbook").at("alpha").at("trades"), 1);
+    EXPECT_EQ(result.at("per_playbook").at("zeta").at("trades"), 0);
+    EXPECT_NE(result.at("entry_reasons").at("zeta:SPY").get<std::string>().find("buying power"), std::string::npos) << result.dump();
+  }
+  for (const auto* id : {"alpha", "zeta"}) {
+    const auto single = server::run_backtest(alone(request, id), storage.directory / id, cancel);
+    ASSERT_EQ(single.at("status"), "completed") << single.dump();
+    EXPECT_EQ(single.at("summary").at("trades"), 1);
+  }
+}
+TEST(Backtest, JointTargetPoolsTwoPlaybooksAndEightWorkersKeepIdenticalJournals) {
+  test::RecordingFile storage;
+  json days = json::array();
+  for (const int day : {14, 15, 16, 17, 18, 21, 22, 23})
+    days.push_back({{"file", joint_recorded_day(storage.directory, {2026, 9, day}).string()}});
+  auto request = joint_recorded_request(days,
+      {{"initial_cash", "50000"}, {"rules", {{"profit_target", "100"}, {"profit_basis", "balance"}, {"max_drawdown", "0"}}}});
+  const std::atomic_bool cancel{false};
+  request.workers = 1;
+  const auto first = server::run_backtest(request, storage.directory / "one", cancel);
+  ASSERT_EQ(first.at("status"), "completed") << first.dump();
+  EXPECT_EQ(first.at("summary").at("trades"), 16);
+  EXPECT_EQ(first.at("summary").at("passed"), 8);
+  for (const auto& day : first.at("days")) {
+    const auto& rows = day.at("per_playbook");
+    EXPECT_EQ(rows.at("alpha").at("trades"), 1);
+    EXPECT_EQ(rows.at("zeta").at("trades"), 1);
+    EXPECT_EQ((Money::parse(rows.at("alpha").at("marked_pnl").get<std::string>()) +
+        Money::parse(rows.at("zeta").at("marked_pnl").get<std::string>())).str(), day.at("pnl").get<std::string>());
+  }
+  request.workers = 8;
+  const auto second = server::run_backtest(request, storage.directory / "eight", cancel);
+  EXPECT_EQ(first, second);
+  EXPECT_EQ(bytes(storage.directory / "one/report.json"), bytes(storage.directory / "eight/report.json"));
+  for (const auto& journal : first.at("journals")) {
+    const auto path = journal.get<std::string>();
+    EXPECT_EQ(bytes(storage.directory / "one" / path), bytes(storage.directory / "eight" / path));
+    const auto verified = server::verify_run(storage.directory / "one" / path);
+    EXPECT_TRUE(verified.matched) << path << ": " << verified.message;
+  }
+  request.days.resize(1);
+  for (const auto* id : {"alpha", "zeta"}) {
+    const auto single = server::run_backtest(alone(request, id), storage.directory / id, cancel);
+    ASSERT_EQ(single.at("status"), "completed") << single.dump();
+    EXPECT_EQ(single.at("summary").at("trades"), 1);
+    EXPECT_EQ(single.at("attempts")[0].at("outcome"), "open");
+  }
+}
+TEST(Backtest, JointDailyLossFailsTheAccountWhenNeitherPlaybookAloneWouldFail) {
+  test::RecordingFile storage;
+  const auto file = joint_recorded_day(storage.directory, {2026, 9, 14}, true);
+  const auto request = joint_recorded_request(json::array({{{"file", file.string()}}}),
+      {{"initial_cash", "50000"}, {"rules", {{"profit_target", "10000"}, {"max_drawdown", "0"},
+      {"daily_loss_limit", "500"}, {"daily_loss_action", "fail"}}}});
+  const std::atomic_bool cancel{false};
+  const auto joint = server::run_backtest(request, storage.directory / "joint", cancel);
+  ASSERT_EQ(joint.at("status"), "completed") << joint.dump();
+  EXPECT_EQ(joint.at("attempts")[0].at("outcome"), "failed");
+  EXPECT_EQ(joint.at("attempts")[0].at("day_rows")[0].at("decision_code"), "DAILY_LOSS_LIMIT");
+  EXPECT_NE(joint.at("attempts")[0].at("rule_trips").dump().find("evaluation_failed"), std::string::npos);
+  for (const auto* id : {"alpha", "zeta"}) {
+    const auto single = server::run_backtest(alone(request, id), storage.directory / id, cancel);
+    ASSERT_EQ(single.at("status"), "completed") << single.dump();
+    EXPECT_EQ(single.at("attempts")[0].at("outcome"), "open");
+  }
+}
+TEST(Backtest, CliJointSelectorsRunDeterministicallyAndRejectInvalidLists) {
+  test::RecordingFile storage;
+  const auto file = joint_recorded_day(storage.directory, {2026, 9, 14});
+  const json plan{{"initial_cash", "50000"}, {"rules", {{"profit_target", "1000"}, {"max_drawdown", "0"}}}};
+  const auto request = joint_recorded_request(json::array({{{"file", file.string()}}}), plan);
+  std::ofstream(storage.directory / "playbooks.json") << request.playbooks.dump();
+  std::ofstream(storage.directory / "plan.json") << plan.dump();
+  std::ofstream(storage.directory / "days.json") << json::array({{{"file", file.filename().string()}}}).dump();
+  const auto run = [&](const std::string& selection, unsigned workers, const std::string& name) {
+    const auto root = storage.directory.string();
+    const auto command = "HOME='" + root + "' TMPDIR='" + root + "' \"" + OPENPORT_APPS_DIR +
+        "/openportd\" --backtest '" + selection + "' --playbooks '" + root + "/playbooks.json' --plan '" + root +
+        "/plan.json' --days '" + root + "/days.json' --workers " + std::to_string(workers) + " --out '" + root + "/" + name + ".json' 2>&1";
+    FILE* pipe = popen(command.c_str(), "r");
+    if (!pipe) throw std::runtime_error("Cannot launch backtest CLI");
+    std::string output;
+    char buffer[512];
+    while (fgets(buffer, sizeof buffer, pipe)) output += buffer;
+    const auto status = pclose(pipe);
+    EXPECT_TRUE(WIFEXITED(status)) << output;
+    return std::pair{WIFEXITED(status) ? WEXITSTATUS(status) : -1, output};
+  };
+  const auto first = run("zeta@1,alpha", 1, "one"), second = run("alpha@1,zeta", 8, "eight");
+  ASSERT_EQ(first.first, 0) << first.second;
+  ASSERT_EQ(second.first, 0) << second.second;
+  EXPECT_EQ(bytes(storage.directory / "one.json"), bytes(storage.directory / "eight.json"));
+  const auto report = json::parse(bytes(storage.directory / "one.json"));
+  EXPECT_EQ(report.at("mode"), "joint");
+  EXPECT_EQ(report.at("summary").at("trades"), 2);
+  for (const auto& journal : report.at("journals")) {
+    const auto path = journal.get<std::string>();
+    EXPECT_EQ(bytes(storage.directory / "one.json.d" / path), bytes(storage.directory / "eight.json.d" / path));
+  }
+  const auto single = run("alpha@1", 1, "single");
+  ASSERT_EQ(single.first, 0) << single.second;
+  EXPECT_EQ(json::parse(bytes(storage.directory / "single.json")).at("schema"), 2);
+  for (const auto* selection : {"alpha,alpha@1", "alpha,missing", "alpha,", ",zeta", "alpha@2,zeta"}) {
+    const auto failed = run(selection, 1, "invalid");
+    EXPECT_EQ(failed.first, 2) << failed.second;
+    EXPECT_FALSE(std::filesystem::exists(storage.directory / "invalid.json.d"));
+  }
 }
 }  // namespace
