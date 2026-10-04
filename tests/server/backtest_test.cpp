@@ -715,6 +715,36 @@ TEST(BacktestApi, ContractFixture) {
   server::BacktestHost disabled({storage.directory / "disabled", {}, {}, {}, {}, false});
   EXPECT_EQ(call(disabled, {"POST", "/api/backtests", "{}"}).status, 403);
 }
+
+TEST(BacktestApi, KeepReplyReportsFinishedRunBytesLikeGet) {
+  test::RecordingFile storage;
+  const server::BacktestHost::Options options{storage.directory / "reports", storage.directory, {}, {}, {}, true};
+  server::BacktestHost host(options);
+  const auto input_file = recorded_day(storage.directory, {2026, 9, 14});
+  const json request_body{{"playbook", "batch"}, {"plan", "eod-50k"}, {"days", {{{"file", input_file.filename().string()}}}}};
+  const auto started = call(host, {"POST", "/api/backtests", request_body.dump()}, false);
+  ASSERT_EQ(started.status, 202) << started.body;
+  const auto run_id = json::parse(started.body).at("id").get<std::string>();
+  json final_state;
+  ASSERT_TRUE(test::recording_eventually([&] {
+    const auto poll = call(host, {"GET", "/api/backtests/" + run_id}, false);
+    if (poll.status != 200) return false;
+    final_state = json::parse(poll.body);
+    return final_state.at("status") != "running" && final_state.at("status") != "cancelling";
+  })) << final_state.dump();
+  ASSERT_EQ(final_state.at("status"), "completed") << final_state.dump();
+  ASSERT_GT(final_state.at("bytes").get<std::uintmax_t>(), 0U);
+
+  const auto pinned = call(host, {"PUT", "/api/backtests/" + run_id, "{\"keep\":true}"}, false);
+  ASSERT_EQ(pinned.status, 200) << pinned.body;
+  const auto pinned_state = json::parse(pinned.body);
+  EXPECT_EQ(pinned_state.at("status"), "completed");
+  EXPECT_EQ(pinned_state.at("keep"), true);
+  EXPECT_GT(pinned_state.at("bytes").get<std::uintmax_t>(), 0U);
+  const auto fetched_state = json::parse(call(host, {"GET", "/api/backtests/" + run_id}, false).body);
+  EXPECT_EQ(pinned_state.at("bytes"), fetched_state.at("bytes"));
+}
+
 TEST(BacktestApi, ListingSummarizesSavedReportIdentityWithoutCopyingTrades) {
   test::RecordingFile storage;
   const auto root = storage.directory / "000001";

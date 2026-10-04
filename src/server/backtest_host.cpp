@@ -52,12 +52,7 @@ struct BacktestHost::Impl {
   std::thread worker;
   explicit Impl(Options value) : options(std::move(value)), scenarios(providers::load_scenarios(options.scenario_dir)) {}
   ~Impl() { cancel = true; if (worker.joinable()) worker.join(); }
-  json saved(const std::string& id, bool report) const {
-    const auto directory = options.directory / id;
-    const auto size = tree_bytes(directory);
-    auto state = read_json(directory / "state.json");
-    if (!current.is_null() && current.at("id") == id) state = current;
-    else if (state.at("status") == "running" || state.at("status") == "cancelling") state["status"] = "interrupted";
+  json with_storage_fields(const std::filesystem::path& directory, json state, bool report, std::uintmax_t size) const {
     if (std::filesystem::is_regular_file(directory / "report.json")) {
       const auto saved_report = read_json(directory / "report.json");
       if (report) state["report"] = saved_report;
@@ -69,6 +64,14 @@ struct BacktestHost::Impl {
     state["keep"] = state.value("keep", false);
     state["bytes"] = size;
     return state;
+  }
+  json saved(const std::string& id, bool report) const {
+    const auto directory = options.directory / id;
+    const auto size = tree_bytes(directory);
+    auto state = read_json(directory / "state.json");
+    if (!current.is_null() && current.at("id") == id) state = current;
+    else if (state.at("status") == "running" || state.at("status") == "cancelling") state["status"] = "interrupted";
+    return with_storage_fields(directory, std::move(state), report, size);
   }
   std::vector<std::string> ids() const {
     std::vector<std::string> result;
@@ -182,12 +185,14 @@ bool BacktestHost::handle(const ApiRequest& request, const MetricsSource& source
       if (!body.is_object() || body.size() != 1 || !body.contains("keep") || !body.at("keep").is_boolean())
         throw std::invalid_argument("Expected {keep: true|false}");
       if (!host.current.is_null() && host.current.at("id") == id) {
-        if (std::filesystem::exists(host.options.directory / id)) (void)tree_bytes(host.options.directory / id);
+        const auto directory = host.options.directory / id;
+        if (std::filesystem::exists(directory)) (void)tree_bytes(directory);
         auto state = host.current;
         state["keep"] = body.at("keep");
-        if (std::filesystem::is_directory(host.options.directory / id)) write_backtest_report(host.options.directory / id / "state.json", state);
+        if (std::filesystem::is_directory(directory)) write_backtest_report(directory / "state.json", state);
         host.current = state;
-        response.body = state.dump();
+        const auto size = tree_bytes(directory);
+        response.body = host.with_storage_fields(directory, std::move(state), true, size).dump();
       } else if (!std::filesystem::is_regular_file(host.options.directory / id / "state.json")) response = api_error(404, "NOT_FOUND", "Unknown backtest");
       else {
         auto state = host.saved(id, false);
