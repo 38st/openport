@@ -67,6 +67,14 @@ To add a feed, see [writing a provider adapter](providers.md).
 Every value is range-checked; `openportd --help` lists every flag, and the
 [runtime notes](runtime.md) cover the details.
 
+`--plan` accepts `practice`; `intraday-*`, `eod-*`, `static-*`, `locking-*`,
+`two-step-*`, `two-step-verify-*`, `two-step-funded-*`, `funded-intraday-*` and
+`funded-eod-*` at `25k`, `50k` and `100k`; and `funded-scaling-50k`.
+Help lists each ID and its prerequisite. Verification and funded steps cannot seed
+a new or empty journal: startup exits 2 with `PLAN_LOCKED` and the required pass.
+Pass that prerequisite in the same account, then start the next step with an account
+reset. Existing journals restore their saved rules regardless of `--plan`.
+
 ## Terminal settings
 
 | Terminal setting | Default | Controls |

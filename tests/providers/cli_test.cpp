@@ -14,6 +14,7 @@
 #include "support/scripted_market.hpp"
 #include "openport/trading/journal.hpp"
 #include "openport/pricing/black.hpp"
+#include "openport/server/plans.hpp"
 
 namespace {
 /// A private HOME for launched binaries, so a daemon that gets far enough to start never
@@ -86,6 +87,47 @@ TEST(Cli, PaperFillFlagsValidateModelsAndExecutionRanges) {
   for (const auto* model : {"as_displayed", "conservative", "midpoint"})
     rejects("openportd", std::string("--paper-fill-model ") + model +
         " --paper-fill-latency-ms 60000 --paper-impact-ticks 10 --paper-slippage-ticks 0 --provider missing", "unknown provider");
+}
+
+// F14/F27: help follows the catalogue, including prerequisites for later steps.
+TEST(Cli, DaemonHelpListsEveryPlanAndPrerequisite) {
+  const auto command = isolated_home() + "\"" + OPENPORT_APPS_DIR + "/openportd\" --help 2>&1";
+  FILE* pipe = popen(command.c_str(), "r");
+  ASSERT_NE(pipe, nullptr);
+  std::string output;
+  char buffer[512];
+  while (fgets(buffer, sizeof buffer, pipe)) output += buffer;
+  const auto status = pclose(pipe);
+  ASSERT_TRUE(WIFEXITED(status)) << output;
+  EXPECT_EQ(WEXITSTATUS(status), 0) << output;
+  for (const auto& plan : openport::server::plan_presets()) {
+    const auto line = "  " + plan.id + (plan.unlocked_by.empty() ? "" : " (requires " + plan.unlocked_by + ")") + "\n";
+    EXPECT_NE(output.find(line), std::string::npos) << line;
+  }
+}
+
+TEST(Cli, NewAndEmptyJournalsRefuseLockedPlansBeforeStartingAProvider) {
+  openport::test::RecordingFile file;
+  for (const auto& plan : openport::server::plan_presets()) {
+    if (plan.unlocked_by.empty()) continue;
+    const auto journal = file.directory / (plan.id + ".jsonl");
+    // A missing provider makes a regression fail promptly without starting a server.
+    const auto args = "--provider missing --port 9355 --paper-journal '" + journal.string() + "' --plan " + plan.id;
+    const auto reason = "PLAN_LOCKED: --plan " + plan.id + " requires passing " + plan.unlocked_by;
+    rejects("openportd", args, reason);
+    EXPECT_FALSE(std::filesystem::exists(journal));
+    { std::ofstream empty(journal); }
+    rejects("openportd", args, reason);
+    EXPECT_EQ(std::filesystem::file_size(journal), 0U);
+  }
+  // Unlocked entry steps and analytics-only startup still reach provider validation.
+  for (const auto* plan : {"practice", "static-25k", "locking-25k", "two-step-25k"})
+    rejects("openportd", std::string("--provider missing --plan ") + plan, "unknown provider");
+  rejects("openportd", "--provider missing --plan two-step-verify-25k --no-paper", "unknown provider");
+  // --plan is ignored when recovering an account, even if it names a locked step.
+  const auto existing = file.directory / "existing.jsonl";
+  { openport::trading::TradingSession account({}, 0, openport::trading::FileJournal::create(existing.string())); }
+  rejects("openportd", "--provider missing --paper-journal '" + existing.string() + "' --plan two-step-verify-25k", "unknown provider");
 }
 
 TEST(Cli, DemoRejectsNetworkOptionsUnknownDaysAndUnsupportedSymbols) {

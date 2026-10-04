@@ -149,8 +149,7 @@ int usage(const char* error = nullptr) {
       "        original as FILE.torn-TIME, then exit; stop openportd first\n"
       "        --dry-run reports bytes cut and records kept without changes; --file selects one journal\n"
       "        exit 0: inspected/repaired; 1: a journal failed; 2: invalid options\n"
-      "plan: rules for a new journal (practice, intraday-25k|50k|100k, eod-25k|50k|100k,\n"
-      "      funded-intraday-25k|50k|100k, funded-eod-25k|50k|100k); default practice;\n"
+      "plan: rules for a new journal (presets below); default practice;\n"
       "      --paper-cash then overrides its starting balance\n"
       "fill model: seeds only a new main journal; numeric execution flags override the model\n"
       "            slippage/impact: 0..10 ticks, latency: 0..60000 ms; saved rules win on restart\n"
@@ -194,6 +193,12 @@ int usage(const char* error = nullptr) {
                "\nkeys are read from the environment: DATABENTO_API_KEY, MASSIVE_API_KEY,\n"
                "TRADIER_ACCESS_TOKEN, TASTYTRADE_CLIENT_SECRET, TASTYTRADE_REFRESH_TOKEN,\n"
                "and optionally TASTYTRADE_CLIENT_ID. No broker credential flags.\n");
+  std::fprintf(out, "\nplan presets (locked steps require a pass in the same account):\n");
+  for (const auto& plan : server::plan_presets()) {
+    std::fprintf(out, "  %s", plan.id.c_str());
+    if (!plan.unlocked_by.empty()) std::fprintf(out, " (requires %s)", plan.unlocked_by.c_str());
+    std::fprintf(out, "\n");
+  }
   return error ? 2 : 0;
 }
 
@@ -579,6 +584,12 @@ int run(int argc, char** argv) {
 
   if (settings.paper_enabled && settings.paper_journal.empty())
     return usage("HOME is unavailable; specify --paper-journal or --no-paper");
+  // --plan only seeds a new account. Existing journals restore their own rules;
+  // an empty journal left by interrupted creation has no prerequisite pass either.
+  if (settings.paper_enabled && !settings.plan->unlocked_by.empty() &&
+      (!std::filesystem::exists(settings.paper_journal) || std::filesystem::file_size(settings.paper_journal) == 0))
+    return usage(("PLAN_LOCKED: --plan " + settings.plan->id + " requires passing " + settings.plan->unlocked_by +
+                  " in the same account; start that step with an account reset after the pass").c_str());
   if (!demo) providers::validate_subscription(settings.provider.name, settings.subscription);
   // A SIGKILLed run leaves its generated days behind; nothing else would remove them.
   providers::remove_orphaned_demo_directories();

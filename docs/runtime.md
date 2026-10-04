@@ -125,6 +125,13 @@ stdout and exits 0; `openportd --version` prints the version and exits;
 `openportd --compact-journals` rewrites older paper journals and exits 1 if any was
 left as it was (see [compacting](paper-trading.md#compacting-older-journals)).
 
+Help derives plan IDs and prerequisites from the preset catalogue, including
+static, locking, two-step and funded-scaling plans ([full list](configuration.md#command-line-flags)).
+`--plan` cannot seed a new or empty journal with a locked verification or funded
+step: startup exits 2 with `PLAN_LOCKED` and names the prerequisite. Pass it in the
+same account and use an account reset to advance. A recovered journal keeps its
+saved rules; `--plan` does not change them.
+
 Supported `openportd --option KEY=VALUE` keys:
 
 | Provider | Keys |
