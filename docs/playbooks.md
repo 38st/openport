@@ -344,8 +344,53 @@ openportd --backtest morning-put@2 --plan eod-50k \
 
 Definitions come from `playbooks.json` beside `--paper-journal`, or from
 `--playbooks FILE`. Omitting `@VERSION` pins the latest version when the run starts.
-Archived versions can be tested. The snapshot contains only that playbook, in auto
-mode; editing the live catalogue cannot change an ongoing run.
+Archived versions can be tested. The snapshot contains only the selected playbooks, in auto
+mode on main; editing the live catalogue cannot change an ongoing run.
+
+### Joint backtests
+
+Use `--backtest morning-put@2,afternoon-call --plan eod-50k ...`, or replace
+`playbook` with `"playbooks": ["morning-put@2", "afternoon-call"]` in
+`POST /api/backtests`. Exactly one selector field is required. Joint selections
+must contain 2–8 distinct IDs; selecting two versions of one ID is rejected.
+Missing versions pin latest at start, including each definition's version history
+for journal verification. In the terminal, use **Add playbook** and select each
+version; removing the extra rows returns to a single run.
+
+Every day uses one Desk and one main account, with all selected definitions in
+Auto. Attempts carry that same shared account across days until pass/failure.
+Cash, buying power, held-contract caps, scaling, daily loss, trade-risk and flat-time
+limits, evaluation floor, target and consistency all apply to the account as a
+whole. Entry windows, sizing, management and entry/cooldown guardrails remain
+per playbook. Existing held/working-contract overlap checks still apply.
+
+Entry evaluation and submission use **ascending lexical playbook ID order**,
+regardless of request order; each definition's underlyings retain their array order.
+The Desk handles existing automatic exits first in opening-order order, then
+entries. Each submission refreshes the shared account before the next entry.
+When a limit binds, the earlier ID wins; the later ID gets the normal entry-blocking
+or rejection reason. Worker count changes only independent-day scheduling:
+completed reports and journals are byte-identical at one or eight workers.
+
+Joint reports use schema **3**, `mode: "joint"` and `playbooks` containing pinned
+definitions in evaluation order; `playbook` is absent. Single reports retain their
+existing schema and bytes. Account-level days, attempts and evaluation rows have
+the same meaning. `per_playbook` on each day and attempt, and on `summary`, contains
+closed/open trade counts, expectancy, win rate, adherence, return on buying power,
+realised and marked option P&L, entry reasons and attributable rule trips. The
+summary pools independent days, not attempts. Realised P&L includes fees and partial
+closes; marked P&L adds unrealised option P&L and is null if an attributed open
+position lacks fresh marks. Shares from assignment and dividends remain account
+results, outside the existing playbook attribution. Account-wide rule trips are
+untagged; identifiable order rejections carry `playbook`. Summary reason keys include
+the date. Trades keep their versioned playbook tags.
+
+Schema 1/2 saved reports still load in listings, compare and the terminal. Joint
+listings carry `mode` and `playbooks` identities including names; `?playbook=ID` or
+`?playbook=ID@VERSION` matches any member. Forward-test comparison uses the member's
+attributed summary when the latest matching saved run is joint.
+
+### Day inputs
 
 `--days` reads a JSON array. Recording paths are relative to the manifest. Imported
 recordings use the same `.oprec` format and follow the same replay path:
@@ -450,8 +495,9 @@ an evaluation failure unless the reducer's evaluation rules fail the account.
 
 ### Reports and reproducibility
 
-Report schema 2 adds optional `input_set` and attempt `day_rows`; schema 1 reports
-remain readable. Each attempt has one row per consumed supplied day, captured at
+Single runs retain report schema 2, which adds optional `input_set` and attempt
+`day_rows`; schema 1 reports remain readable. Joint runs use schema 3 with the
+ordered definitions and attribution described above. Each attempt has one row per consumed supplied day, captured at
 the last replay observation (or the decision batch). Rows contain the date and
 zero-based input index, start/end closed balance and equity, equity-change P&L,
 valuation completeness, current floor and distance, profit target and progress,
@@ -524,8 +570,8 @@ updates. Both are recorded in the report; neither path fetches additional histor
 
 | Route | Contract |
 | --- | --- |
-| `POST /api/backtests` | Start `{playbook:"ID@VERSION",plan:"eod-50k",days:[…]}` or `{playbook,plan,scenarios:N,seed:"S"}`; optional `scenario` and `workers`; returns 202 |
-| `GET /api/backtests` | Saved run summaries and the active ID; optional `playbook: {id,version}` and `summary` for reports |
+| `POST /api/backtests` | Start `{playbook:"ID@VERSION",plan:"eod-50k",days:[…]}` or `{playbook,plan,scenarios:N,seed:"S"}`; replace `playbook` with `playbooks:["a@2","b"]` for joint mode; optional `scenario` and `workers`; returns 202 |
+| `GET /api/backtests` | Saved run summaries and the active ID; `playbook: {id,version}` or joint `playbooks`, plus `summary`; optional `?playbook=ID[@VERSION]` filter |
 | `GET /api/backtests/{id}` | Progress and the completed or partial report |
 | `GET /api/backtests/compare?ids=A,B` | Compare 2–8 distinct finished reports, including partial reports, and their combined independent daily P&L |
 | `DELETE /api/backtests/{id}` | Request cancellation; `DELETE /api/backtests` cancels the active run (unchanged) |
@@ -553,7 +599,7 @@ active runs never do. Thus a completed new run can leave N+1 unpinned reports un
 the next start. Pins survive restart. Keep important reports before starting more
 runs. CLI output directories are outside this server retention policy.
 
-Comparison returns each run's playbook@version, full plan configuration in the
+Comparison returns each run's playbook@version (or ordered joint playbooks), full plan configuration in the
 report's existing journal encoding, input identities and summary. `daily` aligns
 independent daily P&L over the union of supplied dates; a missing or unfinished day
 is null. `different_inputs`, `different_plans` and `incomplete_inputs` flag
@@ -563,16 +609,17 @@ days and flag missing identities in partial reports. A selected active run retur
 `BACKTEST_REPORT_UNAVAILABLE`. Invalid or duplicate selections return 400.
 Exact-money overflow returns 422 `BACKTEST_COMPARISON_UNAVAILABLE`.
 
-`combined` is a **sum of independent single-playbook days**, not a joint simulation
-on one account: there is no shared buying power, risk limit or plan floor. Missing
-dates contribute nothing; supplied unfinished/unmarked days make that combined day
+`combined` is a **sum of independent run days**: there is no shared buying power,
+risk limit or plan floor across the selected runs. When any selected run is already
+joint, `combined.includes_joint: true` and its label make that explicit. Single-only
+comparison output is unchanged. Missing dates contribute nothing; supplied unfinished/unmarked days make that combined day
 null and the cumulative curve unknown from then on. Its distribution and worst
 days omit those unknown daily totals. The curve begins at zero; maximum drawdown
 is its peak-to-later-trough decline (null if incomplete), not intraday drawdown.
 The exact-money distribution uses the existing quartile and mean conventions;
 day win rate excludes breakevens. Worst-day ties use date order. The terminal
-shows the comparison table, combined curve and distribution. True multi-playbook
-runs sharing one account are not implemented.
+shows the comparison table, combined curve and distribution. To trade several
+playbooks on one account, start a joint backtest as described above.
 
 ## Practising strategies with shares
 

@@ -129,7 +129,7 @@ simulation's limits.
 - **Playbook rule breadth (F52, part 1)**: completed-bar SMA/EMA, Wilder RSI and
   Bollinger entries, VIX levels and signed opening gaps; trailing-profit, calendar
   DTE, trading-day deadlines and debit bracket stops across live Auto, replay and backtests.
-- **Batch backtests**: run a pinned playbook over recorded, imported or seeded
+- **Batch backtests**: run one pinned playbook or 2–8 jointly on one account over recorded, imported or seeded
   scenario days, with independent daily results and carried-account evaluation
   attempts with daily evaluation rows. Compare saved runs and chart the sum of
   independent daily P&L. Pin, delete and automatically retain saved reports and
@@ -366,7 +366,7 @@ submitted close's label without duplicating orders.
 - [x] Technical, VIX and gap playbook entries; trailing, DTE, trading-day and debit exits (F52, part 1)
 - [x] F52: backtest comparison, combined independent daily P&L, per-day evaluation rows,
       saved-run deletion, pins and bounded server retention
-- [ ] True joint multi-playbook backtests sharing account buying power and plan limits
+- [x] True joint multi-playbook backtests sharing account buying power and plan limits (F52)
 - [x] F72: held-size close tickets, confirmed cancellations with persistent results,
       fresh finished runs in the switcher, held-strategy gamma and vega, and sizing labels
       that name the binding floor, buying power or limit
@@ -584,7 +584,7 @@ Status of the audit’s F1–F73 features. Links describe the rules and limits.
 | F49 | [Margin realism and account types](paper-trading.md#account-rules-and-evaluations) | Done |
 | F50 | [In-app run verification](runtime.md#verifying-a-run) | Done |
 | F51 | [Live forward testing and playbook ergonomics](playbooks.md#forward-tests-on-live-paper) | Done |
-| F52 | [Backtest breadth](playbooks.md#batch-backtests) | Done (combined backtests add independent daily P&L; joint multi-playbook backtests sharing buying power remain open) |
+| F52 | [Backtest breadth](playbooks.md#batch-backtests) | Done (joint multi-playbook backtests share one account, with deterministic ID order, per-playbook attribution and verifiable journals; compare also sums independent runs) |
 | F53 | [Beta weighting to SPY or SPX](paper-trading.md#risk-profile-and-probabilities) | Done |
 | F54 | [Probability cones and reaching a price](paper-trading.md#risk-profile-and-probabilities) | Done |
 | F55 | [Return on buying power](paper-trading.md#return-on-buying-power) | Done |
