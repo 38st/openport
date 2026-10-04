@@ -362,6 +362,7 @@ TEST_F(PaperEngine, AlertsRejectMalformedBodiesAndRefuseUnknownContractsOrAFullB
 TEST_F(PaperEngine, PreviewIsPureEvenBeforeContractRegistration) {
   seed();
   const auto before = engine->trading_view();
+  const auto account_before = read(*engine, "/api/account");
   ASSERT_TRUE(before->contracts.empty());
   auto request = order(market, "preview-client", "4.20");
   request["floor_share"] = 0.5;
@@ -374,6 +375,7 @@ TEST_F(PaperEngine, PreviewIsPureEvenBeforeContractRegistration) {
   EXPECT_TRUE(preview["max_units_basis"] == "limits" || preview["max_units_basis"] == "buying_power");
   EXPECT_TRUE(preview["simulated"]);
   EXPECT_EQ(engine->trading_view()->snapshot->account_version, before->snapshot->account_version);
+  EXPECT_EQ(read(*engine, "/api/account"), account_before);
   EXPECT_TRUE(engine->trading_view()->contracts.empty());
   EXPECT_TRUE(engine->trading_view()->snapshot->recent_orders.empty());
   request.erase("floor_share");
@@ -390,6 +392,7 @@ TEST_F(PaperEngine, AChangePreviewAnswersLikeTheChangeWithoutMakingIt) {
   const auto placed = write(*engine, "POST", "/api/orders", order(market, "resting", "3.40"));
   ASSERT_EQ(placed.status, 201) << placed.body;
   const auto id = json::parse(placed.body)["order"]["id"].get<std::string>();
+  const auto before = read(*engine, "/api/account");
   auto response = write(*engine, "POST", "/api/orders/" + id + "/preview", {{"limit_price", "4.20"}, {"floor_share", 1}});
   ASSERT_EQ(response.status, 200) << response.body;
   const auto preview = json::parse(response.body);
@@ -403,6 +406,7 @@ TEST_F(PaperEngine, AChangePreviewAnswersLikeTheChangeWithoutMakingIt) {
   EXPECT_EQ(orders[0]["status"], "working");
   EXPECT_EQ(orders[0]["limit_price"], "3.40");
   EXPECT_TRUE(read(*engine, "/api/fills")["fills"].empty());
+  EXPECT_EQ(read(*engine, "/api/account"), before);
   expect_error(write(*engine, "POST", "/api/orders/99/preview", {{"limit_price", "4.20"}}), 404, "UNKNOWN_ORDER");
   expect_error(write(*engine, "POST", "/api/orders/" + id + "/preview", json::object()), 400, "INVALID_REQUEST");
   expect_error(write(*engine, "POST", "/api/orders/" + id + "/preview", {{"limit_price", "4.20"}, {"floor_share", 2}}), 400, "INVALID_REQUEST");
@@ -410,6 +414,7 @@ TEST_F(PaperEngine, AChangePreviewAnswersLikeTheChangeWithoutMakingIt) {
 
 TEST_F(PaperEngine, WhatIfComparesCandidatesWithoutTrading) {
   seed();
+  const auto before = read(*engine, "/api/account");
   auto buy = order(market, "ignored", "4.20");
   buy.erase("client_order_id");
   auto sell = buy;
@@ -431,6 +436,7 @@ TEST_F(PaperEngine, WhatIfComparesCandidatesWithoutTrading) {
   EXPECT_EQ(result["candidates"][1]["after"]["exposure"]["dollar_delta"], 0);
   EXPECT_TRUE(read(*engine, "/api/orders")["orders"].empty());
   EXPECT_TRUE(read(*engine, "/api/fills")["fills"].empty());
+  EXPECT_EQ(read(*engine, "/api/account"), before);
   expect_error(write(*engine, "POST", "/api/orders/what-if", {{"candidates", json::array()}}), 400, "INVALID_REQUEST");
   expect_error(write(*engine, "POST", "/api/orders/what-if", {{"candidates", json::array({{{"orders", json::array()}}})}}), 400, "INVALID_REQUEST");
   auto broken = buy;
@@ -481,9 +487,7 @@ TEST_F(PaperEngine, WhatIfProjectsAHeldContractExitWithoutTrading) {
   EXPECT_EQ(candidate["orders"][0]["decision"], "ok");
   ASSERT_FALSE(candidate["after"].is_null());
   EXPECT_EQ(candidate["after"]["exposure"]["dollar_delta"], 0);
-  const auto after = read(*engine, "/api/account");
-  EXPECT_EQ(after["evaluation"], before["evaluation"]);
-  EXPECT_EQ(after["buying_power"], before["buying_power"]);
+  EXPECT_EQ(read(*engine, "/api/account"), before);
   EXPECT_EQ(read(*engine, "/api/orders")["orders"].size(), 1U);
   EXPECT_EQ(read(*engine, "/api/fills")["fills"].size(), 1U);
 }

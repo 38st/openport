@@ -1156,7 +1156,11 @@ std::string Desk::opening_source() const {
 
 void Desk::update_trading(const std::vector<md::Event>& batch,
                             std::deque<PendingCommand>& commands, md::Timestamp driver_time) {
-  if (batch.empty() && commands.empty()) return;
+  // Dry runs prepare their market on private copies. Without new market events,
+  // answering them must not revalue or advance the live account.
+  if (batch.empty() && std::all_of(commands.begin(), commands.end(), [](const auto& pending) {
+        return dry_run(pending.command.kind);
+      })) return;
   const auto now = driver_time;
   // Underlying prints retain ingress order. The first valid last on a date at or
   // after its regular close (16:00, 13:00 early) is our documented PM
