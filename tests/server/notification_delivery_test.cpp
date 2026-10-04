@@ -116,9 +116,11 @@ TEST(WebServer, ReplayAlertsReachWebhookAndNtfyOnlyWithOptInAndDoNotResendHistor
       sink.close();
       ASSERT_TRUE(sink.error().empty()) << sink.error();
     }
-    const auto config = server::parse_notification_config(json{{"include_simulated", enabled}, {"channels", {
+    const auto channels = json::array({
         {{"id", "hook"}, {"type", "webhook"}, {"url", receiver.url("/hook")}, {"events", {"alert"}}},
-        {{"id", "phone"}, {"type", "ntfy"}, {"url", receiver.url("/topic")}, {"events", {"alert"}}}}}.dump());
+        {{"id", "phone"}, {"type", "ntfy"}, {"url", receiver.url("/topic")}, {"events", {"alert"}}}});
+    const auto config = server::parse_notification_config(
+        json{{"include_simulated", enabled}, {"channels", channels}}.dump());
     auto service = std::make_shared<server::Notifications>(config, std::make_unique<net::HttpClient>(), server::Notifications::Options{});
     server::Engine::Options base;
     base.notifications = service;
