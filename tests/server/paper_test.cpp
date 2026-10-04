@@ -2557,6 +2557,7 @@ TEST(PaperPlans, PresetsListExactRules) {
                   {"daily_loss_basis", "equity"}, {"daily_loss_action", "lock"}, {"consistency_percent", 0},
                   {"consistency_basis", "total"}, {"min_trading_days", 0}, {"min_profitable_days", 0},
                   {"profitable_day_profit", nullptr}, {"day_end", "17:00"}, {"max_contracts_held", 0},
+                  {"max_volume_percent", 0}, {"no_hedging", false}, {"no_counter_positions", false},
                   {"require_stop_loss", false}, {"max_trade_risk", nullptr}, {"max_trade_risk_percent", 0},
                   {"time_limit_days", 0}, {"inactivity_days", 0}, {"underlyings", json::array()},
                   {"trading_start", nullptr}, {"trading_end", nullptr}, {"flat_time", nullptr}, {"no_overnight", false},
@@ -4153,7 +4154,11 @@ TEST(PaperStocks, PositionDisposalContractFixture) {
   // Nobody bids now: 0.00 x 21.20.
   time += md::kNanosPerSecond;
   quote(0, 0);
-  ASSERT_TRUE(wait_for([&] { return engine.trading_view()->snapshot->time == time; }));
+  // The underlying can advance the clock before the option quote is published.
+  ASSERT_TRUE(wait_for([&] {
+    const auto snapshot = engine.trading_view()->snapshot;
+    return snapshot->time == time && !snapshot->positions.empty() && snapshot->positions[0].no_bid;
+  }));
   EXPECT_EQ(read(engine, "/api/portfolio")["positions"][0]["no_bid"], true);
   const auto abandoned = write(engine, "POST", "/api/positions/abandon", {{"symbol", symbol}});
   ASSERT_EQ(abandoned.status, 200) << abandoned.body;
