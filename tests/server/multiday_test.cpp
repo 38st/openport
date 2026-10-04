@@ -37,7 +37,8 @@ constexpr const char* kWeekend = R"({"id":"weekend","title":"Weekend","descripti
 server::ApiResponse call(server::ReplayHost& host, std::string method, std::string target, const json& body = json::object()) {
   std::promise<server::ApiResponse> done;
   auto result = done.get_future();
-  server::ApiRequest request{std::move(method), std::move(target), body.dump()};
+  const auto payload = method == "DELETE" && body.empty() ? "" : body.dump();
+  server::ApiRequest request{std::move(method), std::move(target), payload};
   request.content_type = "application/json";
   request.actor = "test-actor";
   if (!host.handle(request, [&](server::ApiResponse response) { done.set_value(std::move(response)); }))
@@ -271,6 +272,123 @@ TEST(MultiDayReplay, StartsAndStepsToADateAndTimeInTheRunsSessions) {
   ASSERT_EQ(history.size(), 1U);
   EXPECT_EQ(history[0]["sessions"], sessions);
 }
+
+class ScenarioCommandRestart : public testing::TestWithParam<int> {};
+
+TEST_P(ScenarioCommandRestart, InclusiveBoundaryAndGapCommandsRestartAndResumeByteExactly) {
+  test::RecordingFile file;
+  const auto scenarios = file.directory / "scenarios";
+  std::filesystem::create_directory(scenarios);
+  { std::ofstream out(scenarios / "seconds.json"); out << R"({"id":"seconds","title":"Seconds","description":"Command clock fixture.",
+      "symbols":["SPX"],"date":"2026-09-16","seed":19,"generator":1,"session":"regular",
+      "volatility":0.02,"iv_shift":0,"spot_vol":-2,"drift":[[1,0]]})"; }
+  server::Engine::Options options;
+  options.paper_journal = file.directory / "paper.jsonl";
+  options.analytics.deamericanize = false;
+  // Keep the tiny limits resting while allowing both price and quantity changes.
+  options.paper.limits.price_band_absolute = Money::parse("100.00");
+  options.paper.limits.per_underlying.dollar_delta = 10000000;
+  options.paper.limits.aggregate.dollar_delta = 10000000;
+  server::ReplayHost host({file.directory, options, true, scenarios});
+  const auto started = call(host, "POST", "/api/replay", {{"scenario", "seconds"}, {"seed", "scenario"},
+      {"plan", "practice"}, {"paused", true}, {"speed", 0}});
+  ASSERT_EQ(started.status, 201) << started.body;
+  const auto metadata = json::parse(started.body).at("replay");
+  const auto id = metadata.at("id").get<std::string>();
+  const auto source = file.directory / "replays" / (id + ".jsonl");
+  const auto ready = [](server::ReplayHost& replay) {
+    return !json::parse(replay.tick()).at("replay").at("fast_forwarding").get<bool>();
+  };
+  ASSERT_TRUE(test::recording_eventually([&] { return ready(host); }));
+  const auto bytes = [](const std::filesystem::path& path) {
+    std::ifstream in(path);
+    return std::string(std::istreambuf_iterator<char>(in), {});
+  };
+  const auto submit = [&](server::ReplayHost& replay, const std::string& client) {
+    return call(replay, "POST", "/api/replay/orders", {{"client_order_id", client}, {"symbol", "SPXW  260916C06000000"},
+        {"side", "buy"}, {"type", "limit"}, {"limit_price", "0.05"}, {"quantity", 1}, {"time_in_force", "gtc"}});
+  };
+  std::vector<std::string> ids;
+  for (int index = 0; index < 3; ++index) {
+    const auto placed = submit(host, "resting-" + std::to_string(index));
+    ASSERT_EQ(placed.status, 201) << placed.body;
+    ids.push_back(json::parse(placed.body).at("order").at("id").get<std::string>());
+  }
+  std::vector<std::string> prefixes;
+  std::vector<json> books;
+  const auto boundary = md::new_york_to_utc({2026, 9, 16}, 9, 30, 30);
+  for (int phase = 0; phase < 2; ++phase) {
+    const auto at = phase == 0 ? "09:30:30" : "09:30:32";
+    ASSERT_EQ(call(host, "PUT", "/api/replay", {{"until", at}}).status, 200);
+    const auto before = trading::FileJournal::read(source.string()).records.size();
+    // Rotate the first command: input-first timestamps are not specific to modify.
+    for (int index = 0; index < 3; ++index) {
+      const auto kind = (GetParam() + index) % 3;
+      server::ApiResponse response;
+      if (kind == 0) {
+        response = call(host, "PUT", "/api/replay/orders/" + ids[0],
+            {{"limit_price", phase == 0 ? "0.10" : "0.15"}, {"quantity", phase + 2}});
+      } else if (kind == 1) {
+        response = submit(host, "at-" + std::to_string(phase));
+      } else {
+        response = call(host, "DELETE", "/api/replay/orders/" + ids[static_cast<std::size_t>(phase + 1)]);
+      }
+      ASSERT_EQ(response.status, kind == 1 ? 201 : 200) << response.body;
+    }
+    ASSERT_EQ(call(host, "PUT", "/api/replay", {{"paused", true}}).status, 200);
+    const auto recovery = trading::FileJournal::read(source.string());
+    ASSERT_GT(recovery.records.size(), before);
+    EXPECT_EQ(recovery.records[before].time, boundary);
+    const auto inputs = server::run_inputs(recovery);
+    ASSERT_GE(inputs.size(), 3U);
+    for (std::size_t index = inputs.size() - 3; index < inputs.size(); ++index) {
+      const auto input = json::parse(inputs[index]);
+      EXPECT_EQ(input.at("kind"), "command");
+      EXPECT_EQ(input.at("time"), boundary + phase * 2 * md::kNanosPerSecond);
+    }
+    prefixes.push_back(bytes(source));
+    books.push_back(json::parse(call(host, "GET", "/api/replay/orders").body).at("orders"));
+  }
+  // Preserve the gap-time commands as an interrupted run, with its original metadata.
+  const auto crashed = file.directory / "crashed";
+  std::filesystem::create_directories(crashed / "replays");
+  const auto resumed_journal = crashed / "replays" / (id + ".jsonl");
+  std::filesystem::copy_file(source, resumed_journal);
+  { std::ofstream out(crashed / "replays" / (id + ".json")); out << metadata; }
+  ASSERT_EQ(call(host, "PUT", "/api/replay", {{"until", "09:30:45"}}).status, 200);
+  ASSERT_EQ(submit(host, "after-target").status, 201);
+  ASSERT_EQ(call(host, "DELETE", "/api/replay").status, 200);
+  const auto original = bytes(source);
+  for (const auto* at : {"09:30:30", "09:30:31", "09:30:32"}) {
+    SCOPED_TRACE(at);
+    const auto restarted = call(host, "POST", "/api/replay", {{"restart", id}, {"at", at}});
+    ASSERT_EQ(restarted.status, 201) << restarted.body;
+    const auto replay = json::parse(restarted.body).at("replay");
+    const auto journal = file.directory / "replays" / (replay.at("id").get<std::string>() + ".jsonl");
+    const auto phase = std::string(at) == "09:30:32" ? 1U : 0U;
+    EXPECT_EQ(bytes(journal), prefixes[phase]);
+    EXPECT_EQ(json::parse(call(host, "GET", "/api/replay/orders").body).at("orders"), books[phase]);
+    EXPECT_EQ(bytes(source), original);
+    ASSERT_EQ(call(host, "DELETE", "/api/replay").status, 200);
+    const auto verified = server::verify_run(journal);
+    EXPECT_TRUE(verified.matched) << verified.message;
+  }
+  options.paper_journal = crashed / "paper.jsonl";
+  server::ReplayHost resumed({file.directory, options, true, scenarios});
+  const auto response = call(resumed, "POST", "/api/replay", {{"resume", id}, {"speed", 0}});
+  ASSERT_EQ(response.status, 201) << response.body;
+  ASSERT_TRUE(test::recording_eventually([&] { return ready(resumed); }));
+  EXPECT_EQ(bytes(resumed_journal), prefixes.back());
+  EXPECT_EQ(json::parse(call(resumed, "GET", "/api/replay/orders").body).at("orders"), books.back());
+  ASSERT_EQ(call(resumed, "PUT", "/api/replay", {{"until", "09:30:45"}}).status, 200);
+  ASSERT_EQ(submit(resumed, "after-target").status, 201);
+  ASSERT_EQ(call(resumed, "DELETE", "/api/replay").status, 200);
+  EXPECT_EQ(bytes(resumed_journal), original);
+  const auto verified = server::verify_run(resumed_journal);
+  EXPECT_TRUE(verified.matched) << verified.message;
+}
+
+INSTANTIATE_TEST_SUITE_P(ModifySubmitCancelFirst, ScenarioCommandRestart, testing::Values(0, 1, 2));
 
 TEST(MultiDayReplay, ScenarioSecondsAndRestartKeepTheSeedPlanSettingsAndCommandPrefix) {
   test::RecordingFile file;

@@ -389,6 +389,11 @@ supported older scenario revisions at their saved revision; old sidecars need
 no new fields. The new journal passes the same `--verify-run` as the source.
 `start_at` for ordinary starts still names receipt time; restart `at` names market
 time, so delayed recordings do not move commands to their receipt timestamps.
+Commands issued at exactly T after its batch boundary are included, in journal
+order. A command's market time is the `time` inside its `run_input` payload. The
+outer transaction timestamp can still be the preceding account time because the
+input is recorded before its effects. An input for a command after T is excluded
+even when that outer timestamp is at or before T.
 
 ## Saved runs
 
