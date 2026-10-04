@@ -194,6 +194,9 @@ class InvariantTest(unittest.TestCase):
 
     def test_buying_power_documented_exceptions(self):
         before, after = state(), state()
+        after["portfolio"]["buying_power"]["available"] = "-1.00"
+        after["orders"]["orders"] = [order(status="working", filled_quantity=0, remaining_quantity=1)]
+        self.assertIn("buying_power", self.checks(after, before=before, accepted_order=True))
         after["portfolio"].update(cash="-1.00", equity="-1.00")
         after["account"]["evaluation"]["equity"] = "-1.00"
         after["portfolio"]["buying_power"]["available"] = "-1.00"

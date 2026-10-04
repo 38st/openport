@@ -17,8 +17,8 @@ change cash, never quantities. No resets are generated, so ledgers span one atte
 
 Buying power may be negative after market moves, with enforcement disabled, or
 when a command frees power (docs/paper-trading.md, Margin and buying power). Check
-accepted orders against previews and flag a deterioration of both free and available
-power below zero, rather than treating every negative snapshot as a violation.
+accepted orders against previews and reject spending free power, or reserving power
+on an empty book, below zero. A negative snapshot alone is not a violation.
 
 Scenario journals contain no run-specific fields to normalize (docs/scenarios.md
 and docs/runtime.md). Compare raw head/count/bytes, and raw files when accessible.
@@ -205,9 +205,15 @@ def check_invariants(state, before=None, accepted_order=False, abandoned=None):
             basis = "equity" if account["rules"].get("margin") == "portfolio" else "cash"
             free = money(portfolio[basis]) - money(portfolio["buying_power"]["requirement"])
             previous_free = money(previous[basis]) - money(previous["buying_power"]["requirement"])
-            if free < previous_free and available <= money(previous["buying_power"]["available"]):
+            empty_book = (not previous["positions"] and not previous["stocks"] and
+                          not any(o["status"] in WORKING for o in before["orders"]["orders"]))
+            # A resting order on an empty book cannot be buying protection or
+            # restoring cover for another working order. Negative reservation is
+            # therefore a violation even before any fill changes free power.
+            spending = free < previous_free or (free == previous_free and empty_book)
+            if spending and available <= money(previous["buying_power"]["available"]):
                 fail("buying_power", available=str(available), before_available=previous["buying_power"]["available"],
-                     free=str(free), before_free=str(previous_free))
+                     free=str(free), before_free=str(previous_free), empty_book=empty_book)
     return failures, counts
 
 
