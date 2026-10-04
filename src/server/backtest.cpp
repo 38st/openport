@@ -408,6 +408,9 @@ BacktestRequest parse_backtest(const json& body, const json& catalogue,
     const auto defaults = trading::optional_rule_defaults();
     for (const auto& [key, value] : defaults.items())
       if (!rules.contains(key)) rules[key] = value;
+    // Program bookkeeping fields are also omitted from default journal rules.
+    for (const auto* key : {"evaluation_fee", "reset_fee", "activation_fee", "max_resets"})
+      if (!rules.contains(key)) rules[key] = 0;
     if (!required(plan, "rules", "plan rules").is_object()) throw std::invalid_argument("rules must be an object");
     const auto& custom = plan.at("rules");
     if (custom.contains("microscalp_seconds") != custom.contains("microscalp_percent"))
