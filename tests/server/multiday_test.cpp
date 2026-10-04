@@ -336,6 +336,7 @@ TEST(MultiDayReplay, EvaluationDeadlineFailsAfterItsLastDateAndRestartReproduces
       {"session":"regular","drift":[[1,0]]}]})"; }
   server::Engine::Options base;
   base.paper_journal = file.directory / "paper.jsonl";
+  base.paper.limits.price_band_absolute = Money::parse("100.00");  // keep the tiny GTC limit resting
   server::ReplayHost host({file.directory, base, true, scenarios});
   const auto start = call(host, "POST", "/api/replay",
       {{"scenario", "deadline"}, {"seed", "scenario"}, {"plan", "eod-100k"}, {"paused", true}});
