@@ -213,12 +213,16 @@ it("round trips account size scaling, disables it and validates every field", ()
 })
 
 it("keeps combined rules while switching phase-specific time and size scaling", () => {
-  const base = { ...rules, time_limit_days: 30, inactivity_days: 14, underlyings: ["SPX"],
+  const base: AccountRules = { ...rules, time_limit_days: 30, inactivity_days: 14, underlyings: ["SPX"],
     flat_time: "15:45", no_overnight: true,
+    events: [{ kind: "news", time: "2026-09-22T14:00:00Z" }, { kind: "split", time: "2026-09-23", symbol: "SPX" }],
+    news_before_minutes: 5, news_after_minutes: 10, news_action: "flatten", hold_restrictions: ["split"], hold_cutoff: "15:40",
     trading_start: "09:30", trading_end: "16:00", scaling: [{ profit: "0.00", contracts: 2 }],
     size_scaling: { profit_percent: 10, payouts: 2, days: 80, increase_percent: 25, max_balance: "200000.00" } }
   const form = planForm({ initial_cash: "100000", rules: base })
   const shared = { inactivity_days: 14, underlyings: ["SPX"], trading_start: "09:30", trading_end: "16:00",
+    events: base.events, news_before_minutes: 5, news_after_minutes: 10, news_action: "flatten",
+    hold_restrictions: ["split"], hold_cutoff: "15:40",
     flat_time: "15:45", no_overnight: true, scaling: base.scaling }
   const evaluation = customPlan({ ...form, phase: "evaluation" }, base)
   expect("error" in evaluation ? evaluation : evaluation.rules).toMatchObject({ ...shared, time_limit_days: 30, size_scaling: null })

@@ -41,6 +41,7 @@ describe("F17/F59 calendar rules", () => {
   })
   it("preserves all combined rules and gives flat time priority in tickets", () => {
     const combined: AccountRules = { ...rules, flat_time: "15:45", no_overnight: true,
+      scaling: [{ profit: "0.00", contracts: 2 }, { profit: "1500.000001", contracts: 4 }],
       time_limit_days: 30, inactivity_days: 14, underlyings: ["SPY"], trading_start: "09:30", trading_end: "16:00",
       max_contracts_held: 5, require_stop_loss: true, max_trade_risk: "123.456789", max_trade_risk_percent: 25 }
     const result = customPlan(planForm({ initial_cash: "100000", rules: combined }), combined)
