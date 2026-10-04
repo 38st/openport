@@ -39,10 +39,28 @@ std::string_view to_string(Reason reason) noexcept {
 #undef CASE
   return "UNKNOWN";
 }
-std::vector<std::string> order_symbols(const OrderRequest& request) {
-  if (!multi_leg(request)) return {request.symbol};
-  std::vector<std::string> symbols;
+namespace {
+void append_order_symbols(const OrderRequest& request, std::vector<std::string>& symbols) {
+  if (!multi_leg(request)) {
+    symbols.push_back(request.symbol);
+    return;
+  }
   for (const auto& leg : request.legs) symbols.push_back(leg.symbol);
+}
+void append_chain_symbols(const OrderRequest& request, std::vector<std::string>& symbols) {
+  append_order_symbols(request, symbols);
+  for (const auto& next : request.then) append_chain_symbols(next, symbols);
+  for (const auto& other : request.oco) append_chain_symbols(other, symbols);
+}
+}  // namespace
+std::vector<std::string> order_symbols(const OrderRequest& request) {
+  std::vector<std::string> symbols;
+  append_order_symbols(request, symbols);
+  return symbols;
+}
+std::vector<std::string> chain_symbols(const OrderRequest& request) {
+  std::vector<std::string> symbols;
+  append_chain_symbols(request, symbols);
   return symbols;
 }
 Decision eligible(const md::OptionContract& c) {

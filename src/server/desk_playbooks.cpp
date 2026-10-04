@@ -111,7 +111,7 @@ void Desk::evaluate_playbooks(md::Timestamp driver_time) {
       if (time_stop && !options_.replay) {
         // Check feed/session freshness before cancelling working protection. A mode
         // command can evaluate while the feed is stopped, without a new snapshot.
-        for (const auto& symbol : trading::order_symbols(order)) {
+        for (const auto& symbol : trading::chain_symbols(order)) {
           const auto contract = view->contracts.find(symbol);
           if (contract == view->contracts.end()) continue;
           const auto& underlying = contract->second.underlying;

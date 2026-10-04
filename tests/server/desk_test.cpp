@@ -36,6 +36,17 @@ std::vector<md::Event> market_batch(const test::ScriptedMarket& market, double a
           md::OptionQuote{0, market.time, ask - .2, ask, 20, 20},
           md::SnapshotComplete{"SPX", market.time}};
 }
+std::vector<md::Event> market_batch(const test::ScriptedMarket& market,
+                                    const test::ScriptedMarket& other,
+                                    double ask = 4.2, double other_bid = 1.0,
+                                    double other_ask = 1.2) {
+  return {md::ContractDefinition{0, market.contract},
+          md::ContractDefinition{1, other.contract},
+          md::UnderlyingQuote{"SPX", market.time, 5000, 5000, 5000},
+          md::OptionQuote{0, market.time, ask - .2, ask, 20, 20},
+          md::OptionQuote{1, market.time, other_bid, other_ask, 20, 20},
+          md::SnapshotComplete{"SPX", market.time}};
+}
 server::TradingReply command(server::Desk& desk, server::TradingCommand request, md::Timestamp time, md::Timestamp driver) {
   std::optional<server::TradingReply> result;
   desk.command(std::move(request), [&](server::TradingReply reply) { result = std::move(reply); }, time, driver);
@@ -122,6 +133,62 @@ TEST_P(DeskPhases, VolumeShareGateChecksKnownUnknownStaleVolumeAndOpeningContrac
   server::TradingCommand stock;
   stock.kind = server::TradingCommand::Kind::TradeStock; stock.symbol = "SPY"; stock.quantity = 1;
   EXPECT_TRUE(command(desk, stock, market.time, market.time).decision.ok());
+  desk.stop();
+}
+
+TEST(Desk, OrderChainsDefineUnreferencedContractsBeforeAcceptanceAndFill) {
+  test::ScriptedMarket market;
+  test::ScriptedMarket other;
+  other.contract = *md::parse_osi("SPXW261022P05000000");
+  server::Desk::Options options;
+  options.analytics.fallback_rate = 0;
+  server::Desk desk("test", {}, {{"SPX"}}, options);
+  desk.start_trading();
+  desk.replay_batch(market_batch(market, other), market.time);
+  server::TradingCommand entry;
+  entry.order = market.limit("oco-unreferenced", 1, "3.90");
+  entry.order.oco = {other.limit("", 1, "1.00")};
+  const auto oco = command(desk, entry, market.time, market.time);
+  ASSERT_TRUE(oco.decision.ok()) << oco.decision.message;
+  const auto first = *oco.order_id;
+  const auto snapshot = desk.trading_view()->snapshot;
+  ASSERT_EQ(snapshot->open_orders.size(), 2U);
+  const auto first_order = std::find_if(snapshot->open_orders.begin(), snapshot->open_orders.end(),
+      [&](const auto& order) { return order.id == first; });
+  const auto other_order = std::find_if(snapshot->open_orders.begin(), snapshot->open_orders.end(),
+      [&](const auto& order) { return order.request.client_order_id == "oco-unreferenced:oco"; });
+  ASSERT_NE(first_order, snapshot->open_orders.end());
+  ASSERT_NE(other_order, snapshot->open_orders.end());
+  EXPECT_EQ(other_order->request.symbol, other.symbol());
+
+  test::ScriptedMarket later = market;
+  later.next();
+  test::ScriptedMarket next = other;
+  next.time = later.time;
+  next.observation = later.observation;
+  desk.replay_batch({md::UnderlyingQuote{"SPX", later.time, 5000, 5000, 5000},
+                     md::OptionQuote{0, later.time, 3.70, 3.90, 20, 20},
+                     md::SnapshotComplete{"SPX", later.time}}, later.time);
+  entry.order = later.limit("then-unreferenced", 1, "3.80");
+  entry.order.then = {next.limit("", 1, "1.00")};
+  const auto chained = command(desk, entry, later.time, later.time);
+  ASSERT_TRUE(chained.decision.ok()) << chained.decision.message;
+  later.next();
+  next.time = later.time;
+  next.observation = later.observation;
+  desk.replay_batch({md::UnderlyingQuote{"SPX", later.time, 5000, 5000, 5000},
+                     md::OptionQuote{0, later.time, 3.60, 3.80, 20, 20},
+                     md::OptionQuote{1, later.time, 0.80, 1.00, 20, 20},
+                     md::SnapshotComplete{"SPX", later.time}}, later.time);
+  const auto orders = desk.trading_view()->snapshot->recent_orders;
+  ASSERT_GE(orders.size(), 4U);
+  const auto& parent = orders.at(*chained.order_id - 1);
+  ASSERT_NE(parent.chained, 0U);
+  const auto& child = orders.at(parent.chained - 1);
+  EXPECT_EQ(child.request.client_order_id, "then-unreferenced:then");
+  EXPECT_EQ(child.request.symbol, other.symbol());
+  EXPECT_EQ(child.chained_from, parent.id);
+  EXPECT_EQ(child.status, trading::OrderStatus::Filled);
   desk.stop();
 }
 

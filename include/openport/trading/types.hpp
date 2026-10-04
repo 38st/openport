@@ -241,6 +241,8 @@ inline constexpr std::size_t kMaxChain = 4;  ///< Orders in one request, its cha
 [[nodiscard]] inline bool multi_leg(const OrderRequest& request) { return !request.legs.empty(); }
 /// Every contract an order trades: its symbol, or each leg's.
 [[nodiscard]] std::vector<std::string> order_symbols(const OrderRequest& request);
+/// Every contract an order or any chained order trades.
+[[nodiscard]] std::vector<std::string> chain_symbols(const OrderRequest& request);
 enum class OrderRole { Normal, StopLoss, TakeProfit };
 /// A change asked of a resting order: the terms requested (each one left empty
 /// kept), the terms the order had then, who asked and when, and why it was

@@ -1237,12 +1237,12 @@ void Desk::update_trading(const std::vector<md::Event>& batch,
       std::set<std::string> symbols;
       for (const auto& p : session.snapshot()->positions) symbols.insert(p.position.contract.osi_symbol());
       for (const auto& order : session.snapshot()->open_orders)
-        for (const auto& symbol : order_symbols(order.request)) symbols.insert(symbol);
+        for (const auto& symbol : chain_symbols(order.request)) symbols.insert(symbol);
       for (const auto& pending : commands) {
         const auto& command = pending.command;
         if ((command.account.empty() ? kMainAccount : std::string_view(command.account)) != account.id) continue;
         if (command.kind == TradingCommand::Kind::Submit)
-          for (const auto& symbol : order_symbols(command.order)) symbols.insert(symbol);
+          for (const auto& symbol : chain_symbols(command.order)) symbols.insert(symbol);
         if (command.kind == TradingCommand::Kind::Settle) symbols.insert(command.symbol);
         if (command.kind == TradingCommand::Kind::CreateAlert) {
           if (command.alert.condition.scope == AlertScope::Contract) symbols.insert(command.alert.condition.symbol);
@@ -1616,7 +1616,7 @@ void Desk::apply_command(PendingCommand& pending, md::Timestamp market_time, md:
     // must be supported, and its underlying's feed current.
     const auto submission_gate = [&](const OrderRequest& order) {
       Decision rejection;
-      for (const auto& symbol : order_symbols(order)) {
+      for (const auto& symbol : chain_symbols(order)) {
         const md::OptionContract* contract = nullptr;
         const auto id = instruments_.find(symbol);
         if (id != instruments_.end()) {
@@ -1652,7 +1652,7 @@ void Desk::apply_command(PendingCommand& pending, md::Timestamp market_time, md:
           auto rejection = submission_gate(c.order);
           if (c.kind == TradingCommand::Kind::Preview) {
             std::map<std::string, double> vols;
-            const auto symbols = order_symbols(c.order);
+            const auto symbols = chain_symbols(c.order);
             const auto market = preview_market({symbols.begin(), symbols.end()}, vols);
             if (rejection.ok()) rejection = opening_gate(*account, c.order, market_time_, market);
             reply.preview = session.preview(c.order, market_time_, c.floor_share, rejection, vols, market);
