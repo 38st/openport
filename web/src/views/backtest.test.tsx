@@ -8,7 +8,7 @@ import { liveState, useLive } from "../api/live"
 import type { BacktestComparison, BacktestReport, BacktestState } from "../api/backtest-types"
 import { plans, status } from "../test/trading-fixtures"
 import { newPlaybook } from "./PlaybooksView"
-import { BacktestView, BacktestReportView, backtestHistogram } from "./BacktestView"
+import { BacktestView, BacktestReportView, BacktestCompareView, backtestHistogram } from "./BacktestView"
 import { dataSource } from "../lib/data-source"
 import { renderTimeout, waitForRender } from "../test/render"
 
@@ -73,6 +73,39 @@ describe("Backtest page", { timeout: renderTimeout }, () => {
     expect(vi.mocked(api.backtest).mock.calls.every(([id]) => id !== "")).toBe(true)
     expect(host.textContent).toContain("Not investment advice")
     expect(host.textContent).not.toContain("Funded Intraday")
+  })
+  it("adds distinct playbooks for a joint start and can return to a single run", async () => {
+    vi.mocked(api.backtestPlaybooks).mockResolvedValue({ definitions: {
+      test: { versions: [{ ...newPlaybook, id: "test", version: 1 }, { ...newPlaybook, id: "test", version: 2 }], deleted: false },
+      alpha: { versions: [{ ...newPlaybook, id: "alpha", name: "Alpha", version: 1 }], deleted: false },
+    }, modes: {}, auto_allowed: false, staged: [], reasons: {} })
+    await render(); await click("Add playbook")
+    expect(button("Start backtest").disabled).toBe(true)
+    const select = host.querySelectorAll<HTMLSelectElement>("select")[3]!
+    expect([...select.options].find(option => option.value === "test@2")?.disabled).toBe(true)
+    await field("Playbook version 2", "alpha@1"); await click("Start backtest")
+    expect(api.startBacktest).toHaveBeenLastCalledWith({ playbooks: ["test@1", "alpha@1"], plan: "eod-50k", scenarios: 10, seed: "1" }, "open")
+    expect(host.textContent).toContain("ascending playbook ID")
+    await click("Remove playbook 2"); await click("Start backtest")
+    expect(api.startBacktest).toHaveBeenLastCalledWith({ playbook: "test@1", plan: "eod-50k", scenarios: 10, seed: "1" }, "open")
+  })
+  it("renders joint identities and option attribution alongside account results", async () => {
+    const joint: BacktestReport = { ...report, schema: 3, mode: "joint", playbook: undefined,
+      playbooks: [{ ...newPlaybook, id: "alpha", name: "Alpha", version: 2 }, { ...newPlaybook, id: "beta", name: "Beta", version: 1 }],
+      summary: { ...report.summary, per_playbook: {
+        alpha: { trades: 1, open_trades: 0, expectancy: "40.00", win_rate: 1, adherence: 1, realised_pnl: "40.00", marked_pnl: "40.00", entry_reasons: {}, rule_trips: [] },
+        beta: { trades: 0, open_trades: 0, expectancy: null, win_rate: null, adherence: null, realised_pnl: "0.00", marked_pnl: "0.00", entry_reasons: { "beta:SPX": "Maximum held contracts exceeded" }, rule_trips: [] },
+      } } }
+    joint.days = [{ ...report.days[0]!, per_playbook: joint.summary.per_playbook }]
+    vi.mocked(api.backtests).mockResolvedValue({ active: null, label, runs: [{ ...state, status: "completed", mode: "joint", playbooks: joint.playbooks, summary: joint.summary }] })
+    vi.mocked(api.backtest).mockResolvedValue({ ...state, status: "completed", report: joint })
+    await render()
+    await waitForRender(() => expect(host.textContent).toContain("Joint account backtest"))
+    expect(host.querySelector('table')?.textContent).toContain("Joint · Alpha@2, Beta@1")
+    expect(host.querySelectorAll('[aria-label="Per-playbook breakdown"]')).toHaveLength(2)
+    expect(host.textContent).toContain("Maximum held contracts exceeded")
+    expect(host.textContent).toContain("Evaluation attempts")
+    expect(host.textContent).toContain("Independent daily results")
   })
   it("shows global progress and cancels from read-only history while preventing overlapping starts", async () => {
     dataSource.set("history:kept")
@@ -146,6 +179,15 @@ describe("Backtest page", { timeout: renderTimeout }, () => {
     expect(host.textContent).toContain("1.00 MiB")
     expect(host.querySelector('path[aria-label="Combined cumulative P&L"]')).not.toBeNull()
     expect(host.querySelectorAll("table")[1]?.textContent).toContain("—")
+  })
+  it("compares joint and legacy reports and labels already-joint inputs", async () => {
+    await render(<BacktestCompareView comparison={{ ...comparison,
+      runs: [{ ...comparison.runs[0]!, playbook: undefined, mode: "joint", playbooks: [{ id: "alpha", name: "Alpha", version: 2 }, { id: "beta", name: "Beta", version: 1 }] }, comparison.runs[1]!],
+      combined: { ...comparison.combined, includes_joint: true, label: "Sum of independent run days; includes already-joint account reports." },
+    }} />)
+    expect(host.textContent).toContain("Alpha@2, Beta@1")
+    expect(host.textContent).toContain("test@1")
+    expect(host.textContent).toContain("already-joint account reports")
   })
   it("pins saved runs and confirms permanent deletion", async () => {
     const finished: BacktestState = { ...state, status: "completed", summary: report.summary, keep: false }

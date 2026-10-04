@@ -127,6 +127,7 @@ export const api = {
   }),
   backtests: (signal?: AbortSignal) => get<BacktestListing>("/api/backtests", signal),
   backtest: (id: string, signal?: AbortSignal) => get<BacktestState>(`/api/backtests/${encodeURIComponent(id)}`, signal),
+  /** One playbook or 2–8 selectors sharing one account in lexical ID order. */
   startBacktest: (body: BacktestStart, mode: WriteMode) => write<BacktestState>("/api/backtests", "POST", mode, body),
   cancelBacktest: (id: string, mode: WriteMode) => write<BacktestState>(`/api/backtests/${encodeURIComponent(id)}`, "DELETE", mode),
   compareBacktests: (ids: string[], signal?: AbortSignal) => get<BacktestComparison>(`/api/backtests/compare?ids=${ids.map(encodeURIComponent).join(",")}`, signal),

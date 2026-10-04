@@ -1,7 +1,7 @@
 import { useQuery } from "@tanstack/react-query"
 import { useRef, useState } from "react"
 import { api } from "../api/client"
-import type { BacktestComparison, BacktestDayInput, BacktestReport, BacktestResult, BacktestStart } from "../api/backtest-types"
+import type { BacktestComparison, BacktestDayInput, BacktestIdentity, BacktestPlaybookBreakdown, BacktestReport, BacktestResult, BacktestStart } from "../api/backtest-types"
 import { useLive } from "../api/live"
 import { Dialog } from "../components/Dialog"
 import { LineChart } from "../charts/LineChart"
@@ -23,9 +23,25 @@ export function backtestHistogram(values: string[]) {
   for (const number of numbers) bars[Math.min(count - 1, Math.floor((number - low) / width))]!.value++
   return bars
 }
+function playbookNames(value: BacktestIdentity) {
+  return (value.playbooks ?? (value.playbook ? [value.playbook] : [])).map((item) => `${item.name ?? item.id}@${item.version ?? "latest"}`).join(", ") || "—"
+}
+function PlaybookBreakdown({ rows }: { rows?: Record<string, BacktestPlaybookBreakdown> }) {
+  if (!rows) return null
+  return <div className="overflow-x-auto"><table aria-label="Per-playbook breakdown" className="w-full text-left text-xs tabular">
+    <thead><tr>{["Playbook", "Closed / open trades", "Expectancy", "Win rate", "Realised P&L", "Marked P&L", "Entry reasons / rules"].map((title) => <th className="p-2" key={title}>{title}</th>)}</tr></thead>
+    <tbody>{Object.entries(rows).map(([id, row]) => <tr className="border-t border-border" key={id}>
+      <td className="p-2">{id}</td><td className="p-2">{row.trades} / {row.open_trades}</td><td className="p-2">{signedMoney(row.expectancy)}</td>
+      <td className="p-2">{percent(row.win_rate)}</td><td className="p-2">{signedMoney(row.realised_pnl)}</td><td className="p-2">{signedMoney(row.marked_pnl)}</td>
+      <td className="p-2">{Object.entries(row.entry_reasons).map(([key, reason]) => <p key={key}>{key}: {reason}</p>)}
+        {row.rule_trips.map((trip, index) => <p key={index}>{trip.time} · {trip.playbook ?? "Account"} · {trip.type} · {JSON.stringify(trip.detail)}</p>)}</td>
+    </tr>)}</tbody>
+  </table></div>
+}
 function Details({ result }: { result: BacktestResult }) {
   return <details className="text-xs"><summary>Trades, fills and rules</summary>
     <p className="my-2">Observed {result.started} to {result.ended}.</p>
+    <PlaybookBreakdown rows={result.per_playbook} />
     <p className="my-2">Journal: <code>{result.journal}</code></p>
     {!result.valuation_complete && <p className="text-warn">Incomplete marks. Last-mark P&amp;L: {signedMoney(result.last_mark_pnl)}.</p>}
     {result.open_positions > 0 && <p>{result.open_positions} positions remain open at the final observation.</p>}
@@ -42,6 +58,9 @@ export function BacktestReportView({ report }: { report: BacktestReport }) {
   const summary = report.summary
   return <div className="space-y-4">
     <p className="text-sm text-muted">{report.label} {report.status !== "completed" && "Partial report; unfinished days and attempts are excluded."}</p>
+    {report.mode === "joint" && <Panel title="Joint account backtest"><p className="text-sm">{playbookNames(report)}</p>
+      <p className="my-2 text-xs text-muted">One account shares cash, buying power and plan rules. Entries run in ascending playbook ID order. Attribution covers option trades; share delivery and dividends remain in account results.</p>
+      <PlaybookBreakdown rows={summary.per_playbook} /></Panel>}
     {report.errors.map((error, index) => <p role="alert" key={index}>{error.day == null ? "Attempt" : `Day ${error.day + 1}`}: {error.message}</p>)}
     <div className="grid gap-3 sm:grid-cols-5">
       <Stat label="Attempt pass rate" value={percent(summary.pass_rate)} hint="Passed / decided attempts. Open attempts are excluded." />
@@ -96,7 +115,7 @@ export function BacktestCompareView({ comparison }: { comparison: BacktestCompar
       comparison.different_inputs && "different inputs", comparison.different_plans && "different plans", comparison.incomplete_inputs && "incomplete input identities",
     ].filter(Boolean).join("; ")}.</p>}
     <div className="overflow-x-auto"><table className="w-full text-left text-xs tabular">
-      <thead><tr><th className="p-2">Metric / date</th>{runs.map((run) => <th className="p-2" key={run.id}>{run.id} · {run.playbook.id}@{run.playbook.version}</th>)}</tr></thead>
+      <thead><tr><th className="p-2">Metric / date</th>{runs.map((run) => <th className="p-2" key={run.id}>{run.id} · {playbookNames(run)}</th>)}</tr></thead>
       <tbody>
         <tr><th className="p-2">Plan / status</th>{runs.map((run) => <td className="p-2" key={run.id}>{run.plan.rules?.plan ?? "Custom"} · {run.status}<details><summary>Plan and input identity</summary><pre className="max-w-lg whitespace-pre-wrap">{JSON.stringify({ plan: run.plan, inputs: run.input_set }, null, 2)}</pre></details></td>)}</tr>
         {([['Mean daily P&L', (run) => signedMoney(run.summary.daily_pnl.mean)], ['Trade expectancy', (run) => signedMoney(run.summary.expectancy)],
@@ -131,12 +150,14 @@ export function BacktestView() {
   const job = useQuery({ queryKey: ["backtest", activeId], queryFn: ({ signal }) => api.backtest(activeId, signal), enabled: !!activeId,
     refetchInterval: (query) => ["running", "cancelling"].includes(query.state.data?.status ?? "running") ? 1000 : false })
   const versions = Object.values(definitions.data?.definitions ?? {}).flatMap((record) => record.versions.map((definition) => ({ ...definition, archived: record.deleted })))
-  const [playbook, setPlaybook] = useState(""), [plan, setPlan] = useState("eod-50k")
+  const [playbook, setPlaybook] = useState(""), [additional, setAdditional] = useState<string[]>([]), [plan, setPlan] = useState("eod-50k")
   const [kind, setKind] = useState("scenarios"), [count, setCount] = useState("10"), [seed, setSeed] = useState("1"), [scenario, setScenario] = useState("")
   const [files, setFiles] = useState<string[]>([]), [manifest, setManifest] = useState("[]")
   const [pending, setPending] = useState(false), [error, setError] = useState<unknown>()
   const busy = useRef(false)
   const chosen = playbook || (versions[0] ? `${versions[0].id}@${versions[0].version}` : "")
+  const chosenIds = [chosen, ...additional].map((value) => value.split("@")[0])
+  const badPlaybooks = additional.some((value) => !value) || new Set(chosenIds).size !== chosenIds.length
   const mode = trading?.write ?? "disabled"
   const badSeed = !/^\d{1,20}$/.test(seed) || BigInt(seed || "0") > 18446744073709551615n
   const badCount = !/^\d+$/.test(count) || Number(count) < 1 || Number(count) > 252
@@ -159,20 +180,28 @@ export function BacktestView() {
         throw new Error("Write scenario seeds as quoted decimal strings to preserve all 64 bits.")
       days = parsed as BacktestDayInput[]
     }
-    const request: BacktestStart = kind === "scenarios" ? { playbook: chosen, plan, scenarios: Number(count), seed, ...(scenario ? { scenario } : {}) }
-      : { playbook: chosen, plan, days }
+    const selection = additional.length ? { playbooks: [chosen, ...additional] } : { playbook: chosen }
+    const request: BacktestStart = kind === "scenarios" ? { ...selection, plan, scenarios: Number(count), seed, ...(scenario ? { scenario } : {}) }
+      : { ...selection, plan, days }
     const started = await api.startBacktest(request, mode)
     setSelected(started.id)
   }
   return <div className="space-y-4">
     <PageHeader title="Backtest" subtitle={label}>{trading && <WriteAccess trading={trading} />}</PageHeader>
     <TradingError error={error ?? comparison.error ?? listing.error ?? job.error ?? definitions.error ?? sources.error ?? plans.error} />
-    <Panel title="Run a playbook">
+    <Panel title="Run playbooks">
       <div className="grid gap-3 sm:grid-cols-3">
         <label className="trade-label">Playbook version<select className="trade-input" value={chosen} onChange={(event) => setPlaybook(event.target.value)}>{versions.map((definition) => <option key={`${definition.id}@${definition.version}`} value={`${definition.id}@${definition.version}`}>{definition.name} · v{definition.version}{definition.archived ? " · archived" : ""}</option>)}</select></label>
         <label className="trade-label">Evaluation plan<select className="trade-input" value={plan} onChange={(event) => setPlan(event.target.value)}>{plans.data?.plans.filter((item) => !item.unlocked_by && item.rules.phase !== "funded" && item.rules.profit_target != null && Number(item.rules.profit_target) > 0).map((item) => <option key={item.id} value={item.id}>{item.name}</option>)}</select></label>
         <label className="trade-label">Days<select className="trade-input" value={kind} onChange={(event) => setKind(event.target.value)}><option value="scenarios">Generated scenarios</option><option value="recordings">Recordings, including imports</option><option value="manifest">Mixed day manifest</option></select></label>
       </div>
+      <div className="mt-3 space-y-2">{additional.map((value, index) => <div className="flex items-end gap-2" key={index}>
+        <label className="trade-label">{`Playbook version ${index + 2}`}<select className="trade-input" value={value} onChange={(event) => setAdditional(additional.map((item, i) => i === index ? event.target.value : item))}>
+          <option value="">Choose a playbook</option>{versions.map((definition) => <option key={`${definition.id}@${definition.version}`} value={`${definition.id}@${definition.version}`} disabled={chosenIds.some((id, i) => i !== index + 1 && id === definition.id)}>{definition.name} · v{definition.version}</option>)}
+        </select></label><button className="trade-button" onClick={() => setAdditional(additional.filter((_, i) => i !== index))}>Remove playbook {index + 2}</button>
+      </div>)}<button className="trade-button" disabled={additional.length >= 7 || new Set(versions.map((item) => item.id)).size <= additional.length + 1} onClick={() => setAdditional([...additional, ""])}>Add playbook</button></div>
+      {!!additional.length && <p className="my-2 text-xs text-muted">Joint mode: 2–8 distinct playbooks share one account. Evaluation order is ascending playbook ID, regardless of selection order.</p>}
+      {badPlaybooks && <p className="text-xs text-warn">Choose a different playbook ID in every row.</p>}
       {kind === "scenarios" && <div className="mt-3 grid gap-3 sm:grid-cols-3">
         <label className="trade-label">Scenario<select className="trade-input" value={scenario} onChange={(event) => setScenario(event.target.value)}><option value="">Cycle regular scenarios</option>{sources.data?.demos?.map((item) => <option key={item.id} value={item.id}>{item.title}</option>)}</select></label>
         <label className="trade-label">Day count<input className="trade-input" type="number" min="1" max="252" value={count} onChange={(event) => setCount(event.target.value)} /></label>
@@ -184,14 +213,14 @@ export function BacktestView() {
       {kind === "manifest" && <label className="trade-label mt-3">Day manifest JSON<textarea className="trade-input min-h-32 font-mono" value={manifest} onChange={(event) => setManifest(event.target.value)} placeholder={'[{"scenario":"reversal","date":"2026-09-16","seed":"1"},{"file":"next-day.oprec"}]'} /></label>}
       <p className="my-3 text-xs text-muted">Choose distinct, increasing trading dates. Generated runs advance one trading day and one seed per entry. Missing condition inputs prevent entry. Maximum 252 days. Journals are retained for verification.</p>
       {blocked && <p className="mb-2 text-xs text-warn">{blocked}</p>}
-      <button className="trade-button" disabled={!!blocked || pending || !!listing.data?.active || !chosen || (kind === "scenarios" && (badSeed || badCount)) || (kind === "recordings" && !files.length)} onClick={() => void mutate(start)}>Start backtest</button>
+      <button className="trade-button" disabled={!!blocked || pending || !!listing.data?.active || !chosen || badPlaybooks || (kind === "scenarios" && (badSeed || badCount)) || (kind === "recordings" && !files.length)} onClick={() => void mutate(start)}>Start backtest</button>
     </Panel>
     {!!listing.data?.runs.length && <Panel title="Saved runs"><p className="mb-2 text-xs text-muted">Select 2–8 finished reports to compare. Keep exempts a run from automatic retention.</p><div className="overflow-x-auto"><table className="w-full text-left text-sm">
       <thead><tr>{["Compare", "Run", "Playbook", "Disk size", "Retention", "Delete"].map((title) => <th className="p-2" key={title}>{title}</th>)}</tr></thead>
       <tbody>{listing.data.runs.map((run) => <tr className="border-t border-border" key={run.id}>
         <td className="p-2"><input type="checkbox" aria-label={`Compare run ${run.id}`} checked={compareIds.includes(run.id)} disabled={!run.summary || ["running", "cancelling"].includes(run.status) || (compareIds.length >= 8 && !compareIds.includes(run.id))} onChange={(event) => setCompareIds(event.target.checked ? [...compareIds, run.id] : compareIds.filter((id) => id !== run.id))} /></td>
         <td className="p-2"><button className="text-accent" onClick={() => setSelected(run.id)}>{run.id} · {run.status}</button></td>
-        <td className="p-2">{run.playbook ? `${run.playbook.id}@${run.playbook.version}` : "—"}</td><td className="p-2">{run.bytes == null ? "—" : `${(run.bytes / 1048576).toFixed(2)} MiB`}</td>
+        <td className="p-2">{run.mode === "joint" && "Joint · "}{playbookNames(run)}</td><td className="p-2">{run.bytes == null ? "—" : `${(run.bytes / 1048576).toFixed(2)} MiB`}</td>
         <td className="p-2"><label><input type="checkbox" aria-label={`Keep run ${run.id}`} checked={run.keep ?? false} disabled={!!blocked || pending} onChange={(event) => { const keep = event.target.checked; void mutate(async () => { await api.keepBacktest(run.id, keep, mode) }) }} /> Keep</label></td>
         <td className="p-2"><button className="trade-button" aria-label={`Delete run ${run.id}`} disabled={!!blocked || pending || ["running", "cancelling"].includes(run.status)} onClick={() => setDeleting(run.id)}>Delete</button></td>
       </tr>)}</tbody>

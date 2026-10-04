@@ -262,3 +262,24 @@ it("accepts verification backtests with contract scaling and exact program fees"
   for (const key of ["evaluation_fee", "reset_fee", "activation_fee"]) expect(wireType(rules[key])).toBe("string")
   expect(wireType(rules.max_resets)).toBe("integer")
 })
+
+it("describes joint requests and reports while retaining single schemas", () => {
+  const schemas = JSON.parse(specText).components.schemas
+  const request: BacktestStart = { playbooks: ["alpha@2", "beta"], plan: "eod-50k", scenarios: 2, seed: "1" }
+  expect(request.playbooks).toHaveLength(2)
+  expect(schemas.BacktestRequest.required).not.toContain("playbook")
+  expect(schemas.BacktestRequest.properties.playbooks).toMatchObject({ minItems: 2, maxItems: 8, uniqueItems: true })
+  expect(schemas.BacktestRequest.allOf[1].oneOf).toEqual([
+    { required: ["playbook"], not: { required: ["playbooks"] } },
+    { required: ["playbooks"], not: { required: ["playbook"] } },
+  ])
+  expect(schemas.BacktestReport.properties.schema.enum).toEqual([1, 2, 3])
+  expect(schemas.BacktestReport.properties.mode.const).toBe("joint")
+  expect(schemas.BacktestReport.oneOf[1].required).toEqual(["mode", "playbooks"])
+  for (const name of ["BacktestResult", "BacktestSummary"]) {
+    expect(schemas[name].properties.per_playbook.additionalProperties.$ref).toBe("#/components/schemas/BacktestPlaybookBreakdown")
+  }
+  expect(schemas.BacktestState.properties.playbooks.items.required).toEqual(["id", "version", "name"])
+  expect(schemas.BacktestComparison.properties.combined.properties.includes_joint.const).toBe(true)
+  expect(schemas.BacktestResult.properties.rule_trips.items.properties.playbook.type).toBe("string")
+})

@@ -32,8 +32,9 @@ function Stats({ rows }: { rows: [string, PlaybookStats][] }) {
 function ForwardTestPanel({ definition, forward, runs, error }: { definition: Playbook; forward?: ForwardTest; runs: BacktestState[]; error: boolean }) {
   const version = String(definition.version)
   const current = forward?.versions?.[version]?.all
-  const latest = runs.filter(run => run.status === "completed" && run.playbook?.id === definition.id && run.playbook.version === definition.version && run.summary)
+  const latest = runs.filter(run => run.status === "completed" && (run.playbooks ?? (run.playbook ? [run.playbook] : [])).some(item => item.id === definition.id && item.version === definition.version) && run.summary)
     .sort((a, b) => b.id.localeCompare(a.id))[0]
+  const backtestStats = latest?.mode === "joint" ? latest.summary?.per_playbook?.[definition.id] : latest?.summary
   return <section className="mt-4 space-y-2 border-t border-border pt-3" aria-label={`Forward test for ${definition.name}`}>
     <h3 className="text-sm font-medium">Forward test · {forward?.running ? "Running" : "Stopped"}</h3>
     <p className="text-xs text-muted">{forward?.days_running?.toFixed(2) ?? "0"} elapsed market days · {forward?.entries ?? 0} entries · {forward?.time_stops ?? 0} time stops · {forward?.rejected_entries ?? 0} rejected entries</p>
@@ -44,7 +45,7 @@ function ForwardTestPanel({ definition, forward, runs, error }: { definition: Pl
     <p className="text-xs font-medium">Version {version} · Latest saved backtest{latest ? ` ${latest.id}` : ""}</p>
     {latest?.summary ? <div className="overflow-x-auto"><table className="w-full text-left text-xs tabular">
       <thead><tr>{["Source", "Trades", "Win rate", "Expectancy", "Return on BP"].map(label => <th className="p-2 font-normal" key={label}>{label}</th>)}</tr></thead>
-      <tbody>{[["Forward", current], ["Backtest", latest.summary]].map(([label, row]) => {
+      <tbody>{[["Forward", current], [latest.mode === "joint" ? "Joint backtest" : "Backtest", backtestStats]].map(([label, row]) => {
         const stats = row as typeof current | typeof latest.summary
         return <tr key={String(label)}><th className="p-2 font-normal">{String(label)}</th><td>{stats?.trades ?? 0}</td><td>{pct(stats?.win_rate ?? null)}</td><td>{formatMoney(stats?.expectancy ?? null)}</td><td>{pct(stats?.average_return_on_buying_power ?? null)}</td></tr>
       })}</tbody>

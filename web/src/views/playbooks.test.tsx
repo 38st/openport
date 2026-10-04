@@ -117,6 +117,20 @@ describe("Playbooks page and staged actions", { timeout: renderTimeout }, () => 
     for (const text of ["Forward test · Running", "2.50 elapsed market days", "3 entries", "2 time stops", "1 rejected entries", "alice", "Auto paper trading · 1 playbook on main", "All forward trades", "60.0%", "42"]) expect(host.textContent).toContain(text)
     expect(host.textContent).not.toContain("000005")
   })
+  it("compares a matching joint member using its own statistics", async () => {
+    const summary = { trades: 100, win_rate: .9, expectancy: "999", per_playbook: {
+      "put-spread": { trades: 3, open_trades: 0, win_rate: .5, expectancy: "12.34", adherence: 1,
+        realised_pnl: "37.02", marked_pnl: "37.02", entry_reasons: {}, rule_trips: [] },
+    } } as unknown as BacktestReport["summary"]
+    vi.mocked(api.backtests).mockResolvedValue({ active: null, label: "Simulated", runs: [{ id: "000009", status: "completed", phase: "finished",
+      completed: 1, total: 1, label: "Simulated", report: null, mode: "joint",
+      playbooks: [{ id: "other", version: 1 }, { id: "put-spread", version: 1 }], summary }] })
+    await render(<PlaybooksView />)
+    await waitForRender(() => expect(host.textContent).toContain("Latest saved backtest 000009"))
+    expect(host.textContent).toContain("Joint backtest")
+    expect(host.textContent).toContain("$12.34")
+    expect(host.textContent).not.toContain("$999")
+  })
   it("supports older publications and explains a missing same-version backtest", async () => {
     await render(<PlaybooksView />)
     await waitForRender(() => expect(host.textContent).toContain("Forward test · Stopped"))
