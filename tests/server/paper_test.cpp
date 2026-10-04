@@ -2502,7 +2502,8 @@ TEST(PaperRecovery, EtfOptionsSettleOnTheOfficialCloseAsRevised) {
     provider.sink->publish(md::UnderlyingClose{"SPY", close + 49 * md::kNanosPerSecond, {2026, 9, 22}, 500.20});
     provider.sink->publish(md::UnderlyingClose{"SPY", revised, {2026, 9, 22}, 499.95});
     ASSERT_TRUE(wait_for([&] {
-      const auto& prints = engine.trading_view()->snapshot->closing_prints;
+      const auto view = engine.trading_view();
+      const auto& prints = view->snapshot->closing_prints;
       const auto it = prints.find("SPY 2026-09-22");
       return it != prints.end() && it->second.price == Money::parse("499.95");
     }));

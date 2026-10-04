@@ -705,7 +705,8 @@ TEST(Playbooks, ForwardWindowsVersionArchiveAndLegacyCatalogues) {
   server::Playbooks recovered(file.directory / "playbooks.json");
   EXPECT_EQ(recovered.catalogue(), store.catalogue());
   EXPECT_EQ(recovered.publication("main", false).at("modes").at("morning"), "off");
-  for (const auto& window : recovered.catalogue().at("forward_tests")) { EXPECT_FALSE(window.at("ended").is_null()); }
+  const auto catalogue = recovered.catalogue();
+  for (const auto& window : catalogue.at("forward_tests")) { EXPECT_FALSE(window.at("ended").is_null()); }
   EXPECT_FALSE(recovered.publication("main", true).contains("forward_tests"));
 }
 TEST(Playbooks, StagingUsesPreviewWithoutJournalOrdersAndExpiresOrDismisses) {
