@@ -47,17 +47,20 @@ jobs:
       - name: Build
         run: cmake --build build
       - name: Test
-        run: ./build/tests/openport_tests
+        env:
+          TMPDIR: ${{ runner.temp }}
+        run: ctest --test-dir build -j 4 --output-on-failure --timeout 1500
       - name: Test incremental reviews and journal changes against full rebuilds
         env:
+          TMPDIR: ${{ runner.temp }}
           OPENPORT_VERIFY_REVIEWS: 1
           OPENPORT_VERIFY_JOURNAL: 1
-        run: ./build/tests/openport_tests
+        run: ctest --test-dir build -j 4 --output-on-failure --timeout 1500
 
   cpp-sanitize:
     name: C++ (GCC 13, AddressSanitizer + UndefinedBehaviorSanitizer)
     runs-on: ubuntu-24.04
-    timeout-minutes: 60
+    timeout-minutes: 90
     steps:
       - uses: actions/checkout@v7
       - name: Install system dependencies
@@ -73,9 +76,10 @@ jobs:
         run: cmake --build build -j 4
       - name: Test
         env:
+          TMPDIR: ${{ runner.temp }}
           ASAN_OPTIONS: detect_leaks=1:abort_on_error=1
           UBSAN_OPTIONS: print_stacktrace=1:halt_on_error=1
-        run: ./build/tests/openport_tests
+        run: ctest --test-dir build -j 4 --output-on-failure --timeout 1500
 
   cpp-macos:
     name: C++ (Apple Clang, macOS 15, warnings as errors)
