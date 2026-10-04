@@ -127,10 +127,12 @@ left as it was (see [compacting](paper-trading.md#compacting-older-journals)).
 
 Help derives plan IDs and prerequisites from the preset catalogue, including
 static, locking, two-step and funded-scaling plans ([full list](configuration.md#command-line-flags)).
-`--plan` cannot seed a new or empty journal with a locked verification or funded
-step: startup exits 2 with `PLAN_LOCKED` and names the prerequisite. Pass it in the
-same account and use an account reset to advance. A recovered journal keeps its
-saved rules; `--plan` does not change them.
+`--plan` seeds any preset directly in a new or empty journal, including verification
+and funded steps. A recovered journal keeps its saved rules; `--plan` does not change
+them. Prerequisites marked `after X` in help apply to HTTP account creation and resets.
+HTTP account creation cannot seed locked presets; HTTP resets enforce prerequisites
+with `PLAN_LOCKED`. Pass the prerequisite in the same account before resetting into
+the next step.
 
 Supported `openportd --option KEY=VALUE` keys:
 

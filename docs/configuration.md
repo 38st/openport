@@ -70,10 +70,11 @@ Every value is range-checked; `openportd --help` lists every flag, and the
 `--plan` accepts `practice`; `intraday-*`, `eod-*`, `static-*`, `locking-*`,
 `two-step-*`, `two-step-verify-*`, `two-step-funded-*`, `funded-intraday-*` and
 `funded-eod-*` at `25k`, `50k` and `100k`; and `funded-scaling-50k`.
-Help lists each ID and its prerequisite. Verification and funded steps cannot seed
-a new or empty journal: startup exits 2 with `PLAN_LOCKED` and the required pass.
-Pass that prerequisite in the same account, then start the next step with an account
-reset. Existing journals restore their saved rules regardless of `--plan`.
+`--plan` seeds any preset directly in a new or empty journal, including verification
+and funded steps. Existing journals restore their saved rules regardless of `--plan`.
+Help lists each ID and marks HTTP prerequisites with `after X`. HTTP account creation
+cannot seed locked presets; HTTP resets enforce prerequisites with `PLAN_LOCKED`.
+Pass the prerequisite in the same account before resetting into the next step.
 
 ## Terminal settings
 

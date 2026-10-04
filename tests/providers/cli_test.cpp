@@ -89,7 +89,7 @@ TEST(Cli, PaperFillFlagsValidateModelsAndExecutionRanges) {
         " --paper-fill-latency-ms 60000 --paper-impact-ticks 10 --paper-slippage-ticks 0 --provider missing", "unknown provider");
 }
 
-// F14/F27: help follows the catalogue, including prerequisites for later steps.
+// F14/F27: help follows the catalogue; prerequisites apply to HTTP progression.
 TEST(Cli, DaemonHelpListsEveryPlanAndPrerequisite) {
   const auto command = isolated_home() + "\"" + OPENPORT_APPS_DIR + "/openportd\" --help 2>&1";
   FILE* pipe = popen(command.c_str(), "r");
@@ -100,29 +100,27 @@ TEST(Cli, DaemonHelpListsEveryPlanAndPrerequisite) {
   const auto status = pclose(pipe);
   ASSERT_TRUE(WIFEXITED(status)) << output;
   EXPECT_EQ(WEXITSTATUS(status), 0) << output;
+  EXPECT_NE(output.find("plan presets (--plan seeds any of them in a new journal; over HTTP, steps marked 'after X' need a pass of X first):\n"),
+            std::string::npos) << output;
   for (const auto& plan : openport::server::plan_presets()) {
-    const auto line = "  " + plan.id + (plan.unlocked_by.empty() ? "" : " (requires " + plan.unlocked_by + ")") + "\n";
+    const auto line = "  " + plan.id + (plan.unlocked_by.empty() ? "" : " (after " + plan.unlocked_by + ")") + "\n";
     EXPECT_NE(output.find(line), std::string::npos) << line;
   }
 }
 
-TEST(Cli, NewAndEmptyJournalsRefuseLockedPlansBeforeStartingAProvider) {
+TEST(Cli, EveryPlanReachesProviderValidationWithNewAndEmptyJournals) {
   openport::test::RecordingFile file;
   for (const auto& plan : openport::server::plan_presets()) {
-    if (plan.unlocked_by.empty()) continue;
     const auto journal = file.directory / (plan.id + ".jsonl");
     // A missing provider makes a regression fail promptly without starting a server.
     const auto args = "--provider missing --port 9355 --paper-journal '" + journal.string() + "' --plan " + plan.id;
-    const auto reason = "PLAN_LOCKED: --plan " + plan.id + " requires passing " + plan.unlocked_by;
-    rejects("openportd", args, reason);
+    rejects("openportd", args, "unknown provider");
     EXPECT_FALSE(std::filesystem::exists(journal));
     { std::ofstream empty(journal); }
-    rejects("openportd", args, reason);
+    rejects("openportd", args, "unknown provider");
     EXPECT_EQ(std::filesystem::file_size(journal), 0U);
   }
-  // Unlocked entry steps and analytics-only startup still reach provider validation.
-  for (const auto* plan : {"practice", "static-25k", "locking-25k", "two-step-25k"})
-    rejects("openportd", std::string("--provider missing --plan ") + plan, "unknown provider");
+  // Analytics-only startup also reaches provider validation with a later step.
   rejects("openportd", "--provider missing --plan two-step-verify-25k --no-paper", "unknown provider");
   // --plan is ignored when recovering an account, even if it names a locked step.
   const auto existing = file.directory / "existing.jsonl";
