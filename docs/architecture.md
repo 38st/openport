@@ -76,7 +76,9 @@ flowchart LR
   authenticated identity. No new reducer state or journal fields are required.
 - **External notifications** observe live account publications and feed health.
   A bounded queue hands selected events to one HTTP worker; retries and rate limits
-  use its own clock. Replay engines never attach the observer. No notification
+  use its own clock. Demo/replay observers require the operator's `include_simulated`
+  opt-in; replay run names isolate observations, and catch-up only primes them.
+  A separate mutex serializes observations from concurrent engines. No notification
   configuration, credentials or delivery state enters the trading journal.
 - **Commands** from the terminal (orders, cancels, resets) are queued and applied on
   the engine thread, between market batches, so each account sees one ordered stream

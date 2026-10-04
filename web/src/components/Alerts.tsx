@@ -27,7 +27,7 @@ export function AlertWatcher() {
       notify(title, body, settings.sound)
     }
   }, [settings, underlyings, source])
-  // Account alerts fire in replays too; the server forwards only live ones.
+  // Account alerts fire in replays too; external forwarding follows the server opt-in.
   if (source !== "live") return <ServerAlertWatcher sound={settings.sound} />
   return <>
     <ServerAlertWatcher sound={settings.sound} />

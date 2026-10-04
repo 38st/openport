@@ -193,7 +193,9 @@ simulation's limits.
 - **External notifications**: send fills, rejected orders, floor warnings, rule trips,
   assignments, exercises, ready playbooks, account alerts and stalled feeds to Discord, Telegram,
   ntfy or a webhook. Each channel has filters and a test button in Alerts settings.
-  Delivery runs separately from trading; replays and drills never send.
+  Delivery runs separately from trading. Demo, replay and interactive drill forwarding
+  is opt-in with `include_simulated` in the server notification config; catch-up
+  history and backtests never send.
 
 ## Operations
 

@@ -145,7 +145,7 @@ Supported `openportd --option KEY=VALUE` keys:
 | tastytrade | `sandbox=false` only; `dxlink_time_unit=milliseconds` (default) or `unknown` |
 | Databento | `quotes=cbbo-1s` or `quotes=cmbp-1`, `trades=on` or `trades=off` |
 | Replay | `file=PATH` (required), `speed=1`, `10`, `60` or `max`, `loop=on` or `off` |
-| Demo | `days=ID,ID,...`, `speed=1`, `2`, `5`, `10`, `30`, `60`, `120` or `300` (default 1), `revision=1..5` (default 5) |
+| Demo | `days=ID,ID,...`, `speed=1`, `2`, `5`, `10`, `30`, `60`, `120` or `300` (default 1), `revision=1..6` (default 6) |
 
 Databento parent subscriptions stream the entire option chain upstream. Both
 CLIs reject nonzero `--expiries` or `--window` with that provider; those filters
@@ -583,7 +583,7 @@ assignment and dividends between them, and its state lists its `sessions`. All a
 historical reconstructions. Status keeps `provider.simulated`; the terminal shows
 the scenario and seed with the simulated label. Generated recordings are cached by
 scenario, date and seed, with four completed entries retained. Generation uses
-fixed version 1, at output revision 5 (see [scenarios](scenarios.md)); unsupported
+fixed version 1, at output revision 6 (see [scenarios](scenarios.md)); unsupported
 versions are rejected. Optional [stress fields](scenarios.md#events) author abnormal
 books, quote stalls, market-wide halt windows, previous-close references and wider
 strike ranges. `stress-rehearsal` is a built-in drill. At revision 5, regular event times and window
@@ -745,7 +745,7 @@ Replay driver 5 adds AM opening-print settlement. Verification
 of drivers 1–4 keeps their manual AM behavior and original journal bytes. Driver 5
 changes the start input for every new run and adds settlement transactions when an
 AM position is held into an expiry opening print. Resuming requires the current driver (6, below);
-older runs remain readable and verifiable. The scenario generator revision is 5; older recorded revisions regenerate as before.
+older runs remain readable and verifiable. The scenario generator revision is 6; older recorded revisions regenerate as before.
 A stopped run verifies through its recorded prefix; it need not have reached EOF.
 So does a run a crash cut off, whichever record its journal ends at: each input and
 each transaction is its own append, and new runs record a command's input before the
@@ -801,7 +801,7 @@ of the day" when the halt reaches the regular close (including early closes).
 For example: "Trading is halted market-wide by the scenario; it resumes at 10:30 ET".
 Runs keep driver 6; authored halts were not available in earlier shipped builds,
 so there is no older message to preserve. There is no journal-byte change beyond
-the new message on authored halts. Scenario generator revision 5 is unchanged.
+the new message on authored halts. These driver changes do not alter the selected scenario generator revision.
 
 Live paper Auto also persists account/version forward-test windows in the optional
 `forward_tests` key of `playbooks.json`. Modes resume after restart, with entry
@@ -862,7 +862,9 @@ in `--scenario-dir` remain available on Replay. `--option speed=N` accepts 1, 2,
 Without `--symbols`, the feed subscribes to SPX, SPY, QQQ, XSP, NDX, RUT and VIX. Other symbols and
 nonzero `--expiries` or `--window` are rejected.
 
-Revision 5 is the default: regular event times and window endpoints scale into early
+Revision 6 is the default: session volume includes deterministic opening activity
+so volume-capped orders can trade liquid contracts from the open. `--option revision=5`
+retains the earlier zero-volume opening. At revision 5, regular event times and window endpoints scale into early
 closes, rounded down to minutes. Revision 4 adds American ETF option prices and a
 simulated quarterly SPY/QQQ dividend calendar, with ex-date price drops and known
 payments included in option forwards. The [scenario rules](scenarios.md) define
