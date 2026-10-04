@@ -436,7 +436,7 @@ def run_once(client, start, ops, fuzz_seed, tape=None, binary=None, directory=No
     result = dict(operations=Counter(), refusals=Counter(), preview_refusals=Counter(), checks=Counter(),
                   failures=[], commands=[], outcomes=[], verification={"status": "not_run"},
                   cli_verification={"status": "not_requested"})
-    run_id, step, op, started = None, 0, None, False
+    run_id, step, op, start_attempted = None, 0, None, False
 
     def failure(check, **values):
         item = dict(step=step, operation=copy.deepcopy(op), check=check, **values)
@@ -445,8 +445,10 @@ def run_once(client, start, ops, fuzz_seed, tape=None, binary=None, directory=No
 
     try:
         request(client, "DELETE", PREFIX)
+        # A lost/malformed start response may still have created a replay.
+        start_attempted = True
         replay = request(client, "POST", PREFIX, start)[1]["replay"]
-        started, run_id = True, replay["id"]
+        run_id = replay["id"]
         result.update(run_id=run_id, scenario=replay["scenario"], seed=replay["seed"], plan=replay["plan"])
         deadline = time.monotonic() + 3600
         while replay.get("fast_forwarding") or not replay.get("time"):
@@ -498,7 +500,7 @@ def run_once(client, start, ops, fuzz_seed, tape=None, binary=None, directory=No
     except (FuzzError, KeyError, TypeError, ValueError, InvalidOperation, OSError) as exc:
         failure("execution", message=str(exc))
     finally:
-        if started:
+        if start_attempted:
             try:
                 request(client, "DELETE", PREFIX)
             except (FuzzError, OSError) as exc:

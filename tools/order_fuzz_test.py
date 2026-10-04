@@ -229,6 +229,16 @@ class FlowTest(unittest.TestCase):
         self.assertEqual(result["exit_status"], 1)
         self.assertFalse(result["determinism"]["outcomes_match"])
 
+    def test_uncertain_start_still_stops_replay(self):
+        class MalformedStart(ScriptAPI):
+            def call(self, method, path, body=None):
+                reply = super().call(method, path, body)
+                return (201, {}) if method == "POST" and path == fuzz.PREFIX else reply
+        api = MalformedStart()
+        result, _ = scripted_run(api)
+        self.assertEqual(result["exit_status"], 1)
+        self.assertEqual(sum(method == "DELETE" and path == fuzz.PREFIX for method, path, _ in api.calls), 2)
+
     def test_accepted_insufficient_preview_is_failure(self):
         api = ScriptAPI({(1, "write"): (201, {"order": {"status": "working"}}),
                          (1, "preview"): (200, {"decision": "BUYING_POWER", "reason": {"code": "BUYING_POWER"}})})
