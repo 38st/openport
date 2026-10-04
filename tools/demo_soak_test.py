@@ -89,6 +89,37 @@ def run(replay, seed=None):
 
 
 class DemoSoakTest(unittest.TestCase):
+    def test_http_timeout_covers_generation_and_replay_controls(self):
+        for timeout in (None, 420):
+            client = demo_soak.Client("http://fake-replay") if timeout is None else demo_soak.Client("http://fake-replay", timeout)
+            for method, path, body in (("POST", "/api/replay", {"demo": "reversal"}),
+                                       ("PUT", "/api/replay", {"step": True}),
+                                       ("PUT", "/api/replay", {"paused": True}),
+                                       ("GET", "/api/replay/portfolio", None)):
+                with self.subTest(timeout=timeout, method=method, body=body), \
+                        patch.object(demo_soak.urllib.request, "urlopen") as urlopen:
+                    response = urlopen.return_value.__enter__.return_value
+                    response.status, response.read.return_value = 200, b'{"ok": true}'
+                    self.assertEqual(client.call(method, path, body), (200, {"ok": True}))
+                    request = urlopen.call_args.args[0]
+                    self.assertEqual(request.full_url, client.base + path)
+                    self.assertEqual(request.method, method)
+                    self.assertEqual(urlopen.call_args.kwargs["timeout"], 180 if timeout is None else timeout)
+
+    def test_timeout_option_reaches_http_client(self):
+        with patch.object(demo_soak, "Client", return_value=FakeReplay(snapshots=0)) as client, \
+                patch.object(demo_soak.time, "sleep"), redirect_stdout(io.StringIO()):
+            self.assertEqual(demo_soak.main(["http://fake-replay", "--timeout", "420"]), 0)
+        client.assert_called_once_with("http://fake-replay", timeout=420)
+
+    def test_invalid_timeout_is_rejected_before_starting_replay(self):
+        for value in ("0", "-1", "nan", "inf"):
+            with self.subTest(value=value), patch.object(demo_soak, "Client") as client, \
+                    redirect_stderr(io.StringIO()), self.assertRaises(SystemExit) as error:
+                demo_soak.main(["http://fake-replay", "--timeout", value])
+            self.assertEqual(error.exception.code, 2)
+            client.assert_not_called()
+
     def test_json_writer_retains_summary_and_server_identity(self):
         result, _ = run(FakeReplay())
         result["refused"] = {"Z_RULE": 2, "A_RULE": 1}

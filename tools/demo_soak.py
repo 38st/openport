@@ -2,7 +2,7 @@
 """Soak test: hold an SPX iron condor with far wings through a demo-market day and
 check, every few seconds, that the account can still trade.
 
-    tools/demo_soak.py URL [SPEED] [PLAN] [--seed SEED] [--json [PATH]]
+    tools/demo_soak.py URL [SPEED] [PLAN] [--seed SEED] [--timeout SECONDS] [--json [PATH]]
 
 URL is an openportd to test, such as one started for it with
 `openportd --port 8094 --no-history --paper-journal /tmp/soak/paper.jsonl`. The soak
@@ -14,6 +14,8 @@ run id and seed, so a saved run can be found and the market can be repeated.
 human progress on stderr. Without --json, text output is unchanged. The JSON
 includes `run_id`, market times, leg symbols, all counters and exit_status. Probe
 timing still depends on playback and HTTP scheduling.
+--timeout sets the HTTP timeout in seconds (default 180), including scenario
+generation, replay stepping and pausing while the current batch finishes.
 
 Each probe pauses the replay, places a limit buy of the short put inside the price
 band and under the ask, cancels it and resumes, so it asks whether the account can
@@ -32,15 +34,16 @@ import urllib.request
 
 
 class Client:
-    def __init__(self, base):
+    def __init__(self, base, timeout=180):
         self.base = base.rstrip("/")
+        self.timeout = timeout
 
     def call(self, method, path, body=None):
         data = None if body is None else json.dumps(body).encode()
         request = urllib.request.Request(self.base + path, data=data, method=method,
                                          headers={"Content-Type": "application/json"})
         try:
-            with urllib.request.urlopen(request, timeout=30) as response:
+            with urllib.request.urlopen(request, timeout=self.timeout) as response:
                 return response.status, json.loads(response.read() or b"null")
         except urllib.error.HTTPError as error:
             return error.code, json.loads(error.read() or b"null")
@@ -231,11 +234,15 @@ def main(argv=None):
     parser.add_argument("speed", nargs="?", type=int, default=120)
     parser.add_argument("plan", nargs="?", default="practice")
     parser.add_argument("--seed", type=int, help="demo day seed; the server picks one when omitted")
+    parser.add_argument("--timeout", type=float, default=180, metavar="SECONDS",
+                        help="HTTP timeout, including replay generation and stepping (default: 180 seconds)")
     parser.add_argument("--json", nargs="?", const="-", metavar="PATH",
                         help="write JSON summary to PATH (default: stdout, progress on stderr)")
     args = parser.parse_args(argv)
+    if not math.isfinite(args.timeout) or args.timeout <= 0:
+        parser.error("--timeout must be a finite positive number of seconds")
     out = (lambda *parts: print(*parts, file=sys.stderr)) if args.json == "-" else print
-    result = soak(Client(args.url), args.speed, args.plan, args.seed, out=out)
+    result = soak(Client(args.url, timeout=args.timeout), args.speed, args.plan, args.seed, out=out)
     if args.json is not None:
         write_json(result, args.json)
     return result["exit_status"]
