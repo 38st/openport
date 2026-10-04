@@ -4686,7 +4686,8 @@ TEST_F(PaperEngine, TimeAndTradeRulesSurviveCreateResetAndPresetMatching) {
   ASSERT_TRUE(wait_for([&] { return engine->trading_view() != nullptr; }));
   seed();
   auto rules = read(*engine, "/api/account")["rules"];
-  rules.update({{"plan", "Combined rules"}, {"plan_id", nullptr},
+  rules.update({{"plan", "Combined rules"}, {"plan_id", nullptr}, {"phase", "verification"},
+                {"evaluation_fee", "100.000001"}, {"reset_fee", "25.000002"}, {"activation_fee", "50.000003"}, {"max_resets", 2},
                 {"events", {{{"kind", "news"}, {"time", "2026-09-23T14:00:00.000000000Z"}},
                             {{"kind", "split"}, {"time", "2026-09-24"}, {"symbol", "SPX"}}}},
                 {"news_before_minutes", 5}, {"news_after_minutes", 10}, {"news_action", "flatten"},

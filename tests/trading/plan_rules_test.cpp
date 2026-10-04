@@ -279,6 +279,46 @@ TEST(ProgramCosts, ExactFeesLimitsPurchasesAndRecoveryLeaveTheLedgerAlone) {
   EXPECT_EQ(FileJournal::read(compacted).head, recovery.head);
 }
 
+TEST(ProgramCosts, TradingRestrictionsStartANewPurchaseButExecutionMarginAndCostsDoNot) {
+  auto rules = plan(); rules.phase = Phase::Verification; rules.buying_power = true;
+  rules.evaluation_fee = m("100.000001"); rules.reset_fee = m("25.000002"); rules.max_resets = 1;
+  rules.trading_start = 9 * 60; rules.trading_end = 16 * 60;
+  const Json encoded = rules;
+  const Json restrictions{{"time_limit_days", 30}, {"inactivity_days", 14}, {"underlyings", {"SPX"}},
+      {"trading_start", 9 * 60 + 30}, {"trading_end", 15 * 60}, {"flat_time", 15 * 60 + 45},
+      {"no_overnight", true}};
+  for (const auto& [key, value] : restrictions.items()) {
+    SCOPED_TRACE(key);
+    auto altered = encoded; altered[key] = value;
+    const auto different = altered.get<AccountRules>();
+    EXPECT_FALSE(same_program_rules(rules, different));
+    JournalFile file;
+    TradingSession s(config(rules), 0, FileJournal::create(file.path));
+    ASSERT_TRUE(s.reset_account(m("10000"), rules, "last reset", 0).decision.ok());
+    EXPECT_EQ(s.reset_account(m("10000"), rules, "exhausted", 0).decision.code, Reason::RESET_LIMIT);
+    ASSERT_TRUE(s.reset_account(m("10000"), different, "new plan rules", 0).decision.ok());
+    const auto costs = program_costs(*s.snapshot(), different);
+    EXPECT_EQ(costs.resets_used, 0);
+    EXPECT_EQ(costs.evaluation, m("200.000002"));
+    EXPECT_EQ(costs.reset, m("25.000002"));
+    EXPECT_EQ(s.snapshot()->equity, m("10000"));
+    const auto recovered = TradingSession::recover(FileJournal::read(file.path));
+    EXPECT_EQ(recovered.config().rules, different);
+    EXPECT_EQ(recovered.snapshot_json(), s.snapshot_json());
+    EXPECT_EQ(program_costs(*recovered.snapshot(), different).resets_used, 0);
+  }
+  auto execution = rules;
+  execution.slippage_ticks = 1; execution.fill_latency_ms = 100; execution.impact_ticks = 2;
+  execution.inside_fill_percent = 25; execution.fees = FeeSchedule{};
+  execution.margin = MarginMode::Portfolio;
+  execution.house_margin_percent = 20; execution.pm_vol_shock = 10;
+  execution.evaluation_fee = m("200"); execution.reset_fee = m("50");
+  execution.activation_fee = m("75"); execution.max_resets = 3;
+  EXPECT_TRUE(same_program_rules(rules, execution));
+  execution.margin = MarginMode::Strategy; execution.account_type = AccountType::Ira;
+  EXPECT_TRUE(same_program_rules(rules, execution));
+}
+
 TEST(ProgramCosts, DefaultsKeepBytesAndNegativeOrFractionalSettingsAreRejected) {
   const auto rules = plan();
   const Json encoded = rules;
@@ -288,8 +328,10 @@ TEST(ProgramCosts, DefaultsKeepBytesAndNegativeOrFractionalSettingsAreRejected) 
     auto bad = encoded; bad[key] = -1;
     EXPECT_THROW(validate_rules(bad.get<AccountRules>()), TradingError);
   }
-  auto fractional = encoded; fractional["max_resets"] = 1.5;
-  EXPECT_THROW(fractional.get<AccountRules>(), TradingError);
+  for (const auto* key : {"max_resets", "time_limit_days", "inactivity_days"}) {
+    auto fractional = encoded; fractional[key] = 1.5;
+    EXPECT_THROW(fractional.get<AccountRules>(), TradingError) << key;
+  }
   TradingSession free(config(rules), 0);
   ASSERT_TRUE(free.reset_account(m("10000"), rules, "free", 0).decision.ok());
   EXPECT_FALSE(Json(free.snapshot()->attempts.front()).contains("fee_charged"));

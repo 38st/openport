@@ -87,7 +87,23 @@ void next_day(TradingSession& s, ScriptedMarket& f, md::Date day) {
   ++f.observation;
   s.on_quotes({f.quote()}, {f.valuation()}, f.time);
 }
-TEST(TimeRules, TimeLimitFailsAfterTheDeadlineOnAnEmptyBatch) {
+// Both evaluation steps enforce the same optional plan restrictions.
+class EvaluationTimeRules : public ::testing::TestWithParam<Phase> {
+ protected:
+  static AccountRules plan() {
+    AccountRules rules;
+    rules.plan = "Time rules test";
+    rules.phase = GetParam();
+    return rules;
+  }
+};
+INSTANTIATE_TEST_SUITE_P(ProgramSteps, EvaluationTimeRules,
+    ::testing::Values(Phase::Evaluation, Phase::Verification),
+    [](const ::testing::TestParamInfo<Phase>& info) {
+      return info.param == Phase::Verification ? "Verification" : "Evaluation";
+    });
+
+TEST_P(EvaluationTimeRules, TimeLimitFailsAfterTheDeadlineOnAnEmptyBatch) {
   ScriptedMarket f;
   auto rules = plan();
   rules.time_limit_days = 2;
@@ -107,7 +123,7 @@ TEST(TimeRules, TimeLimitFailsAfterTheDeadlineOnAnEmptyBatch) {
   EXPECT_EQ(s.snapshot()->evaluation.decision, "The evaluation's 2-day window ended on 2026-09-24");
   EXPECT_EQ(s.submit(f.market("late"), f.time).decision.code, Reason::EVALUATION_CLOSED);
 }
-TEST(TimeRules, PassBeforeDeadlineStandsAndZeroStartWaitsForMarketTime) {
+TEST_P(EvaluationTimeRules, PassBeforeDeadlineStandsAndZeroStartWaitsForMarketTime) {
   ScriptedMarket f;
   auto rules = plan(); rules.time_limit_days = 1; rules.profit_target = m("100");
   TradingSession s(config(rules), 0);
@@ -120,7 +136,7 @@ TEST(TimeRules, PassBeforeDeadlineStandsAndZeroStartWaitsForMarketTime) {
   EXPECT_EQ(s.snapshot()->evaluation.status, EvaluationStatus::Passed);
   EXPECT_EQ(s.snapshot()->evaluation.decision_code, Reason::PROFIT_TARGET);
 }
-TEST(TimeRules, OwnExecutionsResetInactivityButOrdersDoNot) {
+TEST_P(EvaluationTimeRules, OwnExecutionsResetInactivityButOrdersDoNot) {
   ScriptedMarket f;
   auto rules = plan(); rules.inactivity_days = 2;
   TradingSession s(config(rules), f.time);
@@ -157,7 +173,7 @@ TEST(TimeRules, SystemLiquidationIsNotActivityAndFundedAccountsCanExpire) {
   next_day(s, f, {2026, 9, 25});
   EXPECT_EQ(s.snapshot()->evaluation.decision_code, Reason::INACTIVITY);
 }
-TEST(TimeRules, ShareExecutionsCountAsOwnActivity) {
+TEST_P(EvaluationTimeRules, ShareExecutionsCountAsOwnActivity) {
   ScriptedMarket f;
   auto rules = plan(); rules.inactivity_days = 2;
   TradingSession s(config(rules), f.time); f.seed(s);
@@ -167,7 +183,7 @@ TEST(TimeRules, ShareExecutionsCountAsOwnActivity) {
   next_day(s, f, {2026, 9, 25});
   EXPECT_EQ(s.snapshot()->evaluation.status, EvaluationStatus::Active);
 }
-TEST(TimeRules, WhitelistUsesUnderlyingForOptionsAndShares) {
+TEST_P(EvaluationTimeRules, WhitelistUsesUnderlyingForOptionsAndShares) {
   ScriptedMarket f;
   auto rules = plan(); rules.underlyings = {"SPX", "SPY"};
   TradingSession s(config(rules), f.time); f.seed(s);
@@ -180,7 +196,7 @@ TEST(TimeRules, WhitelistUsesUnderlyingForOptionsAndShares) {
   const auto denied = s.submit(g.market("xsp"), f.time).decision;
   EXPECT_EQ(denied.code, Reason::INSTRUMENT_NOT_ALLOWED); EXPECT_EQ(denied.scope, "XSP");
 }
-TEST(TimeRules, TradingHoursCancelOpeningsAtEndButKeepReducingOrdersAndExits) {
+TEST_P(EvaluationTimeRules, TradingHoursCancelOpeningsAtEndButKeepReducingOrdersAndExits) {
   ScriptedMarket f;
   auto rules = plan(); rules.trading_start = 10 * 60; rules.trading_end = 11 * 60;
   TradingSession s(config(rules), f.time); f.seed(s);
@@ -223,7 +239,7 @@ TEST(TimeRules, HoursApplyBeforeStartInCurbAndAfterDaylightSaving) {
     EXPECT_EQ(s.submit(curb, f.time).decision.code, Reason::OUTSIDE_PLAN_HOURS);
   }
 }
-TEST(TimeRules, RulesAndActivityRecoverAndTheRecoveredDeadlineStillFails) {
+TEST_P(EvaluationTimeRules, RulesAndActivityRecoverAndTheRecoveredDeadlineStillFails) {
   ScriptedMarket f;
   auto rules = plan(); rules.time_limit_days = 10; rules.inactivity_days = 2;
   rules.underlyings = {"SPX"}; rules.trading_start = 9 * 60 + 30; rules.trading_end = 16 * 60;
@@ -351,7 +367,7 @@ TEST(TimeRules, ProjectedOddsRespectCalendarDeadlines) {
   EXPECT_EQ(project(0, 1, {2026, 9, 25}).fail, 1.0);
   EXPECT_EQ(project(0, 3, {2026, 9, 25}).pass, 1.0);
 }
-TEST(TimeRules, FlatTimeCancelsOpeningsAndClosesOptionsAndSharesBeforeMatching) {
+TEST_P(EvaluationTimeRules, FlatTimeCancelsOpeningsAndClosesOptionsAndSharesBeforeMatching) {
   ScriptedMarket f;
   auto rules = plan(); rules.flat_time = 601;
   auto c = config(rules); c.limits.max_quote_age = 30 * md::kNanosPerSecond;
@@ -459,7 +475,7 @@ TEST(TimeRules, FlatTimeIocsRespectLatencyAndResumeOnNewQuotes) {
   EXPECT_FALSE(s.snapshot()->evaluation.flat_pending);
 }
 
-TEST(TimeRules, FlatTimeRunsOncePerDateRecoversAndCatchesGaps) {
+TEST_P(EvaluationTimeRules, FlatTimeRunsOncePerDateRecoversAndCatchesGaps) {
   ScriptedMarket f; auto rules = plan(); rules.flat_time = 601;
   JournalFile file;
   {
@@ -494,8 +510,8 @@ TEST(TimeRules, FlatTimeRunsOncePerDateRecoversAndCatchesGaps) {
   EXPECT_EQ(TradingSession::recover(FileJournal::read(file.path)).snapshot_json(), s.snapshot_json());
 }
 
-TEST(TimeRules, NoOvernightFailsWithoutMarksInBothPhasesAndDecisionsAreSticky) {
-  for (const auto phase : {Phase::Evaluation, Phase::Funded}) {
+TEST(TimeRules, NoOvernightFailsWithoutMarksInAllPhasesAndDecisionsAreSticky) {
+  for (const auto phase : {Phase::Evaluation, Phase::Verification, Phase::Funded}) {
     ScriptedMarket f; auto rules = plan(); rules.no_overnight = true; rules.phase = phase;
     if (phase == Phase::Funded) rules.payouts.qualifying_days = 1;
     JournalFile file;
@@ -517,7 +533,7 @@ TEST(TimeRules, NoOvernightFailsWithoutMarksInBothPhasesAndDecisionsAreSticky) {
   }
 }
 
-TEST(TimeRules, NoOvernightChecksSharesOnExplicitRolloverButExcludesSettlement) {
+TEST_P(EvaluationTimeRules, NoOvernightChecksSharesOnExplicitRolloverButExcludesSettlement) {
   ScriptedMarket f; auto rules = plan(); rules.no_overnight = true; rules.flat_time = 16 * 60 + 10;
   TradingSession shares(config(rules), f.time);
   ASSERT_TRUE(shares.trade_stock("SPY", 1, f.time, StockPrice{"SPY", f.time, m("500")}).decision.ok());
