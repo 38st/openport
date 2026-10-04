@@ -472,7 +472,8 @@ class JointAllocation {
           if (groups_[a].empty()) continue;
           for (std::size_t b = a + 1; b < groups_.size() && work_ > 0; ++b) {
             if (groups_[b].empty()) continue;
-            auto merged = groups_[a];
+            auto& merged = trial_left_;
+            merged = groups_[a];
             for (const auto& h : groups_[b]) change(merged, h.unit, h.n);
             if (pools_first) {
               if (!spend(1 + merged.size())) break;
@@ -487,7 +488,8 @@ class JointAllocation {
             }
             // Equal-cost merges expose a pool's free offsetting payoff to later
             // transfers, and terminate because one fewer group remains occupied.
-            if (accept(a, b, std::move(merged), {}, true)) improved = true;
+            trial_right_.clear();
+            if (accept(a, b, true)) improved = true;
           }
         }
         if (improved) break;
@@ -658,7 +660,9 @@ class JointAllocation {
     if (loss < best.requirement) best = {loss, MarginPartKind::WorstLoss};
     return best;
   }
-  bool accept(std::size_t a, std::size_t b, Group left, Group right, bool merge = false) {
+  bool accept(std::size_t a, std::size_t b, bool merge = false) {
+    auto& left = trial_left_;
+    auto& right = trial_right_;
     try {
       const auto l = score(left), r = score(right);
       if (!l || !r) return false;
@@ -684,8 +688,8 @@ class JointAllocation {
             if (units_[h.unit]->leg->quantity > 0 && expiries_[h.unit] < latest) return false;
         }
       }
-      groups_[a] = std::move(left);
-      groups_[b] = std::move(right);
+      groups_[a].swap(left);
+      groups_[b].swap(right);
       scores_[a] = *l;
       scores_[b] = *r;
       ++versions_[a];
@@ -700,17 +704,21 @@ class JointAllocation {
   }
   bool transfer(std::size_t a, std::size_t b, std::size_t unit, Quantity n) {
     if (work_ == 0) return false;
-    auto left = groups_[a], right = groups_[b];
+    auto& left = trial_left_;
+    auto& right = trial_right_;
+    left = groups_[a]; right = groups_[b];
     change(left, unit, -n);
     change(right, unit, n);
-    return accept(a, b, std::move(left), std::move(right));
+    return accept(a, b);
   }
   bool exchange(std::size_t a, std::size_t b, std::size_t first, std::size_t second, Quantity n) {
     if (work_ == 0) return false;
-    auto left = groups_[a], right = groups_[b];
+    auto& left = trial_left_;
+    auto& right = trial_right_;
+    left = groups_[a]; right = groups_[b];
     change(left, first, -n); change(right, first, n);
     change(right, second, -n); change(left, second, n);
-    return accept(a, b, std::move(left), std::move(right));
+    return accept(a, b);
   }
   bool transfer_bundle(std::size_t a, std::size_t b, const Group& source) {
     for (std::size_t i = 0; i < source.size() && work_ > 0; ++i) {
@@ -718,10 +726,12 @@ class JointAllocation {
         const auto first = source[i].unit, second = source[j].unit;
         const auto n = std::min(source[i].n, source[j].n);
         const auto move = [&](Quantity first_n, Quantity second_n) {
-          auto left = groups_[a], right = groups_[b];
+          auto& left = trial_left_;
+          auto& right = trial_right_;
+          left = groups_[a]; right = groups_[b];
           change(left, first, -first_n); change(right, first, first_n);
           change(left, second, -second_n); change(right, second, second_n);
-          return accept(a, b, std::move(left), std::move(right));
+          return accept(a, b);
         };
         // An offsetting long need not have the short's type or quantity: a
         // call can reduce a put pool's loss near its strikes. Test both whole
@@ -759,6 +769,9 @@ class JointAllocation {
   std::vector<Timestamp> expiries_;
   std::vector<std::vector<Money>> payoff_;
   std::vector<Group> groups_;
+  // Most trials fail. Reuse their capacity instead of allocating two vectors
+  // for each attempt; an accepted trial swaps storage with the old groups.
+  Group trial_left_, trial_right_;
   std::vector<Score> scores_;
   Parts fixed_;
 };
