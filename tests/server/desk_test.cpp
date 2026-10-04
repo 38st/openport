@@ -45,6 +45,7 @@ server::TradingReply command(server::Desk& desk, server::TradingCommand request,
 TEST(Desk, VolumeShareGateChecksKnownUnknownStaleVolumeAndOpeningContracts) {
   test::ScriptedMarket market;
   server::Desk::Options options;
+  options.analytics.fallback_rate = 0;
   options.paper.rules.max_volume_percent = 10;
   options.paper.limits.aggregate = {1e9, 1e9}; options.paper.limits.per_underlying = {1e9, 1e9};
   server::Desk desk("test", {}, {{"SPX", "SPY"}}, options);
@@ -121,6 +122,7 @@ TEST(Desk, VolumeShareChecksEveryComboRatioWithAnExactPercentBoundaryInReplay) {
   test::ScriptedMarket market, other;
   other.contract.strike += 5;
   server::Desk::Options options;
+  options.analytics.fallback_rate = 0;
   options.replay = true; options.paper.rules.max_volume_percent = 33;
   options.paper.limits.aggregate = {1e9, 1e9}; options.paper.limits.per_underlying = {1e9, 1e9};
   server::Desk desk("replay", {}, {{"SPX"}}, options);
@@ -149,6 +151,7 @@ TEST(Desk, CounterPositionsGatePreviewsChangesChainsAndIgnoresArchivedAccounts) 
   test::RecordingFile file;
   test::ScriptedMarket market;
   server::Desk::Options options;
+  options.analytics.fallback_rate = 0;
   options.paper_journal = file.directory / "paper.jsonl";
   options.paper_accounts = file.directory / "accounts";
   options.paper.rules.no_counter_positions = true;
