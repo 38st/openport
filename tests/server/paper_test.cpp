@@ -3224,6 +3224,27 @@ TEST_F(PaperEngine, MarginSettingsStandBesidePlansAndPortfolioShowsTheBreakdown)
   EXPECT_EQ(account["margin"], "portfolio");
   EXPECT_EQ(account["pm_vol_shock"], 5);
   EXPECT_EQ(account["account_type"], "margin");
+  // The bounds are inclusive, and cash/IRA require buying power even in custom rules.
+  ASSERT_EQ(write(*engine, "POST", "/api/account/reset", {{"plan", "practice"}, {"reason", "bounds"},
+      {"margin", "portfolio"}, {"house_margin_percent", 400}, {"pm_vol_shock", 50}}).status, 200);
+  for (const auto* type : {"cash", "ira"}) {
+    auto custom = rules;
+    custom["plan"] = "Custom";
+    custom["account_type"] = type;
+    custom["buying_power"] = false;
+    expect_error(write(*engine, "POST", "/api/account/reset",
+        {{"initial_cash", "50000"}, {"rules", custom}, {"reason", "buying power required"}}), 400, "INVALID_RULES");
+  }
+  auto malformed = rules;
+  malformed["plan"] = "Custom";
+  malformed["slippage_ticks"] = 1.5;
+  expect_error(write(*engine, "POST", "/api/account/reset",
+      {{"initial_cash", "50000"}, {"rules", malformed}, {"reason", "legacy type error"}}), 400, "INVALID_REQUEST");
+  engine->stop();
+  engine = std::make_unique<server::Engine>(provider, md::Subscription{{"SPX"}}, options);
+  engine->start();
+  ASSERT_TRUE(wait_for([&] { return engine->trading_view("portfolio") != nullptr; }));
+  EXPECT_EQ(read(*engine, "/api/account?account=portfolio")["rules"], account);
 }
 
 TEST_F(PaperEngine, FillPresetsPreservePlanRulesAndValidateCustomSettings) {
@@ -3439,6 +3460,13 @@ TEST_F(PaperEngine, FundedPlansUnlockAfterAPassAndPayoutsFollowTheirRules) {
   EXPECT_EQ(json::parse(custom_reset.body)["payout"]["buffer_balance"], "12100.00");
   EXPECT_EQ(json::parse(custom_reset.body)["rules"]["payouts"]["buffer"], "2100.00");
   EXPECT_EQ(json::parse(custom_reset.body)["rules"]["payouts"]["buffer_payouts"], 3);
+  for (const auto* key : {"caps", "consistency_percents"}) {
+    auto malformed = custom;
+    malformed["payouts"][key] = key == std::string_view("caps")
+        ? json(std::vector<std::string>(65, "100")) : json(std::vector<int>(65, 25));
+    expect_error(write(*engine, "POST", "/api/account/reset",
+        {{"initial_cash", "10000"}, {"rules", malformed}, {"reason", "legacy array limit"}}), 400, "INVALID_REQUEST");
+  }
   for (const auto& [key, value] : std::vector<std::pair<std::string, json>>{{"buffer", "-1"}, {"buffer_payouts", -1}, {"buffer_payouts", 101}}) {
     auto bad = custom; bad["payouts"][key] = value;
     expect_error(write(*engine, "POST", "/api/account/reset", {{"initial_cash", "10000"}, {"rules", bad}, {"reason", "invalid"}}), 400, "INVALID_RULES");
