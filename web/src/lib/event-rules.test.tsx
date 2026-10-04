@@ -30,6 +30,20 @@ describe("F17/F59 calendar rules", () => {
     expect(timeRuleFacts(rules).join(" ")).toContain("5 minutes before / 10 after")
     expect(reasonEvidence({ code: "HOLD_RESTRICTED", message: "cutoff", limit: "15:45", scope: "earnings:SPY" })).toBe("Limit 15:45 · earnings:SPY")
   })
+  it("formats saved event facts and active calendar notices in New York time", () => {
+    expect(timeRuleFacts({ ...rules, events: [
+      { kind: "news", time: "2026-10-07T18:00:00.000000000Z", label: "FOMC" },
+      { kind: "earnings", time: "2026-10-08", symbol: "SPY", session: "after_close" },
+    ] }).join(" ")).toContain("2 saved events: FOMC all underlyings Wed, Oct 7, 14:00 ET; earnings SPY 2026-10-08 after close")
+    const news: EventWindow = { kind: "news", symbol: null, label: "FOMC", start: "2026-10-02T19:40:00.000Z", end: "2026-10-02T22:00:00.000Z", active: true }
+    const weekend: EventWindow = { kind: "weekend", symbol: null, label: "Weekend", start: "2026-10-02T19:40:00.000Z", end: "2026-10-05T13:30:00.000Z", active: false }
+    expect(timeRuleNotices({ ...account.evaluation, active_events: [news, news], next_event: news }, rules)).toEqual([
+      "Active news blackout: FOMC, all underlyings, until Fri, Oct 2, 18:00 ET. Closing orders still work.",
+    ])
+    expect(timeRuleNotices({ ...account.evaluation, active_events: [], next_event: weekend }, rules)).toEqual([
+      "Next weekend holding cutoff: Weekend, all underlyings, Fri, Oct 2, 15:40 ET until Mon, Oct 5, 09:30 ET.",
+    ])
+  })
   it("round trips and validates editor fields", () => {
     const form = planForm({ initial_cash: "100000", rules })
     const result = customPlan(form, rules)

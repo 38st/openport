@@ -1,4 +1,4 @@
-import type { Account, AccountRules, DailyLossBasis, Evaluation, Money, Objective, SizeScaling } from "../api/trading-types"
+import type { Account, AccountRules, DailyLossBasis, Evaluation, EventWindow, Money, Objective, PlanEvent, SizeScaling } from "../api/trading-types"
 import { compareMoney, validMoney, formatMoney, subtractMoney } from "./trading"
 import { newYorkDate } from "./journal"
 
@@ -69,6 +69,49 @@ export function dayEndFact(rules: AccountRules): string | null {
   return dayEnd(rules) === "17:00" ? null : `Trading day ends at ${clockText(dayEnd(rules))} ET`
 }
 
+const eventStamp = new Intl.DateTimeFormat("en-US", {
+  timeZone: "America/New_York",
+  weekday: "short",
+  month: "short",
+  day: "numeric",
+  hour: "2-digit",
+  minute: "2-digit",
+  hourCycle: "h23",
+})
+const eventClock = new Intl.DateTimeFormat("en-US", {
+  timeZone: "America/New_York",
+  hour: "2-digit",
+  minute: "2-digit",
+  hourCycle: "h23",
+})
+function eventTimestampET(iso: string): string {
+  const timestamp = Date.parse(iso)
+  return Number.isFinite(timestamp) ? `${eventStamp.format(timestamp)} ET` : iso
+}
+function eventWindowET(start: string, end: string): string {
+  const startTime = Date.parse(start), endTime = Date.parse(end)
+  if (!Number.isFinite(startTime) || !Number.isFinite(endTime)) return `${start} until ${end}`
+  const sameDay = newYorkDate(start)?.date === newYorkDate(end)?.date
+  return `${eventStamp.format(startTime)} ET until ${sameDay ? eventClock.format(endTime) : eventStamp.format(endTime)} ET`
+}
+const sessionText: Record<NonNullable<PlanEvent["session"]>, string> = { before_open: "before open", after_close: "after close" }
+function planEventFact(e: PlanEvent): string {
+  const when = e.kind === "news" ? eventTimestampET(e.time) : e.time.slice(0, 10)
+  return `${e.label || e.kind} ${e.symbol || "all underlyings"} ${when}${e.session ? ` ${sessionText[e.session]}` : ""}`
+}
+function eventWindowKey(w: EventWindow): string {
+  return `${w.kind}\0${w.symbol ?? ""}\0${w.label ?? ""}\0${w.start}\0${w.end}`
+}
+function uniqueWindows(windows: EventWindow[]): EventWindow[] {
+  const seen = new Set<string>()
+  return windows.filter((window) => {
+    const key = eventWindowKey(window)
+    if (seen.has(key)) return false
+    seen.add(key)
+    return true
+  })
+}
+
 export const objectiveLabels: Record<string, string> = {
   PROFIT_TARGET: "Profit target",
   MIN_TRADING_DAYS: "Trading days",
@@ -128,7 +171,7 @@ export function timeRuleEntries(r: AccountRules): { title: string; body: string 
     ...(r.no_overnight ? [{ title: "No overnight holds", body: `Positions held at the ${dayEnd(r)} ET rollover fail the attempt (OVERNIGHT_HOLD); positions awaiting settlement are excluded` }] : []),
     ...((r.news_before_minutes || r.news_after_minutes) ? [{ title: "News blackouts", body: `News: ${r.news_before_minutes ?? 0} minutes before / ${r.news_after_minutes ?? 0} after; ${r.news_action === "flatten" ? "closes positions once" : "blocks openings"}; exits keep working` }] : []),
     ...(r.hold_restrictions?.length ? [{ title: "Holding restrictions", body: `Close before ${r.hold_cutoff ?? "15:45"} ET for ${r.hold_restrictions.join(", ")}; holding across the boundary fails the attempt` }] : []),
-    ...(r.events?.length ? [{ title: "Plan event calendar", body: `${r.events.length} saved events: ${r.events.map((e) => `${e.label || e.kind} ${e.symbol || "all underlyings"} ${e.time}${e.session ? ` ${e.session}` : ""}`).join("; ")}` }] : []),
+    ...(r.events?.length ? [{ title: "Plan event calendar", body: `${r.events.length} saved events: ${r.events.map(planEventFact).join("; ")}` }] : []),
     ...(r.time_limit_days ? [{ title: `${r.phase === "verification" ? "Verification" : "Evaluation"} time limit`, body: `${r.phase === "verification" ? "Verification" : "Evaluation"} ends after ${r.time_limit_days} calendar days` }] : []),
     ...(r.inactivity_days ? [{ title: "Inactivity limit", body: `Inactivity limit: ${r.inactivity_days} calendar days without your own execution` }] : []),
     ...(r.underlyings?.length ? [{ title: "Allowed underlyings", body: `Allowed underlyings: ${r.underlyings.join(", ")}${r.underlyings.includes("SPX") ? " (SPX includes SPXW options)" : ""}` }] : []),
@@ -156,7 +199,7 @@ export function planEntryNotice(r: AccountRules | undefined, underlying: string,
     if (e.kind !== "news" || (e.symbol && e.symbol !== underlying) || !(r.news_before_minutes || r.news_after_minutes)) continue
     const at = Date.parse(e.time), end = at + (r.news_after_minutes ?? 0) * 60_000
     if (timestamp >= at - (r.news_before_minutes ?? 0) * 60_000 && timestamp < end)
-      return `NEWS_BLACKOUT: ${e.label || "news"} blocks openings until ${new Date(end).toISOString()}; closing orders still work.`
+      return `NEWS_BLACKOUT: ${e.label || "news"} blocks openings until ${eventTimestampET(new Date(end).toISOString())}; closing orders still work.`
   }
   const evaluation = account?.evaluation
   for (const e of [...(evaluation?.active_events ?? []), ...(evaluation?.next_event ? [evaluation.next_event] : [])]) {
@@ -185,11 +228,15 @@ export function timeRuleNotices(e: Evaluation, r: AccountRules, time?: string): 
   const minute = (clock: string) => Number(clock.slice(0, 2)) * 60 + Number(clock.slice(3))
   const timestamp = Date.parse(time ?? "")
   const remaining = r.flat_time && Number.isFinite(timestamp) ? minute(r.flat_time) - minute(planClock.format(timestamp)) : null
+  const activeNews = uniqueWindows((e.active_events ?? []).filter((w) => w.kind === "news"))
+  const activeNewsKeys = new Set(activeNews.map(eventWindowKey))
+  const nextEvent = e.next_event && !(e.next_event.kind === "news" && e.next_event.active && activeNewsKeys.has(eventWindowKey(e.next_event)))
+    ? e.next_event : null
   return [
     ...((e.flat_now ?? flatNow(r, time)) ? ["Flat time passed; openings blocked until the day ends"]
       : remaining != null && remaining > 0 && remaining <= 30 ? [`Flat by ${r.flat_time} ET, positions will be closed`] : []),
-    ...(e.active_events ?? []).filter((w) => w.kind === "news").map((w) => `Active news blackout: ${w.label || "News"}, ${w.symbol || "all underlyings"}, until ${w.end}. Closing orders still work.`),
-    ...(e.next_event ? [`${e.next_event.active ? "Active" : "Next"} ${e.next_event.kind === "news" ? "news blackout" : `${e.next_event.kind} holding cutoff`}: ${e.next_event.label || e.next_event.kind}, ${e.next_event.symbol || "all underlyings"}, ${e.next_event.start} until ${e.next_event.end}.`] : []),
+    ...activeNews.map((w) => `Active news blackout: ${w.label || "News"}, ${w.symbol || "all underlyings"}, until ${eventTimestampET(w.end)}. Closing orders still work.`),
+    ...(nextEvent ? [`${nextEvent.active ? "Active" : "Next"} ${nextEvent.kind === "news" ? "news blackout" : `${nextEvent.kind} holding cutoff`}: ${nextEvent.label || nextEvent.kind}, ${nextEvent.symbol || "all underlyings"}, ${eventWindowET(nextEvent.start, nextEvent.end)}.`] : []),
     ...(e.days_left != null && e.deadline ? [`${r.phase === "verification" ? "Verification" : "Evaluation"}: ${e.days_left} calendar days left; deadline ${e.deadline}.`] : []),
     ...(r.inactivity_days && e.inactive_days != null && e.inactivity_deadline && r.inactivity_days - e.inactive_days <= 7
       ? [`Inactivity: ${Math.max(0, r.inactivity_days - e.inactive_days)} calendar days left to execute a trade; deadline ${e.inactivity_deadline}.`] : []),
