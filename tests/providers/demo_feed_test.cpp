@@ -1,12 +1,13 @@
 #include "support/recording.hpp"
 
-#include <barrier>
 #include <cerrno>
 #include <condition_variable>
 #include <csignal>
 #include <fstream>
+#include <mutex>
 #include <set>
 #include <sys/wait.h>
+#include <thread>
 
 #include "openport/providers/demo_feed.hpp"
 #include "openport/providers/factory.hpp"
@@ -115,13 +116,24 @@ TEST(DemoFeed, ConcurrentOrphanSweepsFinishWithoutTouchingLiveDirectories) {
       std::ofstream(path / "day.oprec") << "day";
       orphans.push_back(path);
     }
-    std::barrier ready(2);
+    std::mutex ready_mutex;
+    std::condition_variable ready;
+    int arrived = 0;
+    const auto arrive_and_wait = [&] {
+      std::unique_lock lock(ready_mutex);
+      if (++arrived == 2) ready.notify_all();
+      else ready.wait(lock, [&] { return arrived == 2; });
+    };
     std::size_t other_removed = 0;
-    std::jthread other([&] {
-      ready.arrive_and_wait();
+    std::thread other([&] {
+      arrive_and_wait();
       other_removed = providers::remove_orphaned_demo_directories(fixture.directory);
     });
-    ready.arrive_and_wait();
+    struct JoinOnExit {
+      std::thread& thread;
+      ~JoinOnExit() { if (thread.joinable()) thread.join(); }
+    } join_on_exit{other};
+    arrive_and_wait();
     const auto removed = providers::remove_orphaned_demo_directories(fixture.directory);
     other.join();
     if (!process_is_gone(child)) GTEST_SKIP() << "Reaped PID " << child << " was reused during the sweeps";
