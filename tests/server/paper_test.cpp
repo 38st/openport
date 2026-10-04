@@ -4791,7 +4791,7 @@ TEST_F(PaperEngine, TimeAndTradeRulesSurviveCreateResetAndPresetMatching) {
   EXPECT_EQ(restored["rules"], rules);
   EXPECT_EQ(restored["evaluation"], funded_evaluation);
   const auto created_rules = read(*engine, "/api/account?account=combined-rules")["rules"];
-  EXPECT_EQ(created_rules["phase"], "evaluation");
+  EXPECT_EQ(created_rules["phase"], "verification");
   for (const auto* field : {"events", "news_before_minutes", "news_after_minutes", "news_action", "hold_restrictions",
                            "hold_cutoff", "flat_time", "no_overnight", "scaling"}) {
     EXPECT_EQ(created_rules[field], rules[field]) << field;
