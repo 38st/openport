@@ -202,8 +202,8 @@ function Rules({ trading }: { trading: TradingStatus }) {
             ["Expiry auto-close", (p) => p.rules.expiry_cutoff_seconds ? `${Math.round(p.rules.expiry_cutoff_seconds / 60)} min before` : "—"],
           ]} lock={(p) => lockReason(p, plans.data.plans, data)} enabled={trading.enabled} onStart={setStart} />
         </Panel>
-        {offeredPlans(plans.data.plans).some((p) => p.rules.phase === "funded") && <Panel title="Funded accounts">
-          <PlanTable label="Funded accounts" plans={offeredPlans(plans.data.plans).filter((p) => p.rules.phase === "funded")} columns={[
+        {offeredPlans(plans.data.plans, data).some((p) => p.rules.phase === "funded") && <Panel title="Funded accounts">
+          <PlanTable label="Funded accounts" plans={offeredPlans(plans.data.plans, data).filter((p) => p.rules.phase === "funded")} columns={[
             ["Trailing drawdown", (p) => p.rules.max_drawdown
               ? `${formatMoney(p.rules.max_drawdown, 0)} ${p.rules.drawdown_mode === "static" ? "static" : p.rules.drawdown_mode === "intraday" ? "intraday" : "at close"}` : "—"],
             ["Floor locks at", (p) => p.rules.lock_balance ? formatMoney(p.rules.lock_balance, 0) : "—", true],

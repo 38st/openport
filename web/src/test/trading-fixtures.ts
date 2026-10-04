@@ -111,6 +111,16 @@ export const plans: Plan[] = [
       payouts: { qualifying_profit: "200.00", qualifying_days: 8, withdrawal_percent: 50, split_percent: 80, minimum: "1000.00",
         caps: ["2000.00", "3000.00", "4000.00", "6000.00"] } }, unlocked_by: "intraday-100k" },
 ]
+/** Challenge, verification and funded destinations for terminal progression tests. */
+export const twoStepPlans: [Plan, Plan, Plan] = [
+  { ...plans[1]!, id: "two-step-100k", name: "Two-step Challenge 100K", unlocked_by: null,
+    rules: { ...account.rules, plan: "Two-step Challenge 100K", plan_id: "two-step-100k", evaluation_fee: "400.00", reset_fee: "200.00", max_resets: 2 } },
+  { ...plans[1]!, id: "two-step-verify-100k", name: "Two-step Verification 100K", unlocked_by: "two-step-100k",
+    rules: { ...account.rules, plan: "Two-step Verification 100K", plan_id: "two-step-verify-100k", phase: "verification",
+      profit_target: "5000.00", activation_fee: "0.00", reset_fee: "200.00", max_resets: 2 } },
+  { ...plans[2]!, id: "two-step-funded-100k", name: "Two-step Funded 100K", unlocked_by: "two-step-verify-100k",
+    rules: { ...plans[2]!.rules, plan: "Two-step Funded 100K", plan_id: "two-step-funded-100k", activation_fee: "200.00", reset_fee: "200.00", max_resets: 2 } },
+]
 /** A funded account after one payout, three qualifying days into its second cycle. */
 export const fundedAccount: Account = {
   ...account,

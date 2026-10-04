@@ -4,8 +4,8 @@ import { renderToStaticMarkup } from "react-dom/server"
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
 import { liveState, useLive } from "../api/live"
 import { tradingQueries } from "../api/trading"
-import type { Account, SettlementRecord } from "../api/trading-types"
-import { account, fill, plans, portfolio, risk, shareTrades, status, trades } from "../test/trading-fixtures"
+import type { Account, Plan, SettlementRecord } from "../api/trading-types"
+import { account, fill, fundedAccount, plans, portfolio, risk, shareTrades, status, trades, twoStepPlans } from "../test/trading-fixtures"
 import { DashboardView, equitySeries } from "./DashboardView"
 import { PositionsView } from "./PositionsView"
 import { JournalView, SettlementList, SettlementPrint } from "./JournalView"
@@ -16,7 +16,7 @@ import { exitLabel } from "../lib/journal"
 
 vi.mock("../api/live", async (original) => ({ ...await original<typeof import("../api/live")>(), useLive: vi.fn() }))
 const clients: QueryClient[] = []
-function render(node: ReactNode, value: Account = account) {
+function render(node: ReactNode, value: Account = account, available: Plan[] = plans) {
   const client = new QueryClient({ defaultOptions: { queries: { retry: false, staleTime: Infinity, gcTime: Infinity } } })
   clients.push(client)
   const queries = tradingQueries(0, "17", true)
@@ -25,7 +25,7 @@ function render(node: ReactNode, value: Account = account) {
   client.setQueryData(queries.risk.queryKey, risk)
   client.setQueryData(queries.fills.queryKey, { account_version: "17", fills: [fill] })
   client.setQueryData(queries.trades("current").queryKey, { account_version: "17", attempt: 2, trades })
-  client.setQueryData(["plans"], { plans })
+  client.setQueryData(["plans"], { plans: available })
   return renderToStaticMarkup(<QueryClientProvider client={client}>{node}</QueryClientProvider>)
 }
 beforeEach(() => vi.mocked(useLive).mockReturnValue(liveState(status, null, "open")))
@@ -247,17 +247,47 @@ describe("simulator pages", () => {
     expect(disabled).toContain("Buying power is not enforced")
     expect(disabled).toContain("Portfolio margin")
   })
-  it("offers funded steps and their unlock in the simulator", () => {
+  it("hides funded steps and their unlock in the simulator", () => {
     const passed: Account = { ...account, evaluation: { ...account.evaluation, status: "passed", decided_at: "2026-09-23T15:00:00Z",
       decided_equity: "110000.00", decision: "Equity $110000.00 reached the profit target $110000.00" } }
     const dialog = render(<ResetDialog trading={{ ...status.trading!, write: "open" }} attempt={2} onClose={() => {}} />, passed)
     expect(dialog).toContain("Intraday 100K")
-    expect(dialog).toContain("Funded")
+    expect(dialog).not.toContain("Funded")
     const rules = render(<RulesView />, passed)
     expect(rules).toContain("Evaluation plans")
-    expect(rules).toContain("Funded accounts")
+    expect(rules).not.toContain("Funded accounts")
     const dashboard = render(<DashboardView />, passed)
     expect(dashboard).toContain("Evaluation passed")
-    expect(dashboard).toContain("Start funded account")
+    expect(dashboard).not.toContain("Start funded account")
+  })
+  it("keeps verification visible and hides the funded destination and its costs after verification passes", () => {
+    const [challenge, verification, funded] = twoStepPlans
+    const current: Account = { ...account, rules: challenge.rules }
+    const rules = render(<RulesView />, current, twoStepPlans)
+    expect(rules).toContain(verification.name)
+    expect(rules).toContain(`Pass ${challenge.name} to unlock`)
+    expect(rules).not.toContain(funded.name)
+    expect(render(<DashboardView />, current, twoStepPlans)).not.toContain("Start verification")
+    const passed: Account = { ...current, rules: verification.rules, next_plans: [funded.id],
+      evaluation: { ...account.evaluation, status: "passed" } }
+    const dashboard = render(<DashboardView />, passed, twoStepPlans)
+    expect(dashboard).toContain("Verification passed")
+    expect(dashboard).not.toContain("Start funded account")
+    expect(dashboard).not.toContain(funded.name)
+    const dialog = render(<ResetDialog trading={status.trading!} attempt={2} initial={funded.id} onClose={() => {}} />, passed, twoStepPlans)
+    expect(dialog).toContain(verification.name)
+    expect(dialog).not.toContain(funded.id)
+    expect(dialog).not.toContain("activation $200.00")
+    expect(dialog).not.toContain("This start charges")
+  })
+  it("shows funded plans, costs and payouts for an already-funded account", () => {
+    const funded = twoStepPlans[2]
+    const current: Account = { ...fundedAccount, rules: funded.rules }
+    const dialog = render(<ResetDialog trading={status.trading!} attempt={3} initial={funded.id} onClose={() => {}} />, current, twoStepPlans)
+    expect(dialog).toContain(funded.name)
+    expect(dialog).toContain("activation $200.00")
+    expect(dialog).toContain("This start charges $200.00 (reset fee)")
+    expect(render(<RulesView />, current, twoStepPlans)).toContain("Funded accounts")
+    expect(render(<DashboardView />, current, twoStepPlans)).toContain("Next payout")
   })
 })

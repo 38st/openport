@@ -3,13 +3,13 @@ import { showFundedAccounts } from "./features"
 import { sameProgram } from "./program-costs"
 import { compareMoney, formatMoney, sumMoney } from "./trading"
 
-/** Plans the terminal offers: funded plans only when they are shown. */
-export function offeredPlans(plans: Plan[]): Plan[] {
-  return showFundedAccounts ? plans : plans.filter((p) => p.rules.phase !== "funded")
+/** Verification is always offered; funded plans share the Payouts page's visibility. */
+export function offeredPlans(plans: Plan[], account?: Pick<Account, "rules">, showFunded = showFundedAccounts): Plan[] {
+  return payoutsVisible(account, showFunded) ? plans : plans.filter((p) => p.rules.phase !== "funded")
 }
 /** The Payouts page is shown with funded plans, or for an account that is already funded. */
-export function payoutsVisible(account: Pick<Account, "rules"> | undefined): boolean {
-  return showFundedAccounts || account?.rules.phase === "funded"
+export function payoutsVisible(account: Pick<Account, "rules"> | undefined, showFunded = showFundedAccounts): boolean {
+  return showFunded || account?.rules.phase === "funded"
 }
 
 /** A payout number's cap: the last cap repeats; null when uncapped. */
@@ -17,7 +17,7 @@ export function payoutCap(caps: Money[], number: number): Money | null {
   return caps.length ? caps[Math.min(number, caps.length) - 1] ?? null : null
 }
 
-/** Funded plans unlock once the current attempt has passed the evaluation they name. */
+/** Verification and funded plans unlock once the current attempt has passed their prerequisite. */
 export function lockReason(plan: Plan, plans: Plan[], account: Account | undefined): string | null {
   if (!plan.unlocked_by) return null
   const name = plans.find((p) => p.id === plan.unlocked_by)?.name ?? plan.unlocked_by
@@ -29,9 +29,9 @@ export function lockReason(plan: Plan, plans: Plan[], account: Account | undefin
 }
 
 /** The next verification or funded step unlocked by the current pass. */
-export function unlockedNextPlan(plans: Plan[], account: Account | undefined): Plan | null {
+export function unlockedNextPlan(plans: Plan[], account: Account | undefined, showFunded = showFundedAccounts): Plan | null {
   return account?.evaluation.status === "passed"
-    ? plans.find((p) => p.unlocked_by != null && !sameProgram(p, account) && lockReason(p, plans, account) == null) ?? null : null
+    ? offeredPlans(plans, account, showFunded).find((p) => p.unlocked_by != null && !sameProgram(p, account) && lockReason(p, plans, account) == null) ?? null : null
 }
 
 /** Finished days of the current payout cycle: each day counts toward the cycle in progress when it

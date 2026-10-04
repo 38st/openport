@@ -12,12 +12,14 @@ import { PlanEditor, planForm, type PlanForm } from "../components/PlanEditor"
 import { ResetDialog, planFacts } from "../components/ResetDialog"
 import { evaluationBadge } from "../components/Sidebar"
 import { ruleAlerts } from "../lib/rule-alerts"
-import { account, plans, portfolio, risk, status, trades } from "../test/trading-fixtures"
+import { account, plans, portfolio, risk, status, trades, twoStepPlans } from "../test/trading-fixtures"
 import { DashboardView } from "./DashboardView"
 import { SizeScalingProgress } from "./PayoutsView"
 import { RulesView, ruleText } from "./RulesView"
 
 vi.mock("../api/live", async (original) => ({ ...await original<typeof import("../api/live")>(), useLive: vi.fn() }))
+const features = vi.hoisted(() => ({ showFundedAccounts: false }))
+vi.mock("../lib/features", () => features)
 
 /** A static floor on the closed balance, with a plan daily loss limit, minimum days and consistency. */
 const planned: Account = {
@@ -58,6 +60,7 @@ const render = (node: ReactNode, value: Account) => renderToStaticMarkup(<QueryC
 let host: HTMLDivElement
 let root: Root
 beforeEach(() => {
+  features.showFundedAccounts = false
   vi.stubGlobal("IS_REACT_ACT_ENVIRONMENT", true)
   vi.mocked(useLive).mockReturnValue(liveState(status, null, "open"))
 })
@@ -373,7 +376,8 @@ it("explains the strict volume gate and exposes its editor field", () => {
   expect(editor).toContain('value="25"')
 })
 
-it("shows program costs and phase history and opens verification confirmation after a pass", async () => {
+it.each([false, true])("shows program costs and phase history and opens verification confirmation after a pass (funded=%s)", async (showFunded) => {
+  features.showFundedAccounts = showFunded
   vi.stubGlobal("ResizeObserver", class { observe() {} disconnect() {} })
   const challenge: Account = { ...account, rules: { ...account.rules, plan: "Two-step Challenge 100K", plan_id: "two-step-100k" },
     next_plans: ["two-step-verify-100k"], evaluation: { ...account.evaluation, status: "passed" },
@@ -395,5 +399,33 @@ it("shows program costs and phase history and opens verification confirmation af
   await act(async () => [...host.querySelectorAll("button")].find((b) => b.textContent === "Start verification")!.click())
   expect(host.querySelector<HTMLDialogElement>("dialog")!.open).toBe(true)
   expect(host.querySelector<HTMLInputElement>('input[value="two-step-verify-100k"]')!.checked).toBe(true)
+  expect(api.resetAccount).not.toHaveBeenCalled()
+})
+
+it.each([false, true])("gates the Dashboard's funded start after a verification pass (funded=%s)", async (showFunded) => {
+  features.showFundedAccounts = showFunded
+  vi.stubGlobal("ResizeObserver", class { observe() {} disconnect() {} })
+  const [, verification, funded] = twoStepPlans
+  const passed: Account = { ...account, rules: verification.rules, next_plans: [funded.id],
+    evaluation: { ...account.evaluation, status: "passed" } }
+  const c = client(passed); c.setQueryData(["plans"], { plans: twoStepPlans })
+  Object.defineProperty(HTMLDialogElement.prototype, "showModal", { configurable: true, value() { this.open = true } })
+  Object.defineProperty(HTMLDialogElement.prototype, "close", { configurable: true, value() { this.open = false } })
+  vi.spyOn(api, "resetAccount").mockResolvedValue(passed)
+  host = document.createElement("div"); document.body.append(host); root = createRoot(host)
+  await act(async () => root.render(<QueryClientProvider client={c}><DashboardView /></QueryClientProvider>))
+  expect(host.textContent).toContain("Verification passed")
+  const start = [...host.querySelectorAll("button")].find((b) => b.textContent === "Start funded account")
+  if (showFunded) {
+    expect(start).toBeDefined()
+    await act(async () => start!.click())
+    expect(host.querySelector<HTMLDialogElement>("dialog")!.open).toBe(true)
+    expect(host.querySelector<HTMLInputElement>(`input[value="${funded.id}"]`)!.checked).toBe(true)
+    expect(host.textContent).toContain("This start charges $200.00 (activation fee)")
+  } else {
+    expect(start).toBeUndefined()
+    expect(host.textContent).not.toContain(funded.name)
+    expect(host.textContent).not.toContain("activation $200.00")
+  }
   expect(api.resetAccount).not.toHaveBeenCalled()
 })

@@ -18,7 +18,7 @@ import { money, signedPercent } from "../lib/format"
 import { timestampET } from "../lib/freshness"
 import { attributionParts } from "../lib/attribution"
 import { contractLabel, formatDuration } from "../lib/journal"
-import { offeredPlans, unlockedNextPlan } from "../lib/payouts"
+import { unlockedNextPlan } from "../lib/payouts"
 import { clockText, dailyLossBasisText, dailyLossShare, dayEnd, decisionLabel, objectiveLabels, objectiveValue, timeRuleNotices } from "../lib/plan-rules"
 import { useRoute } from "../lib/route"
 import { compareMoney, formatMoney, ratio, signedMoney, subtractMoney } from "../lib/trading"
@@ -93,7 +93,7 @@ function Dashboard({ trading }: { trading: TradingStatus }) {
   const locked = e.status === "active" && e.day_lock ? e.day_lock : null
   const exitCost = e.exit_cost != null && compareMoney(e.exit_cost, "0") !== 0 ? e.exit_cost : null
   const payout = data.payout
-  const unlocked = unlockedNextPlan(offeredPlans(plans.data?.plans ?? []), data)
+  const unlocked = unlockedNextPlan(plans.data?.plans ?? [], data)
 
   return (
     <div className="min-w-0 space-y-4">

@@ -66,7 +66,7 @@ export function ResetDialog({ trading, attempt, initial, onClose }: { trading: T
   const [pending, setPending] = useState(false)
   const [error, setError] = useState<unknown>()
   const busy = useRef(false)
-  const list = offeredPlans(plans.data?.plans ?? [])
+  const list = offeredPlans(plans.data?.plans ?? [], account)
   const selected = list.find((p) => p.id === choice && lockReason(p, list, account) == null) ?? null
   // Custom rules can use either phase without taking the preset's name.
   const bases = list

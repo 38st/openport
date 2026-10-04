@@ -1,7 +1,8 @@
 import { describe, expect, it } from "vitest"
 import type { Account, PayoutStatus } from "../api/trading-types"
-import { account, fundedAccount, plans } from "../test/trading-fixtures"
-import { cycleDays, lockReason, payoutAmountError, payoutCap, payoutChecks, unlockedNextPlan } from "./payouts"
+import { account, fundedAccount, plans, twoStepPlans } from "../test/trading-fixtures"
+import { showFundedAccounts } from "./features"
+import { cycleDays, lockReason, offeredPlans, payoutAmountError, payoutCap, payoutChecks, payoutsVisible, unlockedNextPlan } from "./payouts"
 import { compareMoney, percentOfMoney, sumMoney } from "./trading"
 
 const passed: Account = { ...account, evaluation: { ...account.evaluation, status: "passed" } }
@@ -32,8 +33,40 @@ describe("payouts", () => {
     expect(lockReason(funded, plans, undefined)).toBe("Pass Intraday 100K to unlock")
     expect(lockReason(funded, plans, passed)).toBeNull()
     expect(lockReason(funded, plans, { ...passed, rules: { ...passed.rules, plan: "Intraday 25K" } })).not.toBeNull()
-    expect(unlockedNextPlan(plans, passed)?.id).toBe("funded-intraday-100k")
-    expect(unlockedNextPlan(plans, account)).toBeNull()
+    expect(unlockedNextPlan(plans, passed, true)?.id).toBe("funded-intraday-100k")
+    expect(unlockedNextPlan(plans, account, true)).toBeNull()
+  })
+  it("hides funded plans and payouts by default, including after a pass", () => {
+    expect(showFundedAccounts).toBe(false)
+    expect(offeredPlans(plans, passed)).toEqual(plans.slice(0, 2))
+    expect(payoutsVisible(passed)).toBe(false)
+    expect(unlockedNextPlan(plans, passed)).toBeNull()
+  })
+  it.each([false, true])("offers verification independently of funded visibility (%s)", (showFunded) => {
+    const [challenge, verification, funded] = twoStepPlans
+    const allPlans = [...plans, ...twoStepPlans]
+    const verifying: Account = { ...account, rules: verification.rules }
+    for (const current of [undefined, account, passed, verifying]) {
+      expect(offeredPlans(allPlans, current, showFunded)).toEqual(showFunded ? allPlans : allPlans.filter((p) => p.rules.phase !== "funded"))
+      expect(payoutsVisible(current, showFunded)).toBe(showFunded)
+    }
+    for (const current of [fundedAccount, { ...fundedAccount, rules: funded.rules }]) {
+      expect(offeredPlans(allPlans, current, showFunded)).toEqual(allPlans)
+      expect(payoutsVisible(current, showFunded)).toBe(true)
+    }
+    for (const status of ["active", "failed", "passed"] as const) {
+      const current: Account = { ...account, rules: challenge.rules, evaluation: { ...account.evaluation, status },
+        next_plans: status === "passed" ? [verification.id] : [] }
+      expect(lockReason(verification, allPlans, current)).toBe(status === "passed" ? null : `Pass ${challenge.name} to unlock`)
+      expect(unlockedNextPlan(allPlans, current, showFunded)).toBe(status === "passed" ? verification : null)
+      expect(lockReason(funded, allPlans, current)).toBe(`Pass ${verification.name} to unlock`)
+      const next: Account = { ...current, rules: verification.rules, next_plans: status === "passed" ? [funded.id] : [] }
+      expect(unlockedNextPlan(allPlans, next, showFunded)).toBe(status === "passed" && showFunded ? funded : null)
+    }
+    expect(unlockedNextPlan(allPlans, { ...passed, rules: verification.rules, next_plans: [] }, showFunded)).toBeNull()
+    expect(unlockedNextPlan(plans, passed, showFunded)).toBe(showFunded ? plans[2] : null)
+    expect(unlockedNextPlan(allPlans, undefined, showFunded)).toBeNull()
+    expect(unlockedNextPlan(allPlans, { ...fundedAccount, evaluation: passed.evaluation }, showFunded)).toBeNull()
   })
   it("counts a payout cycle from the trading day of the request", () => {
     expect(cycleDays(fundedAccount).map((d) => d.day)).toEqual(["2026-09-22", "2026-09-23", "2026-09-24"])

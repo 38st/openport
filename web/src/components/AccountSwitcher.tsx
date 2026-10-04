@@ -4,7 +4,7 @@ import { useQuery } from "@tanstack/react-query"
 import { useRef, useState } from "react"
 import { api } from "../api/client"
 import { useLive } from "../api/live"
-import { usePlans } from "../api/trading"
+import { useAccount, usePlans } from "../api/trading"
 import type { FeeModel, FillModel, TradingStatus } from "../api/trading-types"
 import { FillModelPicker } from "./FillModelPicker"
 import { FeeModelPicker } from "./FeeModelPicker"
@@ -58,6 +58,7 @@ export function AccountSwitcher() {
 export function NewAccountDialog({ trading, onClose, onCreated }: { trading: TradingStatus; onClose: () => void; onCreated: (id: string) => void }) {
   const { accounts } = useLive()
   const plans = usePlans()
+  const account = useAccount().data
   const token = useWriteToken()
   const [name, setName] = useState(`Account ${accounts.length + 1}`)
   const [choice, setChoice] = useState("")
@@ -68,7 +69,7 @@ export function NewAccountDialog({ trading, onClose, onCreated }: { trading: Tra
   const [pending, setPending] = useState(false)
   const [error, setError] = useState<unknown>()
   const busy = useRef(false)
-  const list = offeredPlans(plans.data?.plans ?? [])
+  const list = offeredPlans(plans.data?.plans ?? [], account)
   const selected = list.find((plan) => plan.id === choice && !plan.unlocked_by) ?? null
   const trimmed = name.trim()
   async function submit() {

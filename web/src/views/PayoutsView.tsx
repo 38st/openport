@@ -28,7 +28,7 @@ function Payouts({ trading }: { trading: TradingStatus }) {
   const data = account.data
   if (account.error) return <TradingError error={account.error} />
   if (!data) return <Empty>Loading payouts…</Empty>
-  const list = offeredPlans(plans.data?.plans ?? [])
+  const list = offeredPlans(plans.data?.plans ?? [], data)
   return (
     <div className="min-w-0 space-y-4">
       <PageHeader title={<span className="flex flex-wrap items-center gap-2">Payouts {evaluationBadge(data, data.rules.plan)}</span>}

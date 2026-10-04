@@ -6,15 +6,18 @@ import { afterEach, beforeEach, expect, it, vi } from "vitest"
 import { api } from "../api/client"
 import { liveState, useLive } from "../api/live"
 import { tradingQueries } from "../api/trading"
-import { account, plans, risk, status } from "../test/trading-fixtures"
+import { account, fundedAccount, plans, risk, status, twoStepPlans } from "../test/trading-fixtures"
 import { NewAccountDialog } from "./AccountSwitcher"
 import { ResetDialog } from "./ResetDialog"
 
 vi.mock("../api/live", async (original) => ({ ...await original<typeof import("../api/live")>(), useLive: vi.fn() }))
+const features = vi.hoisted(() => ({ showFundedAccounts: false }))
+vi.mock("../lib/features", () => features)
 let host: HTMLDivElement
 let root: Root
 let client: QueryClient
 beforeEach(() => {
+  features.showFundedAccounts = false
   vi.stubGlobal("IS_REACT_ACT_ENVIRONMENT", true)
   Object.defineProperty(HTMLDialogElement.prototype, "showModal", { configurable: true, value() { this.open = true } })
   Object.defineProperty(HTMLDialogElement.prototype, "close", { configurable: true, value() { this.open = false } })
@@ -172,20 +175,32 @@ it("quotes the same-plan reset fee and disables an exhausted reset", async () =>
   expect(api.resetAccount).not.toHaveBeenCalled()
 })
 
-it.each(["reset", "create"])("shows locked verification with its prerequisite (%s)", async (kind) => {
-  const verification = { ...plans[1]!, id: "verify", name: "Verification 100K", unlocked_by: plans[1]!.id,
-    rules: { ...account.rules, phase: "verification" as const } }
-  client.setQueryData(["plans"], { plans: [...plans, verification] })
+it.each([
+  ["reset", false], ["reset", true], ["create", false], ["create", true],
+] as const)("shows locked verification with its prerequisite (%s, funded=%s)", async (kind, showFunded) => {
+  features.showFundedAccounts = showFunded
+  const [challenge, verification, funded] = twoStepPlans
+  client.setQueryData(["plans"], { plans: twoStepPlans })
   await act(async () => root.render(<QueryClientProvider client={client}>
     {kind === "reset" ? <ResetDialog trading={{ ...status.trading!, write: "open" }} attempt={2} onClose={() => {}} />
       : <NewAccountDialog trading={{ ...status.trading!, write: "open" }} onClose={() => {}} onCreated={() => {}} />}
   </QueryClientProvider>))
   expect(host.textContent).toContain("Step 2 of 2: verification")
-  expect(host.querySelector<HTMLInputElement>('input[value="verify"]')!.disabled).toBe(true)
-  expect(host.textContent).toContain("Pass Intraday 100K to unlock")
+  expect(host.querySelector<HTMLInputElement>(`input[value="${verification.id}"]`)!.disabled).toBe(true)
+  expect(host.textContent).toContain(`Pass ${challenge.name} to unlock`)
+  const fundedChoice = host.querySelector<HTMLInputElement>(`input[value="${funded.id}"]`)
+  if (showFunded) {
+    expect(fundedChoice!.disabled).toBe(true)
+    expect(host.textContent).toContain(`Pass ${verification.name} to unlock`)
+    expect(host.textContent).toContain("activation $200.00")
+  } else {
+    expect(fundedChoice).toBeNull()
+    expect(host.textContent).not.toContain("activation $200.00")
+  }
 })
 
-it("confirms an unlocked verification through the ordinary reset route", async () => {
+it.each([false, true])("confirms an unlocked verification through the ordinary reset route (funded=%s)", async (showFunded) => {
+  features.showFundedAccounts = showFunded
   const verification = { ...plans[1]!, id: "verify", name: "Verification 100K", unlocked_by: plans[1]!.id,
     rules: { ...account.rules, phase: "verification" as const, activation_fee: "25.00" } }
   client.setQueryData(["plans"], { plans: [...plans, verification] })
@@ -198,4 +213,40 @@ it("confirms an unlocked verification through the ordinary reset route", async (
   expect(api.resetAccount).not.toHaveBeenCalled()
   await act(async () => host.querySelector("form")!.dispatchEvent(new Event("submit", { bubbles: true, cancelable: true })))
   expect(api.resetAccount).toHaveBeenCalledWith(expect.objectContaining({ plan: "verify" }), "open")
+})
+
+it.each([false, true])("gates the funded activation quote and confirmation after verification (funded=%s)", async (showFunded) => {
+  features.showFundedAccounts = showFunded
+  const [, verification, funded] = twoStepPlans
+  client.setQueryData(["plans"], { plans: twoStepPlans })
+  client.setQueryData(tradingQueries(0, "17", true).account.queryKey,
+    { ...account, rules: verification.rules, next_plans: [funded.id], evaluation: { ...account.evaluation, status: "passed" } })
+  await act(async () => root.render(<QueryClientProvider client={client}>
+    <ResetDialog trading={{ ...status.trading!, write: "open" }} attempt={2} initial={funded.id} onClose={() => {}} />
+  </QueryClientProvider>))
+  expect(api.resetAccount).not.toHaveBeenCalled()
+  expect(host.querySelector<HTMLButtonElement>('button[type="submit"]')!.disabled).toBe(!showFunded)
+  if (showFunded) {
+    expect(host.querySelector<HTMLInputElement>(`input[value="${funded.id}"]`)!.checked).toBe(true)
+    expect(host.textContent).toContain("This start charges $200.00 (activation fee)")
+  } else {
+    expect(host.textContent).not.toContain(funded.name)
+    expect(host.textContent).not.toContain("activation $200.00")
+    expect(host.textContent).not.toContain("This start charges")
+  }
+  await act(async () => host.querySelector("form")!.dispatchEvent(new Event("submit", { bubbles: true, cancelable: true })))
+  if (showFunded) expect(api.resetAccount).toHaveBeenCalledWith(expect.objectContaining({ plan: funded.id }), "open")
+  else expect(api.resetAccount).not.toHaveBeenCalled()
+})
+
+it("shows funded choices for an already-funded account without allowing a new account to skip the prerequisite", async () => {
+  const [, verification, funded] = twoStepPlans
+  client.setQueryData(["plans"], { plans: twoStepPlans })
+  client.setQueryData(tradingQueries(0, "17", true).account.queryKey, { ...fundedAccount, rules: funded.rules })
+  await act(async () => root.render(<QueryClientProvider client={client}>
+    <NewAccountDialog trading={{ ...status.trading!, write: "open" }} onClose={() => {}} onCreated={() => {}} />
+  </QueryClientProvider>))
+  expect(host.querySelector<HTMLInputElement>(`input[value="${funded.id}"]`)!.disabled).toBe(true)
+  expect(host.textContent).toContain(`Pass ${verification.name} to unlock`)
+  expect(host.textContent).toContain("activation $200.00")
 })
