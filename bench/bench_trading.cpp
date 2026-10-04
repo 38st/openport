@@ -58,6 +58,28 @@ void BM_TradingOnQuotesHolding(benchmark::State& state) {
 }
 BENCHMARK(BM_TradingOnQuotesHolding)->Arg(10)->Arg(1000)->Arg(10000)->Unit(benchmark::kMicrosecond);
 
+// The two opening-rule input passes for one active account in a market batch.
+// Other accounts retain long completed histories and one working opening each;
+// setup and history growth are outside timing, as is journal I/O.
+void BM_CounterExposureBatch(benchmark::State& state) {
+  test::ScriptedMarket market;
+  std::vector<trading::TradingSession> accounts;
+  std::vector<std::string> names;
+  for (std::int64_t i = 0; i < state.range(0); ++i) {
+    accounts.push_back(history(market, state.range(1)));
+    rest(market, accounts.back());
+    names.push_back("other-" + std::to_string(i));
+  }
+  const std::vector<trading::Valuation> marks{market.valuation()};
+  for (auto _ : state)
+    for (int pass = 0; pass < 2; ++pass)
+      for (std::size_t i = 0; i < accounts.size(); ++i)
+        benchmark::DoNotOptimize(accounts[i].counter_exposures(names[i], market.time, marks));
+  state.SetLabel("two input passes; other accounts / completed fills per account");
+}
+BENCHMARK(BM_CounterExposureBatch)->Args({4, 10})->Args({4, 1000})->Args({4, 10000})
+    ->Args({8, 10000})->Unit(benchmark::kMicrosecond);
+
 void BM_TradingSubmit(benchmark::State& state) {
   test::ScriptedMarket market;
   auto session = history(market, state.range(0));
