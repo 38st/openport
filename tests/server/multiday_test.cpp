@@ -326,6 +326,77 @@ TEST(MultiDayReplay, OpeningVolumeAdmitsCappedOrdersAndResetsOnTheNextDate) {
   EXPECT_TRUE(checked);
 }
 
+TEST(MultiDayReplay, EvaluationDeadlineFailsAfterItsLastDateAndRestartReproducesIt) {
+  test::RecordingFile file;
+  const auto scenarios = file.directory / "scenarios";
+  std::filesystem::create_directory(scenarios);
+  { std::ofstream out(scenarios / "deadline.json"); out << R"({"id":"deadline","title":"Deadline","description":"Three quiet days.",
+    "symbols":["SPX"],"date":"2026-09-16","seed":5,"generator":1,"volatility":0,"iv_shift":0,"spot_vol":0,
+    "sessions":[{"session":"regular","drift":[[1,0]]},{"session":"regular","drift":[[1,0]]},
+      {"session":"regular","drift":[[1,0]]}]})"; }
+  server::Engine::Options base;
+  base.paper_journal = file.directory / "paper.jsonl";
+  server::ReplayHost host({file.directory, base, true, scenarios});
+  const auto start = call(host, "POST", "/api/replay",
+      {{"scenario", "deadline"}, {"seed", "scenario"}, {"plan", "eod-100k"}, {"paused", true}});
+  ASSERT_EQ(start.status, 201) << start.body;
+  const auto id = json::parse(start.body).at("replay").at("id").get<std::string>();
+  const auto ready = [&] { return !json::parse(host.tick()).at("replay").at("fast_forwarding").get<bool>(); };
+  ASSERT_TRUE(test::recording_eventually(ready));
+  const auto account = [&] { return json::parse(call(host, "GET", "/api/replay/account").body); };
+  auto rules = account().at("rules");
+  rules["time_limit_days"] = 1;
+  const auto reset = call(host, "POST", "/api/replay/account/reset",
+      {{"initial_cash", "100000"}, {"rules", rules}, {"reason", "rehearse the evaluation deadline"}});
+  ASSERT_EQ(reset.status, 200) << reset.body;
+  EXPECT_EQ(account().at("evaluation").at("deadline"), "2026-09-17");
+  EXPECT_EQ(account().at("evaluation").at("days_left"), 1);
+  const json entry{{"client_order_id", "held"}, {"symbol", "SPXW  260918C06000000"},
+      {"side", "buy"}, {"type", "market"}, {"quantity", 1}, {"time_in_force", "ioc"}};
+  const auto held = call(host, "POST", "/api/replay/orders", entry);
+  ASSERT_EQ(held.status, 201) << held.body;
+  auto resting = entry;
+  resting.update({{"client_order_id", "resting"}, {"type", "limit"}, {"limit_price", "0.05"}, {"time_in_force", "gtc"}});
+  const auto pending = call(host, "POST", "/api/replay/orders", resting);
+  ASSERT_EQ(pending.status, 201) << pending.body;
+  const auto pending_id = json::parse(pending.body).at("order").at("id").get<std::string>();
+  const auto last_date = call(host, "PUT", "/api/replay", {{"until", "2026-09-17T16:00"}});
+  ASSERT_EQ(last_date.status, 200) << last_date.body;
+  EXPECT_EQ(account().at("evaluation").at("status"), "active");
+  EXPECT_EQ(account().at("evaluation").at("days_left"), 0);
+  const auto fail = [&] { return call(host, "PUT", "/api/replay", {{"until", "2026-09-18T09:30"}}); };
+  const auto crossed = fail();
+  ASSERT_EQ(crossed.status, 200) << crossed.body;
+  const auto evaluation = account().at("evaluation");
+  EXPECT_EQ(evaluation.at("status"), "failed");
+  EXPECT_EQ(evaluation.at("decision_code"), "TIME_LIMIT");
+  EXPECT_EQ(evaluation.at("deadline"), "2026-09-17");
+  EXPECT_EQ(evaluation.at("decided_at"), md::format_timestamp(md::new_york_to_utc({2026, 9, 18}, 9, 30)));
+  const auto portfolio = json::parse(call(host, "GET", "/api/replay/portfolio").body);
+  EXPECT_TRUE(portfolio.at("positions").empty());
+  const auto cancelled = json::parse(call(host, "GET", "/api/replay/orders/" + pending_id).body);
+  EXPECT_EQ(cancelled.at("order").at("status"), "cancelled");
+  auto late = entry; late["client_order_id"] = "late";
+  const auto refused = call(host, "POST", "/api/replay/orders", late);
+  ASSERT_EQ(refused.status, 422) << refused.body;
+  EXPECT_EQ(json::parse(refused.body).at("error").at("code"), "EVALUATION_CLOSED");
+
+  // The reset, held position and final active date are restored from the saved
+  // inputs; crossing the deadline again must reproduce the same frozen decision.
+  const auto restart = call(host, "POST", "/api/replay", {{"restart", id}, {"at", "2026-09-17T16:00"}});
+  ASSERT_EQ(restart.status, 201) << restart.body;
+  ASSERT_TRUE(test::recording_eventually(ready));
+  EXPECT_EQ(account().at("evaluation").at("status"), "active");
+  ASSERT_EQ(fail().status, 200);
+  EXPECT_EQ(account().at("evaluation"), evaluation);
+  const auto restarted = json::parse(restart.body).at("replay").at("id").get<std::string>();
+  host.stop();
+  for (const auto& run : {id, restarted}) {
+    const auto verified = server::verify_run(file.directory / "replays" / (run + ".jsonl"));
+    EXPECT_TRUE(verified.matched) << verified.message;
+  }
+}
+
 class ScenarioCommandRestart : public testing::TestWithParam<int> {};
 
 TEST_P(ScenarioCommandRestart, InclusiveBoundaryAndGapCommandsRestartAndResumeByteExactly) {

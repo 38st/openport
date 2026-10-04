@@ -233,6 +233,22 @@ feed (`--provider demo`) already carries its account from day to day and plays
 single sessions only, so it skips these scenarios; so do playbook backtests, whose
 days are single sessions.
 
+### Rehearse an evaluation deadline
+
+Start **Three-day slide** (`three-day-slide`) at its default date, 2026-09-14,
+paused with the `eod-100k` plan. In the replay's plan editor set **Evaluation time
+limit (days)** to `1` and reset the replay account to apply it. The API equivalent
+is to read `/api/replay/account`, keep its `rules`, set `rules.time_limit_days` to
+`1`, then POST `/api/replay/account/reset` with those rules, `initial_cash: "100000"`
+and a reason. Presets leave this optional limit off.
+
+Step to `2026-09-15T16:00`: the attempt remains active, `deadline` is `2026-09-15`
+and `days_left` is zero. Then step to `2026-09-16T09:30`. The first batch beyond
+the deadline fails it with `TIME_LIMIT`, even if no trades were placed. Working
+orders are cancelled, any held positions follow the normal failure liquidation,
+and new openings receive `EVALUATION_CLOSED`. A restart before the deadline restores
+the saved rules and reproduces the failure when stepped across it again.
+
 ## Events
 
 Times are `HH:MM` in New York. Regular events are authored on a full 09:30–16:00

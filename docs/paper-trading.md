@@ -1860,6 +1860,9 @@ calendar days between the current plan trading date and the last activity's plan
 trading date fails the attempt with `INACTIVITY`, before an overdue order can execute.
 The normal post-decision liquidation follows both failures. Market time drives these
 rules even in empty batches; missing marks do not postpone a calendar deadline.
+The [multi-day deadline rehearsal](scenarios.md#rehearse-an-evaluation-deadline)
+shows how to set a one-day window in Replay, reach the final allowed date, and
+step past it to reproduce `TIME_LIMIT` and verify the saved run.
 
 `underlyings` is an optional list of up to 32 distinct symbols of 1–12 uppercase
 letters, digits or dots; empty allows all. It restricts opening or adding options
