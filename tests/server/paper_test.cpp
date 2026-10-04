@@ -4577,6 +4577,7 @@ TEST_F(PaperEngine, TimeAndTradeRulesSurviveCreateResetAndPresetMatching) {
   engine->stop();
   const auto directory = paper_path().parent_path();
   auto options = paper_options();
+  options.paper_journal = directory / "paper.jsonl";
   options.paper_accounts = directory / "accounts";
   engine = std::make_unique<server::Engine>(provider, md::Subscription{{"SPX"}}, options);
   engine->start();
@@ -4625,6 +4626,20 @@ TEST_F(PaperEngine, TimeAndTradeRulesSurviveCreateResetAndPresetMatching) {
   ASSERT_EQ(response.status, 200) << response.body;
   test::capture_contract("time-rules", "POST", "/api/account/reset", response);
   EXPECT_EQ(json::parse(response.body)["rules"], rules);
+  const auto funded_evaluation = json::parse(response.body)["evaluation"];
+  engine->stop();
+  engine = std::make_unique<server::Engine>(provider, md::Subscription{{"SPX"}}, options);
+  engine->start();
+  ASSERT_TRUE(wait_for([&] { return engine->trading_view() != nullptr; }));
+  const auto restored = read(*engine, "/api/account");
+  EXPECT_EQ(restored["rules"], rules);
+  EXPECT_EQ(restored["evaluation"], funded_evaluation);
+  const auto created_rules = read(*engine, "/api/account?account=combined-rules")["rules"];
+  EXPECT_EQ(created_rules["phase"], "evaluation");
+  for (const auto* field : {"events", "news_before_minutes", "news_after_minutes", "news_action", "hold_restrictions",
+                           "hold_cutoff", "flat_time", "no_overnight", "scaling"}) {
+    EXPECT_EQ(created_rules[field], rules[field]) << field;
+  }
   response = write(*engine, "POST", "/api/account/reset", {{"plan", "practice"}, {"reason", "archive funded rules"}});
   ASSERT_EQ(response.status, 200) << response.body;
   test::capture_contract("time-rules", "POST", "/api/account/reset", response);
