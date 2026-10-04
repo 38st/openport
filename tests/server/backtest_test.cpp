@@ -27,6 +27,13 @@ json catalogue() {
 std::string bytes(const std::filesystem::path& path) {
   std::ifstream input(path); std::ostringstream out; out << input.rdbuf(); return out.str();
 }
+providers::Scenario volume_scenario(const std::filesystem::path& directory) {
+  const auto file = directory / "volume.json";
+  { std::ofstream out(file); out << R"({"id":"volume","title":"Volume","description":"A quiet open.",
+    "symbols":["SPX"],"date":"2026-09-16","seed":5,"generator":1,"session":"regular",
+    "drift":[[1,0]],"volatility":0,"iv_shift":0,"spot_vol":0})"; }
+  return providers::read_scenario(file);
+}
 std::filesystem::path recorded_day(const std::filesystem::path& directory, md::Date date, bool loss = false, bool breadth = false, std::optional<double> volume = {}, bool stale_end = false) {
   const auto path = directory / (md::format_date(date) + ".oprec");
   auto contract = *md::parse_osi("SPXW  260916P05000000");
@@ -774,6 +781,36 @@ TEST(BacktestApi, ListingSummarizesSavedReportIdentityWithoutCopyingTrades) {
   EXPECT_TRUE(run.at("report").is_null());
   EXPECT_EQ(json::parse(call(host, {"GET", "/api/backtests/000001"}).body).at("report"), report);
 }
+
+TEST(BacktestApi, VolumeRuleAcceptsScenariosButRejectsRecordingsWithoutVolume) {
+  test::RecordingFile storage;
+  const auto scenarios = storage.directory / "scenarios";
+  std::filesystem::create_directory(scenarios);
+  const auto scenario = volume_scenario(scenarios);
+  const auto missing = recorded_day(storage.directory, {2026, 9, 17});
+  server::BacktestHost host({storage.directory / "reports", storage.directory, scenarios, {}, {}, true});
+  json body{{"playbook", "batch"},
+      {"plan", {{"initial_cash", "10000"}, {"rules", {{"profit_target", "100"}, {"max_volume_percent", 10}}}}},
+      {"days", {{{"scenario", scenario.id}, {"seed", "5"}}, {{"file", missing.filename().string()}}}}};
+  const auto refused = call(host, {"POST", "/api/backtests", body.dump()}, false);
+  EXPECT_EQ(refused.status, 400) << refused.body;
+  EXPECT_NE(refused.body.find("current-date option volume"), std::string::npos);
+
+  body.erase("days");
+  body.update({{"scenarios", 1}, {"scenario", scenario.id}, {"seed", "5"}});
+  const auto started = call(host, {"POST", "/api/backtests", body.dump()}, false);
+  ASSERT_EQ(started.status, 202) << started.body;
+  const auto id = json::parse(started.body).at("id").get<std::string>();
+  json state;
+  ASSERT_TRUE(test::recording_eventually([&] {
+    const auto poll = call(host, {"GET", "/api/backtests/" + id}, false);
+    if (poll.status != 200) return false;
+    state = json::parse(poll.body);
+    return state.at("status") != "running" && state.at("status") != "cancelling";
+  })) << state.dump();
+  EXPECT_EQ(state.at("status"), "completed") << state.dump();
+  EXPECT_EQ(state.at("report").at("days").size(), 1U);
+}
 TEST(BacktestApi, ReplayScopeRequiredForStartAndCancelAndReadForProgress) {
   server::WritePolicy policy;
   policy.require_token = true;
@@ -1383,3 +1420,61 @@ TEST(Backtest, CliJointSelectorsRunDeterministicallyAndRejectInvalidLists) {
   }
 }
 }  // namespace
+
+TEST(Backtest, VolumeRuleAllowsOpeningFillsForGeneratedAndExplicitScenarioDays) {
+  test::RecordingFile storage;
+  const auto scenario = volume_scenario(storage.directory);
+  auto definitions = catalogue();
+  definitions["definitions"]["batch"]["versions"][0]["structure"]["template"]["target"]["value"] = 6000;
+  const std::atomic_bool cancel{false};
+  json previous;
+  for (const bool explicit_days : {false, true}) {
+    json body{{"playbook", "batch"},
+        {"plan", {{"initial_cash", "10000"}, {"rules", {{"profit_target", "100"}, {"max_volume_percent", 10}}}}}};
+    if (explicit_days) body["days"] = {{{"scenario", scenario.id}, {"date", md::format_date(scenario.date)}, {"seed", "5"}}};
+    else body.update({{"scenarios", 1}, {"seed", "5"}});
+    const auto request = server::parse_backtest(body, definitions, {scenario}, {}, false);
+    EXPECT_EQ(request.config.rules.max_volume_percent, 10);
+    const auto directory = storage.directory / (explicit_days ? "explicit" : "generated");
+    const auto report = server::run_backtest(request, directory, cancel);
+    ASSERT_EQ(report.at("status"), "completed") << report.dump();
+    for (const auto* section : {"days", "attempts"}) {
+      const auto& result = report.at(section).at(0);
+      ASSERT_GE(result.at("fills").size(), 2U) << result.dump();
+      for (std::size_t leg = 0; leg < 2; ++leg) {
+        EXPECT_EQ(result.at("fills")[leg].at("quantity"), 1);
+        EXPECT_EQ(result.at("fills")[leg].at("time"), md::format_timestamp(providers::scenario_open(scenario, scenario.date)));
+      }
+      const auto verified = server::verify_run(directory / result.at("journal").get<std::string>());
+      EXPECT_TRUE(verified.matched) << verified.message;
+    }
+    if (explicit_days) { EXPECT_EQ(report, previous); }
+    previous = report;
+  }
+}
+
+TEST(Backtest, VolumeRuleRefusesOversizedScenarioEntries) {
+  test::RecordingFile storage;
+  const auto scenario = volume_scenario(storage.directory);
+  auto definitions = catalogue();
+  auto& definition = definitions["definitions"]["batch"]["versions"][0];
+  definition["structure"]["template"]["target"]["value"] = 6000;
+  definition["sizing"]["units"] = 100;
+  auto request = server::parse_backtest({{"playbook", "batch"},
+      {"plan", {{"initial_cash", "1000000"}, {"rules", {{"profit_target", "100000"}, {"max_volume_percent", 10}}}}},
+      {"scenarios", 1}, {"seed", "5"}}, definitions, {scenario}, {}, false);
+  // Keep ordinary sizing limits from trimming the oversized entry before the volume gate.
+  request.config.limits.max_order_contracts = 1000;
+  request.config.limits.aggregate = {1e9, 1e9};
+  request.config.limits.per_underlying = {1e9, 1e9};
+  const std::atomic_bool cancel{false};
+  const auto report = server::run_backtest(request, storage.directory / "oversized", cancel);
+  ASSERT_EQ(report.at("status"), "completed") << report.dump();
+  for (const auto* section : {"days", "attempts"}) {
+    const auto& result = report.at(section).at(0);
+    EXPECT_TRUE(result.at("fills").empty()) << result.dump();
+    // Entry reasons retain the MAX_VOLUME_SHARE message, not the structured code.
+    EXPECT_NE(result.at("entry_reasons").at("batch:SPX").get<std::string>().find("exceeds 10% of current-date volume"),
+        std::string::npos) << result.dump();
+  }
+}

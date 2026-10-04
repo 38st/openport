@@ -677,8 +677,7 @@ BacktestRequest parse_backtest(const json& body, const json& catalogue,
         if (!volume) throw std::invalid_argument("max_volume_percent requires current-date option volume in every backtest recording");
       }
     } else {
-      if (result.config.rules.max_volume_percent != 0)
-        throw std::invalid_argument("max_volume_percent is unavailable for scenario backtests; select a recording with option volume");
+      // prepare() generates current-revision scenarios with current-date option volume.
       keys(entry, {"scenario", "date", "seed"});
       const auto& id = required(entry, "scenario", "day scenario");
       for (const auto& scenario : scenarios) if (id == scenario.id) day.scenario = scenario;
