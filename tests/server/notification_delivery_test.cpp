@@ -61,7 +61,10 @@ class NotificationReceiver {
         connection->response.keep_alive(false);
         connection->response.body() = "ok";
         connection->response.prepare_payload();
-        http::async_write(connection->socket, connection->response, [connection](auto, auto) {});
+        http::async_write(connection->socket, connection->response, [connection](auto, auto) {
+          boost::system::error_code ignored;
+          connection->socket.shutdown(tcp::socket::shutdown_both, ignored);
+        });
       });
     });
   }
@@ -73,12 +76,12 @@ class NotificationReceiver {
 };
 
 server::ApiResponse call(server::ReplayHost& host, std::string method, std::string target, json body = json::object()) {
-  std::promise<server::ApiResponse> done;
-  auto result = done.get_future();
+  auto done = std::make_shared<std::promise<server::ApiResponse>>();
+  auto result = done->get_future();
   server::ApiRequest request{std::move(method), std::move(target), body.dump()};
   request.content_type = "application/json";
   request.actor = "test";
-  if (!host.handle(request, [&](auto response) { done.set_value(std::move(response)); }))
+  if (!host.handle(request, [done](auto response) { done->set_value(std::move(response)); }))
     throw std::runtime_error("Unhandled replay request");
   if (result.wait_for(30s) != std::future_status::ready) throw std::runtime_error("Replay request timed out");
   return result.get();
