@@ -803,8 +803,8 @@ TEST(TradeRules, OpeningFillInputsRecheckEachPartialFillAndRecoverDeterministica
     ASSERT_TRUE(resting.decision.ok());
     f.next();
     s.on_quotes({f.quote("3.80", "4.00", 1)}, {f.valuation()}, f.time);
-    ASSERT_EQ(s.snapshot()->fills.size(), 1U);
-    EXPECT_EQ(s.snapshot()->fills.front().quantity, 1);
+    ASSERT_EQ(s.snapshot()->recent_fills.size(), 1U);
+    EXPECT_EQ(s.snapshot()->recent_fills.front().quantity, 1);
     EXPECT_EQ(s.snapshot()->recent_orders.back().status, OrderStatus::PartiallyFilled);
     inputs.volumes[f.symbol()] = 10;
     s.set_opening_rule_inputs(inputs);
@@ -816,7 +816,7 @@ TEST(TradeRules, OpeningFillInputsRecheckEachPartialFillAndRecoverDeterministica
     EXPECT_EQ(after->recent_orders.back().filled_quantity, 1);
     EXPECT_EQ(after->recent_orders.back().reason.actual, 2);
     EXPECT_EQ(after->recent_orders.back().reason.limit, 1);
-    EXPECT_EQ(after->fills.size(), 1U);
+    EXPECT_EQ(after->recent_fills.size(), 1U);
     const auto recovery = FileJournal::read(file.path);
     EXPECT_EQ(TradingSession::recover(recovery).snapshot_json(), s.snapshot_json());
     bool recorded = false;
@@ -848,7 +848,7 @@ TEST(TradeRules, VolumeFillsSeeOtherOrdersFilledEarlierInTheSameBatch) {
   EXPECT_EQ(snapshot->recent_orders.front().status, OrderStatus::Filled);
   EXPECT_EQ(snapshot->recent_orders.back().reason.code, Reason::MAX_VOLUME_SHARE);
   EXPECT_EQ(snapshot->recent_orders.back().reason.actual, 2);
-  EXPECT_EQ(snapshot->fills.size(), 1U);
+  EXPECT_EQ(snapshot->recent_fills.size(), 1U);
 }
 
 TEST(TradeRules, ComboFillChecksEveryRatioAndKeepsRuleCancellationCode) {
@@ -865,7 +865,7 @@ TEST(TradeRules, ComboFillChecksEveryRatioAndKeepsRuleCancellationCode) {
   f.next(); other.next();
   s.on_quotes({f.quote("3.80", "4.00"), other.quote("3.80", "4.00")}, {f.valuation(), other.valuation()}, f.time);
   const auto snapshot = s.snapshot();
-  EXPECT_TRUE(snapshot->fills.empty());
+  EXPECT_TRUE(snapshot->recent_fills.empty());
   ASSERT_EQ(snapshot->recent_orders.back().reason.code, Reason::MAX_VOLUME_SHARE);
   ASSERT_TRUE(snapshot->recent_orders.back().reason.evidence);
   EXPECT_EQ(snapshot->recent_orders.back().reason.evidence->contract, other.symbol());

@@ -165,7 +165,7 @@ TEST(Desk, RestingVolumeOrdersCancelOnZeroOrStaleVolumeOnlyWhenTheyCanFill) {
     ASSERT_TRUE(snapshot->recent_orders.back().reason.evidence);
     if (stale) { EXPECT_FALSE(snapshot->recent_orders.back().reason.evidence->volume); }
     else { EXPECT_EQ(snapshot->recent_orders.back().reason.evidence->volume, 0); }
-    EXPECT_TRUE(snapshot->fills.empty());
+    EXPECT_TRUE(snapshot->recent_fills.empty());
     desk.stop();
     const auto recovered = trading::TradingSession::recover(trading::FileJournal::read(options.paper_journal));
     EXPECT_EQ(recovered.snapshot()->recent_orders.back().reason.code, trading::Reason::MAX_VOLUME_SHARE);
@@ -232,7 +232,7 @@ TEST(Desk, CounterPositionsCountWorkingOpeningsAndCancelAtFillAfterAnotherAccoun
     const auto snapshot = desk.trading_view()->snapshot;
     EXPECT_EQ(snapshot->recent_orders.back().status, trading::OrderStatus::Cancelled);
     EXPECT_EQ(snapshot->recent_orders.back().reason.code, trading::Reason::COUNTER_POSITION);
-    EXPECT_TRUE(snapshot->fills.empty());
+    EXPECT_TRUE(snapshot->recent_fills.empty());
     desk.stop();
     const auto recovered = trading::TradingSession::recover(trading::FileJournal::read(options.paper_journal));
     EXPECT_EQ(recovered.snapshot()->recent_orders.back().reason.code, trading::Reason::COUNTER_POSITION);
