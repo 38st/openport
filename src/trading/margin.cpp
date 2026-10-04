@@ -418,15 +418,15 @@ class JointAllocation {
     Money requirement;
     MarginPartKind kind = MarginPartKind::Naked;
   };
+  struct Attempt { std::size_t a = 0, b = 0, version_a = 0, version_b = 0, work = 0; };
  public:
-  JointAllocation(const Book& book, const Parts& seed, bool straddles) : straddles_(straddles) {
+  JointAllocation(const Book& book, bool straddles) : straddles_(straddles) {
     std::map<std::string, const Unit*> sorted;
     for (const auto* side : {&book.short_puts, &book.short_calls, &book.long_puts, &book.long_calls})
       for (const auto& u : *side)
         if (u.leg) sorted.emplace(u.leg->contract.osi_symbol(), &u);
-    std::map<std::string, std::size_t> index;
     for (const auto& [symbol, u] : sorted) {
-      index.emplace(symbol, units_.size());
+      index_.emplace(symbol, units_.size());
       units_.push_back(u);
       expiries_.push_back(u->leg->contract.expiry_time());
     }
@@ -441,31 +441,72 @@ class JointAllocation {
       for (const auto spot : spots) curve.push_back(intrinsic(u->leg->contract, spot) * (u->leg->quantity < 0 ? -1 : 1));
       payoff_.push_back(std::move(curve));
     }
+  }
+  Parts improve(const Parts& seed, std::size_t budget) {
+    work_ = budget;
+    groups_.clear();
+    scores_.clear();
+    fixed_.clear();
     for (const auto& part : seed) {
-      if (std::any_of(part.legs.begin(), part.legs.end(), [&](const auto& leg) { return !index.contains(leg.first); })) {
+      if (std::any_of(part.legs.begin(), part.legs.end(), [&](const auto& leg) { return !index_.contains(leg.first); })) {
         fixed_.push_back(part);
         continue;
       }
       Group group;
-      for (const auto& [symbol, n] : part.legs) change(group, index.at(symbol), magnitude(n));
+      for (const auto& [symbol, n] : part.legs) change(group, index_.at(symbol), magnitude(n));
       groups_.push_back(std::move(group));
       scores_.push_back({part.requirement, part.kind});
     }
-  }
-  Parts improve() {
+    versions_.assign(groups_.size(), 0);
+    // Keep the retry cache bounded even for a book of thousands of naked legs.
+    attempts_.assign(groups_.size() < 32 ? groups_.size() * groups_.size() : 1024, {});
     // Count both trial setup and payoff work, not elapsed time or contracts.
     // Thus huge quantities and ties have the same deterministic stopping rule.
     while (work_ > 0) {
       bool improved = false;
+      // Visit every cheap merge before spending the budget on exchanges near
+      // the beginning of the book. In particular, pair residual naked shorts
+      // even when earlier, already-optimal pools have many possible transfers.
+      for (const bool pools_first : {true, false}) {
+        for (std::size_t a = 0; a < groups_.size() && work_ > 0; ++a) {
+          if (groups_[a].empty()) continue;
+          for (std::size_t b = a + 1; b < groups_.size() && work_ > 0; ++b) {
+            if (groups_[b].empty()) continue;
+            auto merged = groups_[a];
+            for (const auto& h : groups_[b]) change(merged, h.unit, h.n);
+            if (pools_first) {
+              if (!spend(1 + merged.size())) break;
+              std::optional<Timestamp> expiry;
+              bool same = true;
+              for (const auto& h : merged) {
+                if (units_[h.unit]->leg->quantity > 0) continue;
+                if (expiry && *expiry != expiries_[h.unit]) { same = false; break; }
+                expiry = expiries_[h.unit];
+              }
+              if (!same) continue;
+            }
+            // Equal-cost merges expose a pool's free offsetting payoff to later
+            // transfers, and terminate because one fewer group remains occupied.
+            if (accept(a, b, std::move(merged), {}, true)) improved = true;
+          }
+        }
+        if (improved) break;
+      }
+      if (improved) continue;
       for (std::size_t a = 0; a < groups_.size() && work_ > 0; ++a) {
         if (groups_[a].empty()) continue;
         for (std::size_t b = a + 1; b < groups_.size() && work_ > 0; ++b) {
           if (groups_[b].empty()) continue;
-          auto merged = groups_[a];
-          for (const auto& h : groups_[b]) change(merged, h.unit, h.n);
-          // Equal-cost merges expose a pool's free offsetting payoff to later
-          // transfers, and terminate because one fewer group remains occupied.
-          if (accept(a, b, std::move(merged), {}, true)) { improved = true; continue; }
+          // Transfers require a strict reduction. Two zero-cost groups cannot
+          // improve; their useful equal-cost merges were already tried above.
+          if (scores_[a].requirement == Money{} && scores_[b].requirement == Money{}) continue;
+          auto& attempt = attempts_[(a * groups_.size() + b) % attempts_.size()];
+          if (attempt.work && attempt.a == a && attempt.b == b &&
+              attempt.version_a == versions_[a] && attempt.version_b == versions_[b]) {
+            spend(attempt.work);
+            continue;
+          }
+          const auto before = work_;
           // Transfers and exchanges use the full tranche and one contract.
           // No loop depends on the number of contracts in a position.
           const auto left = groups_[a], right = groups_[b];
@@ -492,6 +533,11 @@ class JointAllocation {
             if (improved || work_ == 0) break;
           }
           if (improved) break;
+          if (transfer_bundle(a, b, left) || transfer_bundle(b, a, right)) { improved = true; break; }
+          // A failed neighbourhood is unchanged until either group changes.
+          // Charge its original work even on a hit so skipping repeated trials
+          // affects CPU time, never the search path or budget.
+          attempt = {a, b, versions_[a], versions_[b], before - work_};
         }
         if (improved) break;
       }
@@ -501,6 +547,7 @@ class JointAllocation {
     for (std::size_t i = 0; i < groups_.size(); ++i) explain(groups_[i], scores_[i], result);
     return result;
   }
+  std::size_t unused_work() const { return work_; }
  private:
   static void change(Group& group, std::size_t unit, Quantity n) {
     const auto it = std::lower_bound(group.begin(), group.end(), unit, [](const Holding& h, std::size_t id) { return h.unit < id; });
@@ -513,12 +560,11 @@ class JointAllocation {
     work_ -= amount;
     return true;
   }
-  std::optional<Pair> pair(const Group& group) const {
-    if (group.size() != 2) return std::nullopt;
-    auto a = group[0].unit, b = group[1].unit;
+  std::optional<Pair> pair(const Holding& first, const Holding& second) const {
+    auto a = first.unit, b = second.unit;
     if (units_[a]->leg->quantity > 0) std::swap(a, b);
     if (units_[a]->leg->quantity > 0) return std::nullopt;
-    const auto n = std::min(group[0].n, group[1].n);
+    const auto n = std::min(first.n, second.n);
     if (units_[b]->leg->quantity < 0) {
       if (!straddles_ || units_[a]->leg->contract.type == units_[b]->leg->contract.type) return std::nullopt;
       if (units_[a]->leg->contract.type == OptionType::Call) std::swap(a, b);
@@ -527,10 +573,38 @@ class JointAllocation {
     if (units_[a]->leg->contract.type != units_[b]->leg->contract.type || expiries_[b] < expiries_[a]) return std::nullopt;
     return Pair{units_[a], units_[b], n, false};
   }
+  static Quantity paired_quantity(const Unit& unit, const Pair& p) {
+    return &unit == p.short_unit || &unit == p.cover ? p.n : 0;
+  }
+  std::optional<Pair> pair(const Group& group) const {
+    if (group.size() == 2) return pair(group[0], group[1]);
+    // A pair plus one residual leg permits an equal-cost staging move: put a
+    // free cover beside a straddle before replacing that straddle with a pool.
+    // Also permit a vertical to release the other straddle short as naked.
+    if (group.size() != 3) return std::nullopt;
+    std::optional<Pair> best;
+    Money saving;
+    for (std::size_t i = 0; i < group.size(); ++i) {
+      for (std::size_t j = i + 1; j < group.size(); ++j) {
+        const auto p = pair(group[i], group[j]);
+        if (!p) continue;
+        auto saved = -pair_cost(*p);
+        for (const auto k : {i, j}) {
+          const auto& u = *units_[group[k].unit];
+          if (u.leg->quantity < 0) saved = saved + naked_cost(u, group[k].n) - naked_cost(u, group[k].n - p->n);
+        }
+        if (!best || saved > saving) { best = p; saving = saved; }
+      }
+    }
+    return best;
+  }
   // A reallocation can split a position's buy-back value into thirds, etc.
   // Round each new tranche up so splitting cannot manufacture micro-dollar
   // savings. Unchanged incumbent parts remain available as the outer fallback.
   static Money buyback(const Unit& u, Quantity n) {
+    if (n == 0) return {};
+    if (n == -u.leg->quantity) return u.leg->value;
+    if (u.leg->value.micros() % u.size == 0) return Money::from_micros(u.leg->value.micros() / u.size) * n;
     __extension__ using Wide = __int128;
     auto result = value(u, n);
     if (static_cast<Wide>(result.micros()) * -u.leg->quantity < static_cast<Wide>(u.leg->value.micros()) * n)
@@ -567,7 +641,7 @@ class JointAllocation {
       auto requirement = pair_cost(*p);
       for (const auto& h : group) {
         const auto& u = *units_[h.unit];
-        if (u.leg->quantity < 0) requirement = requirement + naked_cost(u, h.n - p->n);
+        if (u.leg->quantity < 0) requirement = requirement + naked_cost(u, h.n - paired_quantity(u, *p));
       }
       if (requirement <= best.requirement) best = {requirement, p->straddle ? MarginPartKind::Straddle : MarginPartKind::Vertical};
     }
@@ -590,11 +664,32 @@ class JointAllocation {
       if (!l || !r) return false;
       const auto before = scores_[a].requirement + scores_[b].requirement;
       const auto after = l->requirement + r->requirement;
-      if (after > before || (after == before && (!merge || l->kind == MarginPartKind::Naked))) return false;
+      if (after > before) return false;
+      if (after == before) {
+        if (!merge || l->kind == MarginPartKind::Naked) return false;
+        if (l->kind != MarginPartKind::WorstLoss) {
+          const auto p = pair(left);
+          if (!p) return false;
+          // Stage unused longs, but do not strand a naked short in a pair on
+          // a tie: it may need to join a different expiry pool next.
+          Timestamp latest = 0;
+          for (const auto& h : left)
+            if (units_[h.unit]->leg->quantity < 0) {
+              if (h.n != paired_quantity(*units_[h.unit], *p)) return false;
+              latest = std::max(latest, expiries_[h.unit]);
+            }
+          // An earlier free long would prevent the staged group becoming a
+          // pool, even though leaving that long outside costs nothing.
+          for (const auto& h : left)
+            if (units_[h.unit]->leg->quantity > 0 && expiries_[h.unit] < latest) return false;
+        }
+      }
       groups_[a] = std::move(left);
       groups_[b] = std::move(right);
       scores_[a] = *l;
       scores_[b] = *r;
+      ++versions_[a];
+      ++versions_[b];
       return true;
     } catch (const TradingError& error) {
       // An unneeded naked or intrinsic intermediate can overflow even when the
@@ -617,6 +712,26 @@ class JointAllocation {
     change(right, second, -n); change(left, second, n);
     return accept(a, b, std::move(left), std::move(right));
   }
+  bool transfer_bundle(std::size_t a, std::size_t b, const Group& source) {
+    for (std::size_t i = 0; i < source.size() && work_ > 0; ++i) {
+      for (std::size_t j = i + 1; j < source.size() && spend(1); ++j) {
+        const auto first = source[i].unit, second = source[j].unit;
+        const auto n = std::min(source[i].n, source[j].n);
+        const auto move = [&](Quantity first_n, Quantity second_n) {
+          auto left = groups_[a], right = groups_[b];
+          change(left, first, -first_n); change(right, first, first_n);
+          change(left, second, -second_n); change(right, second, second_n);
+          return accept(a, b, std::move(left), std::move(right));
+        };
+        // An offsetting long need not have the short's type or quantity: a
+        // call can reduce a put pool's loss near its strikes. Test both whole
+        // holdings and balanced tranches; the scorer checks feasibility.
+        if ((source.size() > 2 && move(source[i].n, source[j].n)) ||
+            (source[i].n != source[j].n && move(n, n)) || (n > 1 && move(1, 1))) return true;
+      }
+    }
+    return false;
+  }
   void explain(const Group& group, const Score& score, Parts& parts) const {
     if (group.empty()) return;
     if (score.kind == MarginPartKind::WorstLoss) {
@@ -628,7 +743,7 @@ class JointAllocation {
     const auto p = score.kind == MarginPartKind::Vertical || score.kind == MarginPartKind::Straddle ? pair(group) : std::nullopt;
     if (p) add(&parts, score.kind, {leg_of(*p->short_unit, p->n), leg_of(*p->cover, p->n)}, pair_cost(*p));
     for (const auto& h : group) {
-      const auto n = h.n - (p ? p->n : 0);
+      const auto n = h.n - (p ? paired_quantity(*units_[h.unit], *p) : 0);
       if (n == 0) continue;
       const auto& u = *units_[h.unit];
       const bool shorted = u.leg->quantity < 0;
@@ -636,7 +751,10 @@ class JointAllocation {
     }
   }
   bool straddles_;
-  std::size_t work_ = 32768;
+  std::size_t work_ = 0;
+  std::map<std::string, std::size_t> index_;
+  std::vector<std::size_t> versions_;
+  std::vector<Attempt> attempts_;
   std::vector<const Unit*> units_;
   std::vector<Timestamp> expiries_;
   std::vector<std::vector<Money>> payoff_;
@@ -657,27 +775,46 @@ Money underlying_requirement(const std::vector<const MarginLeg*>& all, const Mar
   const auto book = book_of(all, stock, policy);
   const auto pairing = pair_units(book, spreads);
   Parts best_parts, candidate;
+  std::vector<Parts> seeds;
   Parts* explain = parts || search ? &candidate : nullptr;
   auto best = across(pairing, stock, policy.house_percent, explain);
+  if (search) seeds.push_back(candidate);
   best_parts.swap(candidate);
   const auto consider = [&](Money requirement) {
     if (requirement < best) { best = requirement; best_parts.swap(candidate); }
     candidate.clear();
   };
+  const auto seed = [&](Money requirement) {
+    if (search && std::none_of(seeds.begin(), seeds.end(), [&](const Parts& previous) {
+          return previous.size() == candidate.size() && std::equal(previous.begin(), previous.end(), candidate.begin(),
+              [](const MarginPart& a, const MarginPart& b) {
+                return a.kind == b.kind && a.requirement == b.requirement && a.legs == b.legs;
+              });
+        })) seeds.push_back(candidate);
+    consider(requirement);
+  };
   if (policy.account == AccountType::Margin && !book.short_puts.empty() &&
       std::any_of(book.short_calls.begin(), book.short_calls.end(), [](const Unit& u) { return u.leg != nullptr; }))
-    consider(across(pair_units(book, true, true), stock, policy.house_percent, explain));
+    seed(across(pair_units(book, true, true), stock, policy.house_percent, explain));
   // Without spreads, each expiry pairs nothing that the share-only flow did not.
   if (spreads) {
-    consider(separate(all, stock, policy, explain));
-    if (stock && magnitude(stock->shares) >= kLot) consider(shares_first(book, stock, policy, explain));
+    seed(separate(all, stock, policy, explain));
+    if (stock && magnitude(stock->shares) >= kLot) seed(shares_first(book, stock, policy, explain));
   }
   if (search && best > Money{}) {
     try {
-      candidate = JointAllocation(book, best_parts, policy.account == AccountType::Margin).improve();
-      Money requirement;
-      for (const auto& part : candidate) requirement = requirement + part.requirement;
-      consider(requirement);
+      JointAllocation allocation(book, policy.account == AccountType::Margin);
+      // Every distinct feasible start gets a share of the fixed total budget;
+      // a start that finishes early lends its unused work to the next one.
+      std::size_t carry = 0;
+      for (const auto& start : seeds) {
+        candidate = allocation.improve(start, 32768 / seeds.size() + carry);
+        carry = allocation.unused_work();
+        Money requirement;
+        for (const auto& part : candidate) requirement = requirement + part.requirement;
+        consider(requirement);
+        if (best == Money{}) break;
+      }
     } catch (const TradingError& error) {
       if (error.code() != Reason::ARITHMETIC_OVERFLOW) throw;
     }

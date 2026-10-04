@@ -4,6 +4,7 @@
 #include <cstdlib>
 #include <filesystem>
 #include <fstream>
+#include <iostream>
 #include <limits>
 #include <map>
 #include <sstream>
@@ -17,6 +18,117 @@ namespace {
 Money dollars(std::string_view value) { return Money::parse(value); }
 MarginLeg option(std::string_view symbol, Quantity quantity, std::string_view value = "0") {
   return {*md::parse_osi(symbol), quantity, dollars(value), 500.0};
+}
+
+TEST(TradingMarginAllocation, MixedExpiryBooksRetainTheirSeparateAllocations) {
+  using Positions = std::vector<std::pair<std::string, Quantity>>;
+  const std::vector<std::pair<Positions, Positions>> cases{
+      {{{"SPY261022C00510000", -1}, {"SPY261022P00510000", -1}, {"SPY261022C00520000", -2},
+        {"SPY261029P00510000", -2}, {"SPY261105C00480000", -2}, {"SPY261105C00490000", 1}, {"SPY261105C00530000", 2}},
+       {{"SPY261022P00490000", -1}, {"SPY261022P00520000", -2}, {"SPY261029C00480000", 1},
+        {"SPY261029C00500000", -2}, {"SPY261105C00520000", 1}}},
+      {{{"SPY261022P00530000", -1}, {"SPY261029C00530000", -1}, {"SPY261105P00500000", -2}},
+       {{"SPY261029P00470000", -1}, {"SPY261029P00480000", -2}, {"SPY261029P00500000", 3},
+        {"SPY261029P00530000", -1}, {"SPY261105C00490000", 2}, {"SPY261105P00490000", -2}}},
+      {{{"SPY261022C00510000", -2}, {"SPY261029P00480000", -1}, {"SPY261029C00500000", 1},
+        {"SPY261105C00490000", -1}, {"SPY261105C00520000", 2}},
+       {{"SPY261022P00480000", -2}, {"SPY261022P00520000", -1}, {"SPY261029C00470000", -2},
+        {"SPY261029C00490000", 1}, {"SPY261029C00520000", 2}, {"SPY261105P00470000", 1}}},
+      {{{"SPY261022P00470000", 1}, {"SPY261022C00490000", -1}, {"SPY261022P00500000", 2},
+        {"SPY261022P00530000", -1}, {"SPY261105P00490000", 1}, {"SPY261105C00530000", 1}},
+       {{"SPY261022C00470000", -2}, {"SPY261022C00480000", -1}, {"SPY261029C00490000", -2},
+        {"SPY261029C00500000", 2}, {"SPY261029P00510000", -2}, {"SPY261029C00520000", 1}, {"SPY261105C00480000", -1}}},
+      {{{"SPY261022P00520000", 1}, {"SPY261029P00470000", 2}, {"SPY261029P00530000", -1}, {"SPY261105P00470000", -2}},
+       {{"SPY261022C00470000", -1}, {"SPY261022P00520000", 1}, {"SPY261022C00530000", 1}, {"SPY261029C00510000", 2}}}};
+  const auto build = [](const Positions& positions) {
+    std::vector<MarginLeg> legs;
+    for (const auto& [symbol, q] : positions) {
+      auto leg = option(symbol, q);
+      if (q < 0) leg.value = dollars("250") * -q;
+      legs.push_back(leg);
+    }
+    return legs;
+  };
+  for (std::size_t i = 0; i < cases.size(); ++i) {
+    SCOPED_TRACE(i + 1);
+    const auto a = build(cases[i].first), b = build(cases[i].second);
+    std::map<std::string, Quantity> combined;
+    for (const auto* positions : {&cases[i].first, &cases[i].second})
+      for (const auto& [symbol, q] : *positions) combined[symbol] += q;
+    auto ab = build(Positions(combined.begin(), combined.end()));
+    const auto separate = margin_requirement(a) + margin_requirement(b);
+    const auto actual = margin_requirement(ab);
+    EXPECT_LE(actual, separate) << actual.str() << " > " << separate.str();
+    EXPECT_LE(actual, detail::pairing_margin_requirement(ab));
+    EXPECT_EQ(margin_requirement(ab), actual);
+  }
+}
+
+TEST(TradingMarginAllocation, SeededMixedExpirySubadditivityRate) {
+  // Use explicit LCG draws and a partial shuffle, identical on every standard
+  // library. A and B contain 2..7 distinct, non-overlapping series each.
+  std::uint32_t state = 0xF490123U;
+  const auto next = [&]() { state = state * 1664525U + 1013904223U; return state >> 8; };
+  std::vector<md::OptionContract> contracts;
+  for (const auto* expiry : {"261022", "261029", "261105"})
+    for (int strike = 470; strike <= 530; strike += 10)
+      for (const char type : {'C', 'P'})
+        contracts.push_back(*md::parse_osi(std::string("SPY") + expiry + type + "00" + std::to_string(strike) + "000"));
+  struct Counts { int checked = 0, pairing = 0, joint = 0; };
+  Counts margin, ira;
+  for (int trial = 0; trial < 20736; ++trial) {
+    const auto na = 2 + next() % 6, nb = 2 + next() % 6;
+    auto shuffled = contracts;
+    std::vector<MarginLeg> a, b, ab;
+    for (std::size_t i = 0; i < na + nb; ++i) {
+      std::swap(shuffled[i], shuffled[i + next() % (shuffled.size() - i)]);
+      const auto n = static_cast<Quantity>(1 + next() % 2);
+      const auto q = next() % 2 ? n : -n;
+      const MarginLeg leg{shuffled[i], q, q < 0 ? dollars("250") * n : Money{}, 500.0};
+      (i < na ? a : b).push_back(leg);
+      ab.push_back(leg);
+    }
+    for (const auto account : {AccountType::Margin, AccountType::Ira}) {
+      if (account == AccountType::Ira && (disallowed_shorts(a, {}, account) || disallowed_shorts(b, {}, account) ||
+                                         disallowed_shorts(ab, {}, account))) continue;
+      const MarginPolicy policy{account, 0, 0};
+      auto& count = account == AccountType::Margin ? margin : ira;
+      ++count.checked;
+      const auto old_sum = detail::pairing_margin_requirement(a, {}, policy) + detail::pairing_margin_requirement(b, {}, policy);
+      const auto old_ab = detail::pairing_margin_requirement(ab, {}, policy);
+      const auto sum = margin_requirement(a, {}, policy) + margin_requirement(b, {}, policy);
+      const auto actual = margin_requirement(ab, {}, policy);
+      count.pairing += old_ab > old_sum;
+      count.joint += actual > sum;
+      EXPECT_LE(actual, old_ab) << "trial=" << trial << " account=" << static_cast<int>(account);
+    }
+  }
+  for (const auto& [name, count] : {std::pair{"margin", margin}, std::pair{"ira", ira}}) {
+    std::cout << name << " subadditivity violations: pairing=" << count.pairing << "/" << count.checked
+              << " joint=" << count.joint << "/" << count.checked << '\n';
+    RecordProperty(std::string(name) + "_checked", count.checked);
+    RecordProperty(std::string(name) + "_pairing_violations", count.pairing);
+    RecordProperty(std::string(name) + "_joint_violations", count.joint);
+  }
+  EXPECT_EQ(margin.checked, 20736);
+  EXPECT_EQ(ira.checked, 5423);
+  // Before this change: pairing 34/47, joint 26/1 (margin/allowed IRA).
+  // A bounded search is not universally subadditive. Lock the measured limits
+  // while permitting future improvements; print both counts above on every run.
+  EXPECT_LE(margin.joint, 10);
+  EXPECT_EQ(ira.joint, 0);
+}
+
+TEST(TradingMarginAllocation, EarlierFreeLongCannotBlockAnIraPool) {
+  const MarginPolicy ira{AccountType::Ira, 0, 0};
+  std::vector<MarginLeg> book{
+      option("SPY261029C00520000", 2), option("SPY261029P00490000", 1),
+      option("SPY261029C00480000", 2), option("SPY261105C00520000", 1),
+      option("SPY261029P00520000", -1, "250"), option("SPY261105P00490000", 2)};
+  EXPECT_EQ(disallowed_shorts(book, {}, ira.account), 0);
+  EXPECT_EQ(margin_requirement(book, {}, ira), dollars("1000"));
+  book.insert(book.begin() + 1, option("SPY261022C00530000", 1));
+  EXPECT_EQ(margin_requirement(book, {}, ira), dollars("1000"));
 }
 
 TEST(TradingMarginAllocation, PoolsKeepTheirCoversBesideStraddles) {
