@@ -626,21 +626,26 @@ TEST(Notifications, LiveEngineObservesCommandsAndStalledFeedWithoutAnApiReader) 
 }
 TEST(Notifications, ReplayDemoAndDrillEnginesDoNotNotifyByDefault) {
   for (const std::string name : {"manual", "replay", "demo"}) {
+    SCOPED_TRACE(name);
     Harness h; NotificationProvider provider; provider.provider_name = name;
     server::Engine::Options options; options.notifications = h.notifications; options.replay = name == "manual";
     server::Engine engine(provider, {{"SPX"}}, options);
     engine.start();
     EXPECT_EQ(engine.notifications(), nullptr);
     server::TradingCommand trip; trip.kind = server::TradingCommand::Kind::Trip;
-    std::promise<void> done;
-    ASSERT_TRUE(engine.post_trading(trip, [&](server::TradingReply) { done.set_value(); }));
-    done.get_future().get(); engine.stop();
+    trip.reason = "notification test";
+    std::promise<server::TradingReply> done;
+    ASSERT_TRUE(engine.post_trading(trip, [&](auto reply) { done.set_value(std::move(reply)); }));
+    const auto reply = done.get_future().get();
+    ASSERT_TRUE(reply.decision.ok()) << reply.decision.message;
+    engine.stop();
     EXPECT_FALSE(h.notifications->deliver_one());
     EXPECT_EQ(h.state()["queue_depth"], 0);
   }
 }
 TEST(Notifications, SimulatedOptInEnablesDemoAndReplayEngines) {
   for (const std::string name : {"demo", "replay"}) {
+    SCOPED_TRACE(name);
     Harness h(json::array({channel()}), 256, true);
     NotificationProvider provider; provider.provider_name = name;
     server::Engine::Options options;
@@ -649,9 +654,11 @@ TEST(Notifications, SimulatedOptInEnablesDemoAndReplayEngines) {
     engine.start();
     ASSERT_EQ(engine.notifications(), h.notifications.get());
     server::TradingCommand trip; trip.kind = server::TradingCommand::Kind::Trip;
-    std::promise<void> done;
-    ASSERT_TRUE(engine.post_trading(trip, [&](server::TradingReply) { done.set_value(); }));
-    done.get_future().get();
+    trip.reason = "notification test";
+    std::promise<server::TradingReply> done;
+    ASSERT_TRUE(engine.post_trading(trip, [&](auto reply) { done.set_value(std::move(reply)); }));
+    const auto reply = done.get_future().get();
+    ASSERT_TRUE(reply.decision.ok()) << reply.decision.message;
     engine.stop();
     h.drain();
     ASSERT_EQ(h.http->calls.size(), 1U);
