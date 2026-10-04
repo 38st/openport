@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Random orders and exact accounting checks on an isolated, paused replay.
 
-    tools/order_fuzz.py URL --scenario hold-overnight --ops 300 --repeat
+    tools/order_fuzz.py URL --scenario hold-overnight --ops 200 --repeat --playbook
 
 Replaces any existing replay. Never trades the live account. --seed selects the
 market (default 81723); --fuzz-seed selects commands (default 1). JSON includes the
@@ -25,6 +25,10 @@ and docs/runtime.md). Compare raw head/count/bytes, and raw files when accessibl
 History's `file` is the recording, NOT the account journal. Current servers expose
 no journal path: supply --replays-dir, the replays/ beside --paper-journal, for CLI
 verification or byte comparison. Verification never repairs or compacts a journal.
+
+--playbook creates one live catalogue definition (left off on live accounts), then
+enables the same version in auto on each replay. Tagged orders and their fills are
+counted by actor; no automatic fills is a coverage failure.
 """
 import argparse
 from collections import Counter
@@ -237,6 +241,38 @@ def epoch(value):
     return datetime.fromisoformat(value.replace("Z", "+00:00")).timestamp()
 
 
+def create_playbook(client):
+    definitions = get(client, "/api/playbooks")["definitions"]
+    # Repeated campaigns may share a server. Do not edit or reuse someone else's ID.
+    identifier = next((f"order-fuzz-{i}" for i in range(1, 101) if f"order-fuzz-{i}" not in definitions), None)
+    if identifier is None:
+        raise FuzzError("no free fuzz playbook ID")
+    definition = dict(id=identifier, name="Order fuzz time stop", description="Determinism coverage",
+                      underlyings=["SPX"], window=dict(start="09:30", end="09:31", weekdays=[1, 2, 3, 4, 5]),
+                      conditions={}, structure=dict(template=dict(kind="vertical", type="put", direction="credit",
+                      target=dict(mode="delta", value=30), width=5), expiry=dict(min=0, max=7)),
+                      sizing=dict(units=1), management=dict(close_by="09:32"),
+                      guardrails=dict(max_entries_per_day=1, cooldown_minutes=0))
+    created = request(client, "POST", "/api/playbooks", definition)[1]
+    return copy.deepcopy(created["definitions"][identifier]["versions"][-1])
+
+
+def actor_counts(state, definition=None):
+    orders, fills = state["orders"]["orders"], state["fills"]["fills"]
+    result = dict(orders=Counter(o.get("actor", "unknown") for o in orders),
+                  fills=Counter(f.get("actor", "unknown") for f in fills))
+    if definition:
+        tag = f"playbook:{definition['id']}@v{definition['version']}"
+        tagged = [o for o in orders if tag in o.get("tags", [])]
+        ids = {o["id"] for o in tagged}
+        executions = [f for f in fills if f["order_id"] in ids]
+        result["playbook"] = dict(tag=tag, orders=len(tagged), fills=len(executions),
+                                  orders_by_actor=Counter(o.get("actor", "unknown") for o in tagged),
+                                  fills_by_actor=Counter(f.get("actor", "unknown") for f in executions),
+                                  time_stop_orders=sum(o.get("note", "").startswith("Playbook automatic time stop;") for o in tagged))
+    return result
+
+
 def operation(kind, method, suffix, body=None, preview=False):
     return dict(kind=kind, method=method, path=PREFIX + suffix, body=body, preview=preview)
 
@@ -445,10 +481,14 @@ def compare_runs(runs, directory=None):
     if runs[0]["outcomes"] != runs[1]["outcomes"]:
         result["status"] = "failed"
         result["outcomes_match"] = False
+    for key in ("playbook", "actors"):
+        if runs[0].get(key) != runs[1].get(key):
+            result["status"] = "failed"
+            result[key + "_match"] = False
     return result
 
 
-def run_once(client, start, ops, fuzz_seed, tape=None, binary=None, directory=None, out=print):
+def run_once(client, start, ops, fuzz_seed, tape=None, binary=None, directory=None, out=print, playbook=None):
     result = dict(operations=Counter(), refusals=Counter(), preview_refusals=Counter(), checks=Counter(),
                   failures=[], commands=[], outcomes=[], verification={"status": "not_run"},
                   cli_verification={"status": "not_requested"})
@@ -474,6 +514,13 @@ def run_once(client, start, ops, fuzz_seed, tape=None, binary=None, directory=No
             replay = get(client, PREFIX)["replay"]
         if not replay["paused"]:
             raise FuzzError("replay did not start paused")
+        if playbook:
+            identifier = playbook["id"]
+            enabled = request(client, "PUT", PREFIX + f"/playbooks/{identifier}/mode", {"mode": "auto"})[1]
+            actual = enabled["definitions"][identifier]["versions"][-1]
+            result["playbook"] = dict(definition=actual, mode=enabled["modes"][identifier])
+            if actual != playbook or result["playbook"]["mode"] != "auto":
+                raise FuzzError("replay playbook definition/version or auto mode differs from setup")
         state = snapshot(client)
         result["start_market_time"] = state["portfolio"]["time"]
         generator = Generator(client, random.Random(fuzz_seed), replay, ops)
@@ -513,6 +560,9 @@ def run_once(client, start, ops, fuzz_seed, tape=None, binary=None, directory=No
             if step % 25 == 0:
                 out("run", run_id, "step", step, "time", state["portfolio"]["time"], "failures", len(result["failures"]))
         result["end_market_time"] = state["portfolio"]["time"]
+        result["actors"] = actor_counts(state, playbook)
+        if playbook and not result["actors"]["playbook"]["fills_by_actor"].get("system"):
+            failure("playbook_coverage", message="no automatic playbook fills", actors=result["actors"])
     except (FuzzError, KeyError, TypeError, ValueError, InvalidOperation, OSError) as exc:
         failure("execution", message=str(exc))
     finally:
@@ -553,16 +603,25 @@ def run_once(client, start, ops, fuzz_seed, tape=None, binary=None, directory=No
 
 
 def fuzz(client, scenario="reversal", seed=81723, ops=300, fuzz_seed=1, plan="practice", repeat=False,
-         binary=None, directory=None, out=print):
+         binary=None, directory=None, out=print, playbook=False):
     start = dict(scenario=scenario, seed=str(seed), plan=plan, paused=True)
     result = dict(url=client.base, scenario=scenario, seed=str(seed), fuzz_seed=fuzz_seed, ops=ops, plan=plan,
                   runs=[], determinism={"status": "not_requested"})
-    first = run_once(client, start, ops, fuzz_seed, binary=binary, directory=directory, out=out)
+    try:
+        definition = create_playbook(client) if playbook else None
+        if definition:
+            result["playbook"] = dict(definition=definition, mode="auto")
+    except (FuzzError, KeyError, TypeError, ValueError, OSError) as exc:
+        result.update(exit_status=1, setup_error=str(exc))
+        out("FAIL setup", str(exc))
+        return result
+    first = run_once(client, start, ops, fuzz_seed, binary=binary, directory=directory, out=out, playbook=definition)
     result["runs"].append(first)
     if repeat:
         result["determinism"] = {"status": "failed", "message": "first run did not complete the command tape"}
         if len(first["commands"]) == ops and "history" in first:
-            second = run_once(client, start, ops, fuzz_seed, tape=first["commands"], binary=binary, directory=directory, out=out)
+            second = run_once(client, start, ops, fuzz_seed, tape=first["commands"], binary=binary,
+                              directory=directory, out=out, playbook=definition)
             result["runs"].append(second)
             try:
                 result["determinism"] = compare_runs(result["runs"], directory)
@@ -581,6 +640,7 @@ def main(argv=None):
     parser.add_argument("--fuzz-seed", type=int, default=1)
     parser.add_argument("--plan", default="practice")
     parser.add_argument("--repeat", action="store_true")
+    parser.add_argument("--playbook", action="store_true", help="create a one-unit SPX time-window spread and enable replay auto")
     parser.add_argument("--token")
     parser.add_argument("--json", metavar="PATH", help="sorted JSON summary; - writes stdout")
     parser.add_argument("--openportd", metavar="BIN")
@@ -590,11 +650,12 @@ def main(argv=None):
         parser.error("--ops must be positive and --seed must fit uint64")
     out = lambda *parts: print(*parts, file=sys.stderr if args.json == "-" else sys.stdout, flush=True)
     result = fuzz(Client(args.url, args.token), args.scenario, args.seed, args.ops, args.fuzz_seed, args.plan,
-                  args.repeat, args.openportd, args.replays_dir, out)
+                  args.repeat, args.openportd, args.replays_dir, out, args.playbook)
     for run in result["runs"]:
         out("run", run.get("run_id"), "operations", dict(run["operations"]), "refusals", dict(run["refusals"]),
             "preview refusals", dict(run["preview_refusals"]),
             "checks", dict(run["checks"]), "failures", len(run["failures"]),
+            "actors", run.get("actors", {}),
             "verify", run["verification"]["status"], "CLI", run["cli_verification"]["status"])
     out("determinism", result["determinism"], "exit", result["exit_status"])
     if args.json:

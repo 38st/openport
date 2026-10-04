@@ -66,6 +66,7 @@ class ScriptAPI:
         self.verify_status, self.corrupt = verify_status, corrupt
         self.calls, self.writes, self.started = [], [], []
         self.run, self.poll, self.current = 0, 0, state()
+        self.definitions, self.modes = {}, {}
 
     def entry(self, run):
         journal = dict(head="abc", transactions=5, bytes=100)
@@ -76,6 +77,10 @@ class ScriptAPI:
 
     def call(self, method, path, body=None):
         self.calls.append((method, path, copy.deepcopy(body)))
+        if path == "/api/playbooks":
+            if method == "POST":
+                self.definitions[body["id"]] = dict(versions=[dict(body, version=1)], deleted=False)
+            return 200, dict(definitions=copy.deepcopy(self.definitions), modes={})
         assert path.startswith(fuzz.PREFIX), path
         if path == fuzz.PREFIX:
             if method == "DELETE":
@@ -83,6 +88,7 @@ class ScriptAPI:
             if method == "POST":
                 self.run += 1
                 self.current = state()
+                self.modes = {}
                 self.started.append(copy.deepcopy(body))
             elif method == "PUT":
                 self.writes.append((self.run, method, path, copy.deepcopy(body)))
@@ -90,6 +96,14 @@ class ScriptAPI:
             return 201 if method == "POST" else 200, {"replay": dict(
                 id=f"run-{self.run}", scenario="reversal", plan="practice", seed="81723", time=NOW,
                 paused=True, end=END, symbols=["SPY"], sessions=[dict(session="regular", open=NOW, end=END)])}
+        if path.endswith("/mode"):
+            identifier = path.split("/")[-2]
+            self.modes[identifier] = body["mode"]
+            self.writes.append((self.run, method, path, copy.deepcopy(body)))
+            self.current = held_state()
+            self.current["orders"]["orders"][0].update(actor="system", tags=[f"playbook:{identifier}@v1"])
+            self.current["fills"]["fills"][0]["actor"] = "system"
+            return 200, dict(definitions=copy.deepcopy(self.definitions), modes=copy.deepcopy(self.modes))
         if path == fuzz.PREFIX + "/history":
             return 200, {"history": [self.entry(i) for i in range(1, self.run + 1)]}
         if path.endswith("/verify"):
@@ -109,12 +123,12 @@ class ScriptAPI:
         raise AssertionError((method, path, body))
 
 
-def scripted_run(api, repeat=False, **kwargs):
-    commands = [fuzz.operation("single_market", "POST", "/orders", dict(client_order_id="a", symbol=CALL, side="buy", quantity=12, type="market", time_in_force="ioc"), True),
+def scripted_run(api, repeat=False, commands=None, **kwargs):
+    commands = commands or [fuzz.operation("single_market", "POST", "/orders", dict(client_order_id="a", symbol=CALL, side="buy", quantity=12, type="market", time_in_force="ioc"), True),
                 fuzz.operation("cancel", "DELETE", "/orders/17"),
                 fuzz.operation("advance", "PUT", "", {"until": "+1m"})]
     with patch.object(fuzz.Generator, "draw", side_effect=commands) as draw, patch.object(fuzz.time, "sleep"):
-        result = fuzz.fuzz(api, ops=3, repeat=repeat, out=lambda *x: None, **kwargs)
+        result = fuzz.fuzz(api, ops=len(commands), repeat=repeat, out=lambda *x: None, **kwargs)
     return result, draw
 
 
@@ -213,6 +227,47 @@ class InvariantTest(unittest.TestCase):
 
 
 class FlowTest(unittest.TestCase):
+    def test_playbook_is_created_once_and_enabled_identically_on_each_replay(self):
+        api = ScriptAPI()
+        result, _ = scripted_run(api, repeat=True, playbook=True)
+        self.assertEqual(result["exit_status"], 0)
+        creates = [c for c in api.calls if c[:2] == ("POST", "/api/playbooks")]
+        self.assertEqual(len(creates), 1)
+        self.assertLess(api.calls.index(creates[0]), next(i for i, c in enumerate(api.calls) if c[:2] == ("POST", fuzz.PREFIX)))
+        self.assertEqual(creates[0][2]["management"], {"close_by": "09:32"})
+        modes = [c for c in api.calls if c[1].endswith("/mode")]
+        self.assertEqual(modes, [("PUT", "/api/replay/playbooks/order-fuzz-1/mode", {"mode": "auto"})] * 2)
+        a, b = result["runs"]
+        self.assertEqual(a["playbook"], b["playbook"])
+        self.assertEqual(a["actors"]["playbook"]["orders_by_actor"], {"system": 1})
+        self.assertEqual(a["actors"]["playbook"]["fills_by_actor"], {"system": 1})
+
+    def test_playbook_requires_actual_auto_fills_and_identical_definition(self):
+        class BadPlaybook(ScriptAPI):
+            def call(self, method, path, body=None):
+                status, response = super().call(method, path, body)
+                if path.endswith("/mode"):
+                    self.current = state()
+                    if self.run == 2:
+                        response["definitions"][body_id]["versions"][-1]["version"] = 2
+                return status, response
+        body_id = "order-fuzz-1"
+        result, _ = scripted_run(BadPlaybook(), repeat=True, playbook=True)
+        self.assertEqual(result["exit_status"], 1)
+        self.assertEqual(result["runs"][0]["failures"][0]["check"], "playbook_coverage")
+        self.assertIn("differs from setup", result["runs"][1]["failures"][0]["message"])
+
+    def test_actor_counts_link_fills_to_tagged_orders_not_all_system_orders(self):
+        s = held_state()
+        s["orders"]["orders"][0].update(actor="system", tags=["playbook:example@v1"],
+                                         note="Playbook automatic time stop; entry 9")
+        s["orders"]["orders"].append(order(id="2", actor="system", tags=[]))
+        s["fills"]["fills"] = [dict(fill(), actor="system"), dict(fill(order_id="2"), actor="system")]
+        counts = fuzz.actor_counts(s, dict(id="example", version=1))
+        self.assertEqual(counts["orders"], {"system": 2})
+        self.assertEqual(counts["playbook"]["fills"], 1)
+        self.assertEqual(counts["playbook"]["time_stop_orders"], 1)
+
     def test_refusals_repeat_exact_tape_and_pause(self):
         api = ScriptAPI()
         result, draw = scripted_run(api, repeat=True)
