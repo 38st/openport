@@ -151,9 +151,12 @@ At revision 1 the five original scenarios keep their original prices, sizes and 
 of existing events for the same date and seed. Their old segment moves have been
 converted to cumulative waypoints. Tests pin fingerprints of the old events.
 
-Session volume starts at zero and accumulates deterministic simulated activity,
-higher near the money and in the front expiry, with more activity near the open
-and close. Its separate seeded draws leave prices and quoted sizes unchanged.
+Session volume at revision 6 includes an opening print equivalent to one minute
+of simulated activity, then accumulates throughout the session. Activity is higher
+near the money and in the front expiry, with more near the open and close. Thin
+contracts can still report zero; volume caps use simulated volume without a
+minimum guarantee. Revisions 1–5 retain their zero-volume opening and original
+events. Separate seeded draws leave prices and quoted sizes unchanged.
 Volume events are recorded alongside quotes for built-in and custom scenarios.
 
 ## Several sessions

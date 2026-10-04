@@ -184,7 +184,7 @@ TEST(DemoFeed, FactoryOptionsSymbolsAndDefaultRotation) {
   for (const auto& option : std::vector<std::pair<std::string, std::string>>{
       {"speed", "max"}, {"speed", "0"}, {"speed", "3"}, {"speed", "1.0"}, {"speed", "301"},
       {"days", ""}, {"days", "trend,"}, {"days", ",trend"}, {"days", "missing"},
-      {"revision", "0"}, {"revision", "6"}, {"days", "trend,overnight"}, {"days", "overnight-gap"}, {"loop", "on"}}) {
+      {"revision", "0"}, {"revision", "7"}, {"days", "trend,overnight"}, {"days", "overnight-gap"}, {"loop", "on"}}) {
     EXPECT_THROW((void)providers::make_provider({"demo", "", {option}}), std::invalid_argument);
   }
   provider = providers::make_provider({"demo", "", {{"days", "chop,trend,chop"}}});

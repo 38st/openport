@@ -105,8 +105,9 @@ struct ScenarioWindow {
 /// regular close. Revision 4 prices American ETF options with discrete quarterly
 /// dividends, also reflected in spot prices. Runs record the revision; one
 /// recorded without it regenerates revision 1. Revision 5 scales regular event
-/// times and window endpoints into early-close sessions.
-inline constexpr int kScenarioRevision = 5;
+/// times and window endpoints into early-close sessions. Revision 6 includes
+/// deterministic opening activity in session volume.
+inline constexpr int kScenarioRevision = 6;
 /// Deterministic simulated quarterly ETF dividends, inclusive of both dates.
 [[nodiscard]] std::vector<trading::Dividend> demo_dividends(md::Date first, md::Date last);
 /// Known payments through the run's listed ETF expiries. Session entries replace

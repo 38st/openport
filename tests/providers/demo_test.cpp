@@ -311,6 +311,25 @@ TEST(DemoMarket, RevisionThreeRecordingIsUnchanged) {
   remove_recording(path);
 }
 
+TEST(DemoMarket, RevisionFiveKeepsItsZeroVolumeOpening) {
+  const auto& scenarios = providers::builtin_scenarios();
+  const auto day = std::find_if(scenarios.begin(), scenarios.end(), [](const auto& s) { return s.id == "trend"; });
+  ASSERT_NE(day, scenarios.end());
+  const auto path = temporary("revision-five");
+  providers::write_scenario_recording(path, *day, day->date, day->seed, 5);
+  md::RecordingReader reader(path);
+  std::size_t opening = 0;
+  while (const auto event = reader.next()) {
+    if (event->received > reader.header().started) break;
+    if (const auto* volume = std::get_if<md::OptionVolume>(&event->event)) {
+      EXPECT_EQ(volume->contracts, 0);
+      ++opening;
+    }
+  }
+  EXPECT_GT(opening, 0U);
+  remove_recording(path);
+}
+
 TEST(DemoMarket, QuarterlyDividendsUseBusinessDatesCentsAndSessionOverrides) {
   const auto dividends = providers::demo_dividends({2026, 1, 1}, {2026, 12, 31});
   ASSERT_EQ(dividends.size(), 8U);
@@ -674,13 +693,14 @@ TEST(DemoMarket, SimulatedVolumeRisesAndFavoursNearMoneyAndFrontExpiry) {
   providers::write_demo_recording(path);
   md::RecordingReader reader(path);
   std::map<md::InstrumentId, md::OptionContract> definitions;
-  std::map<md::InstrumentId, double> latest;
+  std::map<md::InstrumentId, double> latest, opening;
   while (const auto event = reader.next()) {
     if (const auto* definition = std::get_if<md::ContractDefinition>(&event->event)) {
       definitions[definition->id] = definition->contract;
     } else if (const auto* volume = std::get_if<md::OptionVolume>(&event->event)) {
       ASSERT_GE(volume->contracts, latest[volume->id]);
       EXPECT_EQ(volume->contracts, std::floor(volume->contracts));
+      if (!opening.contains(volume->id)) opening[volume->id] = volume->contracts;
       latest[volume->id] = volume->contracts;
     }
   }
@@ -688,7 +708,13 @@ TEST(DemoMarket, SimulatedVolumeRisesAndFavoursNearMoneyAndFrontExpiry) {
   for (const auto& [id, contract] : definitions) {
     if (contract.underlying != "SPX" || contract.type != pricing::OptionType::Call) continue;
     if (contract.expiry == md::Date{2026, 9, 16}) {
-      if (contract.strike == 6000) near = latest[id];
+      if (contract.strike == 6000) {
+        near = latest[id];
+        // Enough real simulated activity to admit an opening under a 10% cap.
+        EXPECT_GE(opening[id], 10);
+        EXPECT_LT(opening[id], 250);
+        EXPECT_GT(near, opening[id]);
+      }
       if (contract.strike == 6180) far = latest[id];
     } else if (contract.expiry == md::Date{2026, 9, 25} && contract.strike == 6000) {
       back = latest[id];

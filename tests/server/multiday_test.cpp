@@ -273,6 +273,59 @@ TEST(MultiDayReplay, StartsAndStepsToADateAndTimeInTheRunsSessions) {
   EXPECT_EQ(history[0]["sessions"], sessions);
 }
 
+TEST(MultiDayReplay, OpeningVolumeAdmitsCappedOrdersAndResetsOnTheNextDate) {
+  test::RecordingFile file;
+  const auto source = file.directory / "volume.json";
+  { std::ofstream out(source); out << R"({"id":"volume","title":"Volume","description":"Two quiet opens.",
+    "symbols":["SPX"],"date":"2026-09-16","seed":5,"generator":1,"volatility":0,"iv_shift":0,"spot_vol":0,
+    "sessions":[{"session":"regular","drift":[[1,0]]},{"session":"regular","drift":[[1,0]]}]})"; }
+  const auto scenario = providers::read_scenario(source);
+  const auto windows = providers::scenario_windows(scenario, scenario.date);
+  providers::write_scenario_recording(file.path, scenario, scenario.date, scenario.seed);
+  md::RecordingReader reader(file.path);
+  server::Desk::Options options;
+  options.replay = true;
+  options.paper.rules.max_volume_percent = 10;
+  options.paper.limits.aggregate = {1e9, 1e9};
+  options.paper.limits.per_underlying = {1e9, 1e9};
+  server::Desk desk("replay (demo)", reader.header().capabilities, reader.header().subscription, options);
+  desk.start_trading();
+  providers::ReplayBatches batches(reader, reader.header().subscription);
+  const auto symbol = md::parse_osi("SPXW260917C06000000")->osi_symbol();
+  std::optional<md::InstrumentId> id;
+  double previous = 0, opening = 0;
+  bool checked = false;
+  while (const auto batch = batches.next()) {
+    for (const auto& event : batch->events) {
+      if (const auto* definition = std::get_if<md::ContractDefinition>(&event);
+          definition && definition->contract.osi_symbol() == symbol) id = definition->id;
+      if (const auto* volume = std::get_if<md::OptionVolume>(&event); volume && id && volume->id == *id) {
+        if (batch->time == windows[1].first) {
+          EXPECT_GE(volume->contracts, 10);
+          EXPECT_LT(volume->contracts, previous);
+          checked = true;
+        } else previous = volume->contracts;
+        if (batch->time == windows[0].first) opening = volume->contracts;
+      }
+    }
+    desk.replay_batch(batch->events, batch->received, batch->time);
+    if (batch->time == windows[0].first) {
+      ASSERT_GE(opening, 10);
+      auto entry = order("opening", symbol.c_str(), trading::Side::Buy, 1,
+                         trading::OrderType::Market, trading::TimeInForce::Ioc);
+      const auto accepted = command(desk, entry, batch->time, batch->received);
+      ASSERT_TRUE(accepted.decision.ok()) << accepted.decision.message;
+      ASSERT_EQ(desk.trading_view()->snapshot->recent_fills.size(), 1U);
+      // A positive opening volume still enforces the cap.
+      entry.order.client_order_id = "too-large";
+      entry.order.quantity = static_cast<trading::Quantity>(opening);
+      EXPECT_EQ(command(desk, entry, batch->time, batch->received).decision.code, trading::Reason::MAX_VOLUME_SHARE);
+    }
+    if (batch->time == windows[1].first) break;
+  }
+  EXPECT_TRUE(checked);
+}
+
 class ScenarioCommandRestart : public testing::TestWithParam<int> {};
 
 TEST_P(ScenarioCommandRestart, InclusiveBoundaryAndGapCommandsRestartAndResumeByteExactly) {
