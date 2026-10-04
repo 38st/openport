@@ -232,32 +232,32 @@ it("keeps combined rules while switching phase-specific time and size scaling", 
   expect("error" in funded ? funded : funded.rules).toMatchObject({ ...shared, time_limit_days: 0, size_scaling: base.size_scaling })
 })
 
-it("edits and explains trade consistency with integer validation", () => {
-  const form = { ...planForm({ initial_cash: "100000", rules }), trade_consistency_percent: "40" }
+it.each(["evaluation", "verification"] as const)("edits and explains trade consistency with integer validation (%s)", (phase) => {
+  const form = { ...planForm({ initial_cash: "100000", rules: { ...rules, phase } }), trade_consistency_percent: "40" }
   const result = customPlan(form, rules)
   expect("error" in result ? null : result.rules.trade_consistency_percent).toBe(40)
-  expect(objectiveFacts({ ...rules, trade_consistency_percent: 40 })).toContain("Best closed whole trade at most 40% of attempt profit")
+  expect(objectiveFacts({ ...rules, phase, trade_consistency_percent: 40 })).toContain("Best closed whole trade at most 40% of attempt profit")
   for (const value of ["-1", "101", "1.5"]) expect(customPlan({ ...form, trade_consistency_percent: value }, rules)).toHaveProperty("error")
   expect(objectiveValue({ code: "TRADE_CONSISTENCY", met: false, actual: 75, required: 40, message: "" })).toBe("75% of 40% max")
 })
 
-it("edits minimum closed trades and clears evaluation rules when funded", () => {
-  const form = { ...planForm({ initial_cash: "100000", rules }), min_trades: "10" }
+it.each(["evaluation", "verification"] as const)("edits minimum closed trades and clears evaluation rules when funded (%s)", (phase) => {
+  const form = { ...planForm({ initial_cash: "100000", rules: { ...rules, phase } }), min_trades: "10" }
   const result = customPlan(form, rules)
   expect("error" in result ? null : result.rules.min_trades).toBe(10)
   for (const min_trades of ["-1", "10001", "1.5"]) expect(customPlan({ ...form, min_trades }, rules)).toHaveProperty("error")
-  expect(objectiveFacts({ ...rules, min_trades: 10 })).toContain("At least 10 closed whole trades")
+  expect(objectiveFacts({ ...rules, phase, min_trades: 10 })).toContain("At least 10 closed whole trades")
   const funded = customPlan({ ...form, phase: "funded", trade_consistency_percent: "40" }, rules)
   expect("error" in funded ? null : funded.rules).toMatchObject({ min_trades: 0, trade_consistency_percent: 0 })
 })
 
-it("validates hold time and paired microscalping and shows percentage progress", () => {
-  const form = { ...planForm({ initial_cash: "100000", rules }), min_hold_seconds: "60", microscalp_seconds: "30", microscalp_percent: "25" }
+it.each(["evaluation", "verification"] as const)("validates hold time and paired microscalping and shows percentage progress (%s)", (phase) => {
+  const form = { ...planForm({ initial_cash: "100000", rules: { ...rules, phase } }), min_hold_seconds: "60", microscalp_seconds: "30", microscalp_percent: "25" }
   const result = customPlan(form, rules)
   expect("error" in result ? null : result.rules).toMatchObject({ min_hold_seconds: 60, microscalp_seconds: 30, microscalp_percent: 25 })
   for (const change of [{ min_hold_seconds: "3601" }, { min_hold_seconds: "1.5" }, { microscalp_seconds: "3601" }, { microscalp_percent: "101" }, { microscalp_seconds: "" }, { microscalp_percent: "" }])
     expect(customPlan({ ...form, ...change }, rules)).toHaveProperty("error")
-  expect(objectiveFacts({ ...rules, microscalp_seconds: 30, microscalp_percent: 25 })).toContain("Profit from round trips under 30s at most 25% of attempt profit")
+  expect(objectiveFacts({ ...rules, phase, microscalp_seconds: 30, microscalp_percent: 25 })).toContain("Profit from round trips under 30s at most 25% of attempt profit")
   expect(objectiveValue({ code: "MICROSCALPING", met: false, actual: null, required: 25, message: "" })).toBe("— of 25% max")
   const disabled = customPlan({ ...form, microscalp_percent: "0" }, rules)
   expect("error" in disabled ? null : disabled.rules.microscalp_percent).toBe(0)
@@ -265,8 +265,8 @@ it("validates hold time and paired microscalping and shows percentage progress",
   expect("error" in funded ? null : funded.rules).toMatchObject({ min_hold_seconds: 60, microscalp_seconds: 0, microscalp_percent: 0 })
 })
 
-it("edits direction bans and retains them in funded plans", () => {
-  const form = { ...planForm({ initial_cash: "100000", rules }), no_hedging: "yes" as const, no_counter_positions: "yes" as const }
+it.each(["evaluation", "verification"] as const)("edits direction bans and retains them in funded plans (%s)", (phase) => {
+  const form = { ...planForm({ initial_cash: "100000", rules: { ...rules, phase } }), no_hedging: "yes" as const, no_counter_positions: "yes" as const }
   const result = customPlan(form, rules)
   expect("error" in result ? result : result.rules).toMatchObject({ no_hedging: true, no_counter_positions: true })
   const funded = customPlan({ ...form, phase: "funded" }, rules)

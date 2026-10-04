@@ -121,3 +121,23 @@ describe("funded accounts and payouts", () => {
     expect(open).toContain("Start Funded Intraday 100K")
   })
 })
+
+it.each(["evaluation", "verification"] as const)("explains all trade objectives and restrictions in %s", (phase) => {
+  const r = { ...account.rules, phase, min_trades: 2, trade_consistency_percent: 40,
+    min_hold_seconds: 60, microscalp_seconds: 30, microscalp_percent: 25,
+    no_hedging: true, no_counter_positions: true, max_volume_percent: 25 }
+  const value = { ...account, rules: r }
+  const facts = planFacts({ ...plans[0]!, rules: r }).join(" ")
+  const html = renderToStaticMarkup(<>{ruleText(value).map((rule) => <section key={rule.title}>{rule.body}</section>)}</>)
+  for (const text of ["2 closed whole trades", "Best closed whole trade at most 40%", "round trips under 30s at most 25%"])
+    expect(facts).toContain(text)
+  for (const text of ["Whole option trades count only", "Trade consistency can hold", "Microscalping sums", "60", "25%"])
+    expect(html).toContain(text)
+  expect(facts).toContain("No opening hedges")
+  expect(facts).toContain("No counter positions")
+  expect(facts).toContain("Held plus opening contracts at most 25%")
+  const funded = { ...value, rules: { ...r, phase: "funded" as const } }
+  const fundedText = renderToStaticMarkup(<>{ruleText(funded).map((rule) => <section key={rule.title}>{rule.body}</section>)}</>)
+  expect(fundedText).not.toContain("Microscalping sums")
+  expect(fundedText).not.toContain("Trade consistency can hold")
+})

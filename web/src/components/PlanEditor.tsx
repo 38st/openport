@@ -141,7 +141,7 @@ export function customPlan(form: PlanForm, base: AccountRules): { initial_cash: 
     const n = count(value)
     if (!Number.isInteger(n) || n < 0 || n > most) return { error: `${label} must be a whole number from 0 to ${most}` }
   }
-  if (form.phase === "evaluation" && ((form.microscalp_seconds.trim() === "") !== (form.microscalp_percent.trim() === "") ||
+  if (form.phase !== "funded" && ((form.microscalp_seconds.trim() === "") !== (form.microscalp_percent.trim() === "") ||
       (count(form.microscalp_percent) > 0 && count(form.microscalp_seconds) === 0)))
     return { error: "Set both microscalp seconds and percent, or leave both off" }
   for (const [label, value, most] of [["Maximum volume %", form.max_volume_percent, 100], ["Minimum hold seconds", form.min_hold_seconds, 3600], ["Maximum contracts held", form.max_contracts_held, 100000],
