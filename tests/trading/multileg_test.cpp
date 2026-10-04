@@ -986,6 +986,33 @@ TEST(TradingAccountType, AnIraCannotAbandonTheLongCoveringItsShortCall) {
   EXPECT_EQ(s.abandon(C5110, f.time).decision.code, Reason::ACCOUNT_TYPE);
 }
 
+TEST(TradingAccountType, AbandonCancelsItsOwnSalesBeforeCountingCovers) {
+  for (const auto type : {AccountType::Cash, AccountType::Ira}) {
+    for (const bool bracket : {false, true}) {
+      Chain f;
+      AccountRules rules;
+      rules.account_type = type;
+      rules.buying_power = true;
+      TradingSession s(config("100000", rules), f.time);
+      f.define(s, {C5100});
+      f.quote(s, {{C5100, "3.00", "3.20", 0.25}});
+      auto request = single("long", C5100, Side::Buy);
+      if (bracket) request.bracket = Bracket{{}, ExitSpec{{}, m("3.50")}};
+      ASSERT_TRUE(s.submit(request, f.time).decision.ok());
+      if (!bracket) { ASSERT_TRUE(s.submit(single("sell long", C5100, Side::Sell, "3.50"), f.time).decision.ok()); }
+      ASSERT_EQ(s.snapshot()->open_orders.size(), 1U);
+      const auto sale = s.snapshot()->open_orders[0].id;
+      f.time += md::kNanosPerSecond;
+      s.on_quotes({{C5100, ++f.observation, f.time, std::nullopt, m("0.05"), 0, 10}}, {}, f.time);
+      const auto result = s.abandon(C5100, f.time);
+      ASSERT_TRUE(result.decision.ok()) << result.decision.message;
+      EXPECT_TRUE(s.snapshot()->positions.empty());
+      EXPECT_TRUE(s.snapshot()->open_orders.empty());
+      EXPECT_EQ(s.snapshot()->recent_orders.at(sale - 1).reason.code, Reason::POSITION_CLOSED);
+    }
+  }
+}
+
 TEST(TradingAccountType, IraBracketExitsReserveTheirLongOnlyOnce) {
   Chain f;
   AccountRules rules;

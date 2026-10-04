@@ -6195,7 +6195,23 @@ CommandResult TradingSession::abandon(const std::string& symbol, Timestamp time)
                                           "Abandoning this long would leave a short option uncovered; close the short first");
         !d.ok())
       return CommandResult{d, {}, 0};
-    if (const auto d = account_type_check(s, {{symbol, -contracts}}); !d.ok()) return CommandResult{d, {}, 0};
+    // These orders disappear with the long. They must not reserve its cover
+    // during the account-type check either (including bracket siblings).
+    const auto cancel_sales = [&](State& target, Events& changes) {
+      for (const auto id : open_ids(target)) {
+        const auto& o = target.orders[id - 1];
+        const bool sells = std::any_of(o.request.legs.begin(), o.request.legs.end(), [&](const Leg& leg) {
+          return leg.symbol == symbol && leg.side == Side::Sell;
+        }) || (o.request.symbol == symbol && o.request.side == Side::Sell);
+        if (sells) cancel_order(target, id, failure(Reason::POSITION_CLOSED, "The position this order sold was abandoned"), changes);
+      }
+    };
+    if (s.config.rules.account_type != AccountType::Margin) {
+      State checked = s;
+      Events ignored;
+      cancel_sales(checked, ignored);
+      if (const auto d = account_type_check(checked, {{symbol, -contracts}}); !d.ok()) return CommandResult{d, {}, 0};
+    }
     // The contracts leave at zero, without a fee: the whole basis is the loss.
     const auto apply = [&](State& t) {
       fill_position(t, symbol, -contracts, Money{}, Money{});
@@ -6211,14 +6227,7 @@ CommandResult TradingSession::abandon(const std::string& symbol, Timestamp time)
     }
     apply(s);
     sync_exits(s, symbol, events);
-    // An order that sold the long would now open a short.
-    for (const auto id : open_ids(s)) {
-      const auto& o = s.orders[id - 1];
-      const bool sells = std::any_of(o.request.legs.begin(), o.request.legs.end(), [&](const Leg& leg) {
-        return leg.symbol == symbol && leg.side == Side::Sell;
-      }) || (o.request.symbol == symbol && o.request.side == Side::Sell);
-      if (sells) cancel_order(s, id, failure(Reason::POSITION_CLOSED, "The position this order sold was abandoned"), events);
-    }
+    cancel_sales(s, events);
     event(events, "abandon", Json{{"symbol", symbol}, {"contracts", contracts}});
     return CommandResult{};
   });
