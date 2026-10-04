@@ -789,4 +789,108 @@ TEST_P(TradePhases, HedgingIncludesSharesAndRejectsUnknownDelta) {
   EXPECT_EQ(s.submit(f.market("unknown"), f.time).decision.code, Reason::MISSING_VALUATION);
 }
 }  // namespace
+TEST(TradeRules, OpeningFillInputsRecheckEachPartialFillAndRecoverDeterministically) {
+  std::string expected;
+  for (int repeat = 0; repeat < 2; ++repeat) {
+    JournalFile file;
+    ScriptedMarket f;
+    AccountRules rules; rules.max_volume_percent = 10; rules.no_counter_positions = true;
+    TradingSession s(config(rules), f.time, FileJournal::create(file.path));
+    f.seed(s);
+    OpeningRuleInputs inputs; inputs.volumes[f.symbol()] = 20;
+    s.set_opening_rule_inputs(inputs);
+    const auto resting = s.submit(f.limit("resting", 2, "4.00"), f.time);
+    ASSERT_TRUE(resting.decision.ok());
+    f.next();
+    s.on_quotes({f.quote("3.80", "4.00", 1)}, {f.valuation()}, f.time);
+    ASSERT_EQ(s.snapshot()->fills.size(), 1U);
+    EXPECT_EQ(s.snapshot()->fills.front().quantity, 1);
+    EXPECT_EQ(s.snapshot()->recent_orders.back().status, OrderStatus::PartiallyFilled);
+    inputs.volumes[f.symbol()] = 10;
+    s.set_opening_rule_inputs(inputs);
+    f.next();
+    s.on_quotes({f.quote("3.80", "4.00")}, {f.valuation()}, f.time);
+    const auto after = s.snapshot();
+    ASSERT_EQ(after->recent_orders.back().reason.code, Reason::MAX_VOLUME_SHARE);
+    EXPECT_EQ(after->recent_orders.back().status, OrderStatus::Cancelled);
+    EXPECT_EQ(after->recent_orders.back().filled_quantity, 1);
+    EXPECT_EQ(after->recent_orders.back().reason.actual, 2);
+    EXPECT_EQ(after->recent_orders.back().reason.limit, 1);
+    EXPECT_EQ(after->fills.size(), 1U);
+    const auto recovery = FileJournal::read(file.path);
+    EXPECT_EQ(TradingSession::recover(recovery).snapshot_json(), s.snapshot_json());
+    bool recorded = false;
+    for (const auto& record : recovery.records)
+      if (record.payload.find("opening_rule_inputs") != std::string::npos) recorded = true;
+    EXPECT_TRUE(recorded);
+    if (repeat == 0) expected = recovery.head;
+    else { EXPECT_EQ(recovery.head, expected); }
+    // Neither unknown volume nor an opposite external direction may block a reduction.
+    inputs.volumes.clear(); inputs.counter_positions = {{"other", "SPX", 100}};
+    s.set_opening_rule_inputs(inputs);
+    ASSERT_TRUE(s.submit(f.market("close", 1, Side::Sell), f.time).decision.ok());
+    EXPECT_TRUE(s.snapshot()->positions.empty());
+  }
+}
+
+TEST(TradeRules, VolumeFillsSeeOtherOrdersFilledEarlierInTheSameBatch) {
+  ScriptedMarket f;
+  AccountRules rules; rules.max_volume_percent = 10;
+  TradingSession s(config(rules), f.time);
+  f.seed(s);
+  OpeningRuleInputs inputs; inputs.volumes[f.symbol()] = 10;
+  s.set_opening_rule_inputs(inputs);
+  ASSERT_TRUE(s.submit(f.limit("first", 1, "4.00"), f.time).decision.ok());
+  ASSERT_TRUE(s.submit(f.limit("second", 1, "4.00"), f.time).decision.ok());
+  f.next(); s.on_quotes({f.quote("3.80", "4.00")}, {f.valuation()}, f.time);
+  const auto snapshot = s.snapshot();
+  ASSERT_EQ(snapshot->recent_orders.size(), 2U);
+  EXPECT_EQ(snapshot->recent_orders.front().status, OrderStatus::Filled);
+  EXPECT_EQ(snapshot->recent_orders.back().reason.code, Reason::MAX_VOLUME_SHARE);
+  EXPECT_EQ(snapshot->recent_orders.back().reason.actual, 2);
+  EXPECT_EQ(snapshot->fills.size(), 1U);
+}
+
+TEST(TradeRules, ComboFillChecksEveryRatioAndKeepsRuleCancellationCode) {
+  ScriptedMarket f, other;
+  other.contract.strike += 5;
+  AccountRules rules; rules.max_volume_percent = 10;
+  TradingSession s(config(rules), f.time);
+  f.seed(s); other.seed(s);
+  auto request = f.limit("combo", 1, "12.00");
+  request.symbol.clear(); request.legs = {{f.symbol(), Side::Buy, 1}, {other.symbol(), Side::Buy, 2}};
+  ASSERT_TRUE(s.submit(request, f.time).decision.ok());
+  OpeningRuleInputs inputs; inputs.volumes = {{f.symbol(), 100}, {other.symbol(), 10}};
+  s.set_opening_rule_inputs(inputs);
+  f.next(); other.next();
+  s.on_quotes({f.quote("3.80", "4.00"), other.quote("3.80", "4.00")}, {f.valuation(), other.valuation()}, f.time);
+  const auto snapshot = s.snapshot();
+  EXPECT_TRUE(snapshot->fills.empty());
+  ASSERT_EQ(snapshot->recent_orders.back().reason.code, Reason::MAX_VOLUME_SHARE);
+  ASSERT_TRUE(snapshot->recent_orders.back().reason.evidence);
+  EXPECT_EQ(snapshot->recent_orders.back().reason.evidence->contract, other.symbol());
+  EXPECT_EQ(snapshot->recent_orders.back().reason.actual, 2);
+}
+
+TEST(TradeRules, ChainedOpeningFillsUseTheCurrentExternalDirection) {
+  ScriptedMarket f;
+  AccountRules rules; rules.no_counter_positions = true;
+  TradingSession s(config(rules), f.time);
+  f.seed(s);
+  auto request = f.limit("parent", 1, "4.00");
+  request.then = {f.market("", 2, Side::Sell)};
+  ASSERT_TRUE(s.submit(request, f.time).decision.ok());
+  OpeningRuleInputs inputs; inputs.counter_positions = {{"other", "SPX", 100}};
+  s.set_opening_rule_inputs(inputs);
+  f.next();
+  s.on_quotes({f.quote("3.80", "4.00")}, {f.valuation()}, f.time);
+  const auto snapshot = s.snapshot();
+  ASSERT_EQ(snapshot->recent_orders.size(), 2U);
+  EXPECT_EQ(snapshot->recent_orders.front().status, OrderStatus::Filled);
+  EXPECT_EQ(snapshot->recent_orders.back().status, OrderStatus::Cancelled);
+  EXPECT_EQ(snapshot->recent_orders.back().reason.code, Reason::COUNTER_POSITION);
+  ASSERT_EQ(snapshot->positions.size(), 1U);
+  EXPECT_EQ(snapshot->positions.front().position.quantity, 1);
+}
+
 }  // namespace openport::trading

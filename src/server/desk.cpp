@@ -636,6 +636,7 @@ void Desk::start_trading() {
     nlohmann::json start{{"kind", "start"}, {"input", nlohmann::json::parse(options_.run_input)},
         {"calendar", md::scheduled_days()}, {"analytics", options_.analytics}, {"dividends", dividends_}, {"symbols", subscription_.underlyings}};
     if (options_.instant_batches) start["driver"] = !options_.closing_rollover ? 2 : inputs_first() ? (options_.opening_settlement ? (options_.playbook_cancel_labels ? 6 : 5) : 4) : 3;
+    if (options_.opening_rule_checks) start["opening_rule_checks"] = true;
     if (playbooks_ && (!options_.initial_playbooks.empty() || !playbooks_->catalogue().at("definitions").empty())) start["playbooks"] = playbooks_->catalogue();
     record_input(start.dump(), options_.initial_actor);
     if (options_.resume) {
@@ -1220,6 +1221,7 @@ void Desk::update_trading(const std::vector<md::Event>& batch,
     // last session of the one before (curb) does, or at the plan's own boundary.
     const auto day = session.trading_date(market_time_);
     try {
+      session.set_opening_rule_inputs(opening_rule_inputs(account, market_time_));
       const auto roll = [&] {
         if (!batch.empty() && day > session.trading_day() &&
             md::market_session(md::new_york_to_utc(day, 12, 0)).open &&
@@ -1386,6 +1388,7 @@ void Desk::update_trading(const std::vector<md::Event>& batch,
         const auto price = quote_price(value);
         if (price) indicators.push_back({symbol, study, current(symbol) ? market_time_ : m->as_of, *price});
       }
+      session.set_opening_rule_inputs(opening_rule_inputs(account, market_time_));
       session.on_quotes(quotes, valuations, market_time_, stocks, indicators);
       sample_equity(account);
       // Each account keeps the closing print its PM positions will settle on, so
@@ -1472,23 +1475,62 @@ void Desk::update_trading(const std::vector<md::Event>& batch,
 void Desk::apply_command(PendingCommand& pending, md::Timestamp market_time, md::Timestamp driver_time) {
   apply_command(pending, market_time, driver_time, false);
 }
+std::vector<CounterExposure> Desk::counter_exposures(const PaperAccount& account, md::Timestamp time) const {
+  std::vector<CounterExposure> result;
+  if (!account.session->config().rules.no_counter_positions || options_.replay || sandbox_ids_.contains(account.id)) return result;
+  for (const auto& other : accounts_) {
+    if (other.id == account.id || other.archived || !other.session || sandbox_ids_.contains(other.id)) continue;
+    const auto current = [&](const std::string& underlying) {
+      const auto snapshot = snapshots_.find(underlying);
+      return snapshot != snapshots_.end() && snapshot->second <= time &&
+          time - snapshot->second <= other.session->config().limits.max_quote_age;
+    };
+    std::set<std::string> symbols;
+    for (const auto& position : other.session->snapshot()->positions) symbols.insert(position.position.contract.osi_symbol());
+    for (const auto& order : other.session->snapshot()->open_orders)
+      for (const auto& symbol : order_symbols(order.request)) symbols.insert(symbol);
+    std::vector<Valuation> valuations;
+    for (const auto& symbol : symbols) {
+      const auto& contract = other.session->contracts().at(symbol);
+      auto valuation = valuation_for(symbol, contract, metrics(contract.underlying));
+      if (current(contract.underlying) && valuation.time > 0) valuation.time = time;
+      if (valuation.time > 0 && valuation.time <= time) valuations.push_back(std::move(valuation));
+    }
+    std::vector<StockPrice> stocks;
+    for (const auto& held : other.session->snapshot()->stocks) {
+      const auto& symbol = held.position.symbol;
+      const auto spot = book_.underlyings().find(symbol);
+      if (spot == book_.underlyings().end() || spot->second.spot_ts <= 0 || spot->second.spot_ts > time) continue;
+      if (const auto price = quote_price(spot->second.spot))
+        stocks.push_back({symbol, current(symbol) ? time : spot->second.spot_ts, *price});
+    }
+    const auto exposures = other.session->counter_exposures(other.id, time, valuations, stocks);
+    result.insert(result.end(), exposures.begin(), exposures.end());
+  }
+  return result;
+}
 Decision Desk::counter_position_gate(const PaperAccount& account, const std::map<std::string, double>& direction,
                                      md::Timestamp time) const {
-  if (!account.session->config().rules.no_counter_positions || options_.replay || sandbox_ids_.contains(account.id)) return {};
-  for (const auto& [underlying, delta] : direction) {
-    if (delta == 0) continue;
-    for (const auto& other : accounts_) {
-      if (other.id == account.id || other.archived || !other.session || sandbox_ids_.contains(other.id)) continue;
-      const auto held = other.session->held_dollar_delta(underlying, time);
-      if (!held) return {Reason::MISSING_VALUATION, "Fresh held valuations required for account " + other.id +
-          " on " + underlying, {}, {}, underlying};
-      if (*held != 0 && (*held > 0) != (delta > 0))
-        return {Reason::COUNTER_POSITION, "Opening " + underlying + " dollar delta " + format_dollar_delta(delta) +
-            " opposes account " + other.id + " held dollar delta " + format_dollar_delta(*held), delta, *held, underlying,
-            RuleEvidence{underlying, delta, *held, other.id}};
-    }
-  }
-  return {};
+  return counter_position_check(direction, counter_exposures(account, time));
+}
+std::optional<std::int64_t> Desk::option_volume(const std::string& symbol, md::Timestamp time) const {
+  const auto id = instruments_.find(symbol);
+  const auto* option = id == instruments_.end() ? nullptr : book_.option(id->second);
+  // Accept only exact, whole contract counts from the current market date.
+  if (option && option->volume_ts > 0 && option->volume_ts <= time &&
+      md::trading_date(option->volume_ts) == md::trading_date(time) && std::isfinite(option->volume) &&
+      option->volume >= 0 && option->volume <= 9'007'199'254'740'991.0 && std::trunc(option->volume) == option->volume)
+    return static_cast<std::int64_t>(option->volume);
+  return std::nullopt;
+}
+std::optional<OpeningRuleInputs> Desk::opening_rule_inputs(const PaperAccount& account, md::Timestamp time) const {
+  const auto& rules = account.session->config().rules;
+  if (!options_.opening_rule_checks || (!rules.no_counter_positions && rules.max_volume_percent == 0)) return std::nullopt;
+  OpeningRuleInputs inputs;
+  inputs.counter_positions = counter_exposures(account, time);
+  if (rules.max_volume_percent != 0)
+    for (const auto& [symbol, contract] : account.session->contracts()) inputs.volumes[symbol] = option_volume(symbol, time);
+  return inputs;
 }
 Decision Desk::opening_gate(const PaperAccount& account, const OrderRequest& order, md::Timestamp time,
                             const PreviewMarket& market, const std::map<std::string, Quantity>& preceding) const {
@@ -1510,32 +1552,11 @@ Decision Desk::opening_gate(const PaperAccount& account, const OrderRequest& ord
         if (position.position.contract.osi_symbol() == symbol) held = position.position.quantity;
       if (const auto it = preceding.find(symbol); it != preceding.end() && __builtin_add_overflow(held, it->second, &held))
         return {Reason::ARITHMETIC_OVERFLOW, "Chained holdings overflow", {}, {}, symbol};
-      __extension__ using Wide = __int128;
-      const Wide contracts = (held < 0 ? -static_cast<Wide>(held) : held) + opening;
-      if (contracts > std::numeric_limits<Quantity>::max())
-        return {Reason::ARITHMETIC_OVERFLOW, "Volume-share contract count overflow", {}, {}, symbol};
-      const auto id = instruments_.find(symbol);
-      const auto* option = id == instruments_.end() ? nullptr : book_.option(id->second);
-      std::optional<std::int64_t> volume;
-      // The feed carries doubles; accept only exact, whole contract counts.
-      if (option && option->volume_ts > 0 && option->volume_ts <= time &&
-          md::trading_date(option->volume_ts) == md::trading_date(time) && std::isfinite(option->volume) &&
-          option->volume >= 0 && option->volume <= 9'007'199'254'740'991.0 && std::trunc(option->volume) == option->volume)
-        volume = static_cast<std::int64_t>(option->volume);
-      if (!volume || contracts * 100 > static_cast<Wide>(percent) * *volume) {
-        RuleEvidence evidence;
-        evidence.contract = symbol; evidence.contracts = static_cast<Quantity>(contracts);
-        evidence.volume = volume; evidence.percent = percent;
-        return {Reason::MAX_VOLUME_SHARE, symbol + ": held plus opening contracts " + std::to_string(evidence.contracts) +
-            " exceeds " + std::to_string(percent) + "% of current-date volume " +
-            (volume ? std::to_string(*volume) : "unknown (missing, invalid or stale)"),
-            static_cast<double>(contracts), volume ? std::optional(static_cast<double>(*volume) * static_cast<double>(percent) / 100) : std::nullopt,
-            symbol, evidence};
-      }
+      if (const auto d = volume_share_check(symbol, held, opening, percent, option_volume(symbol, time)); !d.ok()) return d;
     }
   }
   // Chained entries are accepted with their parent, so take the same server gate
-  // now. Execution later remains entirely inside the deterministic reducer.
+  // now. Execution checks explicit current inputs inside the deterministic reducer.
   for (const auto& child : order.oco)
     if (const auto d = opening_gate(account, child, time, market, preceding); !d.ok()) return d;
   if (!order.then.empty()) {
@@ -1648,6 +1669,7 @@ void Desk::apply_command(PendingCommand& pending, md::Timestamp market_time, md:
       return {};
     };
     try {
+      session.set_opening_rule_inputs(opening_rule_inputs(*account, market_time_));
       CommandResult result;
       switch (c.kind) {
         case TradingCommand::Kind::Playbook: playbook_command(c, reply, driver_time); break;
@@ -1914,6 +1936,10 @@ void Desk::apply_command(PendingCommand& pending, md::Timestamp market_time, md:
 Desk::Desk(std::string provider, md::Capabilities capabilities, md::Subscription subscription, Options options)
     : options_(std::move(options)), provider_(std::move(provider)), subscription_(std::move(subscription)),
       capabilities_(capabilities), dividends_(options_.dividends) {
+  if (options_.resume) {
+    const auto inputs = run_inputs(*options_.resume);
+    if (!inputs.empty()) options_.opening_rule_checks = nlohmann::json::parse(inputs.front()).value("opening_rule_checks", false);
+  }
   if (!options_.run_input.empty() && options_.analytics.discount_curve)
     throw std::invalid_argument("Reproducible runs require curves inferred from their input, not an external discount curve");
   breaker_.symbol = std::find(subscription_.underlyings.begin(), subscription_.underlyings.end(), "SPX") !=

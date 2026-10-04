@@ -334,9 +334,9 @@ export function PlanEditor({ form, onChange, disabled }: { form: PlanForm; onCha
           <p className="text-[11px] text-muted">Each review starts a new period, whether it qualifies or not. Capital growth leaves profit unchanged and scales loss limits with account size.</p>
         </div>}
       </div>}
-      <Field label="Maximum volume %" hint="Held plus opening contracts per option, as a whole percent of today’s traded volume. Unknown volume refuses. Blank or 0 disables.">{text("max_volume_percent", "none")}</Field>
+      <Field label="Maximum volume %" hint="Held plus opening contracts per option, as a whole percent of today’s traded volume. Checked at acceptance and fill; unknown volume refuses. Blank or 0 disables.">{text("max_volume_percent", "none")}</Field>
       <Field label="No hedging" hint="Opening delta cannot oppose this account’s held direction; reductions and exits remain available.">{choice("no_hedging", [["no", "Off"], ["yes", "On"]])}</Field>
-      <Field label="No counter positions" hint="Server checks other live accounts. Set this on every account you trade.">{choice("no_counter_positions", [["no", "Off"], ["yes", "On"]])}</Field>
+      <Field label="No counter positions" hint="Checks other live accounts’ holdings and working entries at acceptance and fill. Set this on every account you trade.">{choice("no_counter_positions", [["no", "Off"], ["yes", "On"]])}</Field>
       <Field label="Maximum contracts held" hint="Held options plus working entries; shares excluded. Blank for none.">{text("max_contracts_held", "none")}</Field>
       <Field label="Stop-loss required">{choice("require_stop_loss", [["no", "Optional"], ["yes", "Required on every entry"]])}</Field>
       <Field label="Maximum trade risk" hint="Dollars before fees. Blank for none.">{text("max_trade_risk", "none")}</Field>

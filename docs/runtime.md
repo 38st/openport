@@ -1493,11 +1493,11 @@ F61 omits `min_hold_seconds`, `microscalp_seconds` and `microscalp_percent` at z
 
 ### Direction gates
 
-The desk checks `no_counter_positions` on its single owner thread, using each live account session’s current held valuations. Main and named accounts share this gate; archived, replay and sandbox accounts do not participate. Submit, increased-size modify, share trade and playbook entry paths share the check, with dry-run evidence for previews. A refused order never enters the reducer journal. Later fills and recovery require no cross-account state. The `no_hedging` check instead lives in the deterministic reducer; both rules use the exposure check’s strict freshness policy for unknown delta. See [direction rules](paper-trading.md#direction-rules-f65).
+The desk gathers `no_counter_positions` inputs on its single owner thread from each live account’s held book and each working opening order, compared separately with current valuations. Main and named accounts share this gate; archived, replay and sandbox accounts do not participate. Submit, increased-size modify, share trade and playbook entry paths share the acceptance check, with dry-run evidence for previews. An acceptance refusal never enters the reducer journal. Each proposed fill rechecks explicit cross-account direction inputs in the reducer and journals the inputs it used; violations cancel with `COUNTER_POSITION`. Recovery never reads another account. The `no_hedging` check instead lives in the deterministic reducer; both rules use the exposure check’s strict freshness policy for unknown delta. See [direction rules](paper-trading.md#direction-rules-f65).
 
 ### Volume-share gate
 
-`max_volume_percent` reads ChainBook volume at pre-trade acceptance on the desk owner thread, for each option leg of opening submissions and increased-size modifications, including playbooks and previews. It checks `(abs(held) + opening) * 100 <= percent * volume` using wide integer arithmetic. Volume must be a current-market-trading-date, nonnegative whole count with no future timestamp; unknown or stale data returns `MAX_VOLUME_SHARE` with null volume evidence. Shares and pure reductions bypass the cap. Refusals are not journaled and later fills are not re-gated, so reducer recovery remains deterministic without volume. Backtests scan input recordings for usable current-date volume and reject the enabled rule with HTTP 400 if absent; current scenario generators have no volume. See [volume-share semantics](paper-trading.md#volume-share-rule-f66).
+`max_volume_percent` reads ChainBook volume at pre-trade acceptance on the desk owner thread, for each option leg of opening submissions and increased-size modifications, including playbooks and previews. It checks `(abs(held) + opening) * 100 <= percent * volume` using wide integer arithmetic. Volume must be a current-market-trading-date, nonnegative whole count with no future timestamp; unknown or stale data returns `MAX_VOLUME_SHARE` with null volume evidence. Shares and pure reductions bypass the cap. Acceptance refusals are not journaled. Each proposed opening fill rechecks current volume against its quantity and holdings, cancelling with `MAX_VOLUME_SHARE` on failure. The reducer journals its explicit volume inputs and cancellation evidence; recovery never reads the feed. Backtests scan input recordings for usable current-date volume and reject the enabled rule with HTTP 400 if absent; current scenario generators have no volume. See [volume-share semantics](paper-trading.md#volume-share-rule-f66).
 
 ### Plan event catalogue (F17/F59)
 
@@ -1558,3 +1558,10 @@ New resets record `restore_scaled_rules: true`: resubmitting unchanged live rule
 at the original starting balance restores original loss and lock amounts from
 size-scaling progress. Commands without this flag retain their previous reset
 behavior during replay; old account journals still recover their recorded rules.
+
+New run starts record optional `opening_rule_checks: true`. Verification and crash
+resume use its recorded value; absence preserves older runs’ acceptance-only
+volume checks. At fill, `opening_rule_inputs` events record the external values
+used by the deterministic reducer. These are transaction inputs, not callbacks or
+persistent account settings. Restarted live desks supply fresh inputs before
+matching; archived, replay and sandbox accounts remain outside cross-account checks.

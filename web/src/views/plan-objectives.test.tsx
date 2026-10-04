@@ -359,10 +359,10 @@ it("shows trade objectives and protective hold exceptions on Rules and the edito
     expect(editor).toContain(label)
 })
 
-it("explains direction bans and the server gate in Rules and the editor", () => {
+it("explains direction bans and fill rechecks in Rules and the editor", () => {
   const value: Account = { ...planned, rules: { ...planned.rules, no_hedging: true, no_counter_positions: true } }
   const html = render(<RulesView />, value)
-  for (const text of ["No hedging", "No counter positions", "Only the ordering account", "Pure reductions", "sandbox"])
+  for (const text of ["No hedging", "No counter positions", "Only the ordering account", "Pure reductions", "sandbox", "working opening orders separately", "COUNTER_POSITION at fill"])
     expect(html).toContain(text)
   const editor = renderToStaticMarkup(<PlanEditor form={planForm({ initial_cash: "100000", rules: value.rules })} onChange={() => {}} />)
   expect(editor).toContain("No hedging")
@@ -372,7 +372,7 @@ it("explains direction bans and the server gate in Rules and the editor", () => 
 it("explains the strict volume gate and exposes its editor field", () => {
   const value: Account = { ...planned, rules: { ...planned.rules, max_volume_percent: 25 } }
   const html = render(<RulesView />, value)
-  for (const text of ["Maximum share of option volume", "25%", "Unknown or stale volume refuses", "scenario backtests"])
+  for (const text of ["Maximum share of option volume", "25%", "Unknown or stale volume refuses", "scenario backtests", "cancel with MAX_VOLUME_SHARE"])
     expect(html).toContain(text)
   const editor = renderToStaticMarkup(<PlanEditor form={planForm({ initial_cash: "100000", rules: value.rules })} onChange={() => {}} />)
   expect(editor).toContain("Maximum volume %")

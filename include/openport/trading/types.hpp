@@ -686,9 +686,9 @@ struct AccountRules {
   std::int64_t day_end_minutes = kDayEndMinutes;
   std::optional<FeeSchedule> fees;  ///< Empty keeps SessionConfig::fee_per_contract.
   Quantity max_contracts_held = 0;  ///< Held options plus working opening contracts, 1-100000; zero disables.
-  std::int64_t max_volume_percent = 0;  ///< Server gate: whole percent of current-date traded option volume, 0-100.
+  std::int64_t max_volume_percent = 0;  ///< Whole percent of current-date option volume, 0-100; checked at acceptance and fills.
   bool no_hedging = false;  ///< Opening orders cannot oppose held delta on their underlying.
-  bool no_counter_positions = false;  ///< Server gate against other live accounts' held delta.
+  bool no_counter_positions = false;  ///< Check other live accounts' held and working opening delta at acceptance and fills.
   bool require_stop_loss = false;  ///< Opening option orders need a protective bracket stop.
   Money max_trade_risk;            ///< Per-order loss at its stop or bounded expiry payoff, excluding fees; zero disables.
   std::int64_t max_trade_risk_percent = 0;  ///< Percent of equity less the plan floor, 0-100; zero disables.

@@ -144,8 +144,10 @@ export interface AccountRules {
   /** Portfolio margin's implied-volatility shock, in points up and down. */
   pm_vol_shock?: number
   /** Held options plus working opening contracts, excluding shares; 0 disables. */
+  /** Acceptance checks full size; each fill checks its proposed contracts against current volume. */
   max_volume_percent?: number
   no_hedging?: boolean
+  /** Includes other live accounts’ held and working opening directions; rechecked at fill. */
   no_counter_positions?: boolean
   max_contracts_held?: number
   require_stop_loss?: boolean
@@ -166,6 +168,7 @@ export type DailyLossBasis = "equity" | "balance" | "higher" | "peak"
 export type PlanReason = "PROFIT_TARGET" | "DRAWDOWN_FLOOR" | "DAILY_LOSS_LIMIT" | "MIN_TRADING_DAYS" | "MIN_PROFITABLE_DAYS" | "CONSISTENCY" | "MAX_CONTRACTS_HELD" | "STOP_REQUIRED" | "MAX_TRADE_RISK" | "TIME_LIMIT" | "INACTIVITY" | "INSTRUMENT_NOT_ALLOWED" | "OUTSIDE_PLAN_HOURS" | "FLAT_TIME" | "OVERNIGHT_HOLD" | "SCALING_LIMIT" | "TRADE_CONSISTENCY" | "MIN_TRADES" | "MIN_HOLD" | "MICROSCALPING" | "HEDGING" | "COUNTER_POSITION" | "MAX_VOLUME_SHARE" | "NEWS_BLACKOUT" | "HOLD_RESTRICTED"
 /** Compatibility name for the complete plan-reason set. */
 export type PlanRuleReason = PlanReason
+/** held_dollar_delta is the compared held book or working entry for COUNTER_POSITION. */
 export type RuleEvidence = { underlying: string; order_dollar_delta: number; held_dollar_delta: number; other_account?: string }
   | { contract: string; contracts: number; volume: number | null; percent: number }
 /**

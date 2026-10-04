@@ -23,6 +23,39 @@
 #include "state_delta.hpp"
 
 namespace openport::trading {
+Decision counter_position_check(const std::map<std::string, double>& direction,
+    const std::vector<CounterExposure>& others) {
+  for (const auto& [underlying, delta] : direction) {
+    if (delta == 0) continue;
+    for (const auto& other : others) {
+      if (other.underlying != underlying) continue;
+      if (!other.dollar_delta) return {Reason::MISSING_VALUATION,
+          "Fresh held and working valuations required for account " + other.account + " on " + underlying, {}, {}, underlying};
+      const auto held = *other.dollar_delta;
+      if (held != 0 && (held > 0) != (delta > 0))
+        return {Reason::COUNTER_POSITION, "Opening " + underlying + " dollar delta " + format_dollar_delta(delta) +
+            " opposes account " + other.account + " held or working dollar delta " + format_dollar_delta(held),
+            delta, held, underlying, RuleEvidence{underlying, delta, held, other.account}};
+    }
+  }
+  return {};
+}
+Decision volume_share_check(const std::string& symbol, Quantity held, Quantity opening,
+    std::int64_t percent, std::optional<std::int64_t> volume) {
+  __extension__ using Wide = __int128;
+  const Wide contracts = (held < 0 ? -static_cast<Wide>(held) : held) + opening;
+  if (contracts > std::numeric_limits<Quantity>::max())
+    return {Reason::ARITHMETIC_OVERFLOW, "Volume-share contract count overflow", {}, {}, symbol};
+  if (volume && contracts * 100 <= static_cast<Wide>(percent) * *volume) return {};
+  RuleEvidence evidence;
+  evidence.contract = symbol; evidence.contracts = static_cast<Quantity>(contracts);
+  evidence.volume = volume; evidence.percent = percent;
+  return {Reason::MAX_VOLUME_SHARE, symbol + ": held plus opening contracts " + std::to_string(evidence.contracts) +
+      " exceeds " + std::to_string(percent) + "% of current-date volume " +
+      (volume ? std::to_string(*volume) : "unknown (missing, invalid or stale)"),
+      static_cast<double>(contracts), volume ? std::optional(static_cast<double>(*volume) * static_cast<double>(percent) / 100) : std::nullopt,
+      symbol, evidence};
+}
 namespace {
 using detail::State;
 using Events = std::vector<Json>;
@@ -496,6 +529,27 @@ OpeningOrder opening_exposure(const State& s, const OrderRequest& request,
     }
   }
   return result;
+}
+Decision opening_fill_check(const State& s, const Order& order, Quantity quantity, Events& events) {
+  if (!s.opening_rule_inputs || order.system || kept_within(order)) return {};
+  const auto& inputs = *s.opening_rule_inputs;
+  const bool counter = s.config.rules.no_counter_positions && !inputs.counter_positions.empty();
+  const auto percent = s.config.rules.max_volume_percent;
+  if (!counter && percent == 0) return {};
+  auto request = order.request;
+  request.quantity = quantity;
+  const auto exposure = opening_exposure(s, request);
+  if (!exposure.opening) return {};
+  event(events, "opening_rule_inputs", Json{{"order_id", order.id}, {"quantity", quantity}, {"inputs", inputs}});
+  if (!exposure.decision.ok() && (counter || exposure.decision.code != Reason::MISSING_VALUATION)) return exposure.decision;
+  if (counter)
+    if (const auto d = counter_position_check(exposure.dollar_delta, inputs.counter_positions); !d.ok()) return d;
+  if (percent != 0) for (const auto& [symbol, opening] : exposure.contracts) {
+    const auto volume = inputs.volumes.find(symbol);
+    if (const auto d = volume_share_check(symbol, held(s, symbol), opening, percent,
+        volume == inputs.volumes.end() ? std::nullopt : volume->second); !d.ok()) return d;
+  }
+  return {};
 }
 Decision hedging_direction_check(const State& s, const std::string& underlying, double delta) {
   if (!s.config.rules.no_hedging || delta == 0) return {};
@@ -2290,7 +2344,7 @@ void match_one(State& s, OrderId id, Events& events, std::optional<OrderId> inco
   auto decision = reducing ? system_check(s, o) : order_check(s, o, Stage::Fill);
   if (data_gap(decision.code)) return;
   if (!decision.ok()) {
-    if (decision.code != Reason::SCALING_LIMIT) {
+    if (decision.code != Reason::SCALING_LIMIT && decision.code != Reason::COUNTER_POSITION && decision.code != Reason::MAX_VOLUME_SHARE) {
       decision.message = std::string(to_string(decision.code)) + ": " + decision.message;
       decision.code = Reason::RISK_CHANGED;
     }
@@ -2313,7 +2367,9 @@ void match_one(State& s, OrderId id, Events& events, std::optional<OrderId> inco
       : s.config.rules.impact_ticks > 0 && !touch_stop(s, o) && !inside ? size - depth_used(size, remaining_depth) % size : remaining_depth;
   const Quantity quantity = reducing ? std::min({o.remaining(), budget, capacity}) : std::min(o.remaining(), budget);
   if (quantity <= 0) return;
-  decision = reducing ? Decision{} : price_check(s, book.quote, price);
+  decision = reducing ? Decision{} : opening_fill_check(s, o, quantity, events);
+  if (data_gap(decision.code)) return;
+  if (decision.ok() && !reducing) decision = price_check(s, book.quote, price);
   const auto fees = fees_for(s, symbol, quantity, std::min(quantity, capacity), commission_paid(s, o, symbol));
   const Money fee = fees.total();
   if (decision.ok() && !reducing) {
@@ -2334,7 +2390,7 @@ void match_one(State& s, OrderId id, Events& events, std::optional<OrderId> inco
     }
   }
   if (!decision.ok()) {
-    if (decision.code != Reason::SCALING_LIMIT) {
+    if (decision.code != Reason::SCALING_LIMIT && decision.code != Reason::COUNTER_POSITION && decision.code != Reason::MAX_VOLUME_SHARE) {
       decision.message = std::string(to_string(decision.code)) + ": " + decision.message;
       decision.code = Reason::RISK_CHANGED;
     }
@@ -2404,6 +2460,8 @@ void match_combo(State& s, OrderId id, Events& events, std::optional<OrderId> in
     units = std::min(units, (leg.side == Side::Buy ? book.ask_left : book.bid_left) / leg.ratio);
   }
   if (decision.ok() && units <= 0) return;
+  if (decision.ok() && !exit) decision = opening_fill_check(s, o, units, events);
+  if (data_gap(decision.code)) return;
   const auto slices = combo_slices(s, o, units);
   const auto slice_fees = combo_fees(s, o, slices);
   if (decision.ok() && !exit) {
@@ -2427,7 +2485,7 @@ void match_combo(State& s, OrderId id, Events& events, std::optional<OrderId> in
     }
   }
   if (!decision.ok()) {
-    if (decision.code != Reason::SCALING_LIMIT) {
+    if (decision.code != Reason::SCALING_LIMIT && decision.code != Reason::COUNTER_POSITION && decision.code != Reason::MAX_VOLUME_SHARE) {
       decision.message = std::string(to_string(decision.code)) + ": " + decision.message;
       decision.code = Reason::RISK_CHANGED;
     }
@@ -4761,6 +4819,7 @@ PayoutQuote payout_quote(const TradingSnapshot& s, const AccountRules& rules) {
 
 struct TradingSession::Impl {
   State state;
+  std::optional<OpeningRuleInputs> opening_rule_inputs;
   std::string actor = "system";
   std::shared_ptr<Journal> journal;
   std::shared_ptr<const TradingSnapshot> snapshot;
@@ -4787,6 +4846,7 @@ struct TradingSession::Impl {
                          const std::optional<SettlementSource>& source = {}) {
     if (stopped) throw TradingError(Reason::JOURNAL_IO, "Trading stopped after journal failure; recover first");
     State next = state;
+    next.opening_rule_inputs = opening_rule_inputs;
     Events events;
     advance(next, time, events);
     // Quote batches install their new book before monitor_rules closes positions.
@@ -4805,6 +4865,7 @@ struct TradingSession::Impl {
       next.walked.clear();
       check_triggers(next, events);
     }
+    next.opening_rule_inputs.reset();
     detail::update_reviews(next);
     refresh_trade_objectives(next);
     reindex(next);
@@ -4877,6 +4938,9 @@ TradingSession::TradingSession(SessionConfig config, Timestamp time, std::shared
 TradingSession::TradingSession(std::unique_ptr<Impl> impl) : impl_(std::move(impl)) {}
 TradingSession::~TradingSession() = default;
 void TradingSession::set_actor(std::string actor) { impl_->actor = std::move(actor); }
+void TradingSession::set_opening_rule_inputs(std::optional<OpeningRuleInputs> inputs) {
+  impl_->opening_rule_inputs = std::move(inputs);
+}
 void TradingSession::record_input(std::string_view input, Timestamp time) {
   const auto data = Json::parse(input);
   if (!data.is_object()) throw std::invalid_argument("Run input must be an object");
@@ -6028,6 +6092,39 @@ std::optional<double> TradingSession::held_dollar_delta(const std::string& under
   auto state = impl_->state;
   state.time = time;
   return held_direction(state, underlying);
+}
+
+std::vector<CounterExposure> TradingSession::counter_exposures(const std::string& account, Timestamp time,
+    const std::vector<Valuation>& valuations, const std::vector<StockPrice>& stocks) const {
+  // Overlay current integration marks without running account actions or matching.
+  auto state = impl_->state;
+  state.time = time;
+  for (const auto& v : valuations)
+    if (v.time > 0 && v.time <= time && state.contracts.contains(v.symbol)) state.valuations[v.symbol] = v;
+  for (const auto& p : stocks)
+    if (p.time > 0 && p.time <= time && p.price > Money{}) state.stock_marks[p.symbol] = {p.price, p.time};
+  std::set<std::string> underlyings;
+  for (const auto& [symbol, p] : state.ledger.positions()) underlyings.insert(p.contract.underlying);
+  for (const auto& [symbol, p] : state.ledger.stocks()) underlyings.insert(symbol);
+  std::vector<CounterExposure> result;
+  for (const auto& underlying : underlyings) result.push_back({account, underlying, held_direction(state, underlying)});
+  for (const auto id : open_ids(state)) {
+    const auto& order = state.orders[id - 1];
+    if (order.system || kept_within(order)) continue;
+    auto request = order.request;
+    request.quantity = order.remaining();
+    const auto exposure = opening_exposure(state, request);
+    if (!exposure.opening) continue;
+    if (exposure.decision.ok()) {
+      for (const auto& [underlying, delta] : exposure.dollar_delta) result.push_back({account, underlying, delta});
+    } else {
+      std::set<std::string> missing;
+      for (const auto& symbol : order_symbols(request))
+        if (const auto c = state.contracts.find(symbol); c != state.contracts.end()) missing.insert(c->second.underlying);
+      for (const auto& underlying : missing) result.push_back({account, underlying, std::nullopt});
+    }
+  }
+  return result;
 }
 
 std::optional<QuoteObservation> TradingSession::quote(const std::string& symbol) const {

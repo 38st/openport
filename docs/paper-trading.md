@@ -3113,9 +3113,9 @@ opening orders and cancels working openings outside the plan window.
 | `INVALID_CONTRACT`, `UNKNOWN_CONTRACT` | Invalid/conflicting terms, or missing resolved definition |
 | `INVALID_ORDER`, `DUPLICATE_CLIENT_ID`, `INVALID_TICK` | Malformed order, a key reused with other terms, invalid price increment |
 | `INVALID_QUOTE`, `STALE_QUOTE`, `MISSING_VALUATION` | No executable book, stale/incomplete marks, missing/stale/invalid Greeks |
-| `MAX_VOLUME_SHARE` | Held plus opening contracts exceed the plan percentage of current-date option volume, or that volume is unknown/stale (server gate) |
+| `MAX_VOLUME_SHARE` | Held plus opening contracts exceed the plan percentage of current-date option volume, or that volume is unknown/stale (acceptance and fill checks) |
 | `HEDGING` | Opening dollar delta opposes held delta on the same underlying within this account (reducer rule) |
-| `COUNTER_POSITION` | Opening dollar delta opposes another live account on the same underlying (server gate; refusal is not journaled) |
+| `COUNTER_POSITION` | Opening dollar delta opposes held or working opening delta in another live account on the same underlying (acceptance and fill checks; acceptance refusal is not journaled) |
 | `STOP_REQUIRED` | Entry has no protective bracket stop, or cancellation would remove a required stop from an open position |
 | `TRADE_CONSISTENCY` | Best profitable closed whole trade must fit the attempt-profit percentage limit |
 | `MIN_HOLD` | User reduction is too young; `actual` and `limit` are seconds, `scope` is the underlying in HTTP responses (the reducer identifies the option/share symbol) |
@@ -3861,7 +3861,8 @@ that purely reduces held positions is exempt. Share trades follow the same rule.
 Direction is the sign of dollar delta on one underlying: signed option quantity ×
 current valuation delta × contract multiplier × spot, plus signed shares × price.
 Compare the whole order's net delta, including closing legs, with held delta;
-working orders do not count as held positions. Zero delta on either side does not
+working orders do not count as held positions for `no_hedging`. The cross-account
+rule also compares each other account’s working opening orders separately. Zero delta on either side does not
 oppose a direction. Pure reductions and system exits are never refused by these rules.
 
 `no_hedging` runs in the deterministic reducer, on acceptance and execution,
@@ -3870,20 +3871,28 @@ held delta refuses with `HEDGING`. Missing, invalid, future or stale valuations
 follow the exposure-limit policy (`MISSING_VALUATION`); unknown delta is never
 assumed zero. Normal quote, risk and account checks still apply.
 
-`no_counter_positions` is a **server pre-trade gate**, before submitting an order
-to its session. It compares opening delta with each other live main/named account
+`no_counter_positions` checks **acceptance and each proposed fill**. It compares
+opening delta with each other live main/named account
 on the same server, excluding archived, replay and sandbox accounts. Only the
 ordering account's setting counts: enable it on every account a trader uses.
-A single-account server or replay has no other accounts to check. Unknown held
-direction in a relevant other account refuses with `MISSING_VALUATION` too.
+A single-account server or replay has no other accounts to check. Each other
+account’s held book and each working opening order (remaining quantity, including
+armed entries and live OCO siblings) are separate comparisons; they cannot net
+each other away. Purely reducing working orders and system exits do not reserve
+direction. Unknown direction in a relevant other account refuses acceptance with
+`MISSING_VALUATION` and holds fills until fresh valuations arrive.
 The gate covers single/multi-leg entries, increased remaining order quantities,
 share entries, playbook entries and their previews. Chained entries take the gate
-when the chain is submitted. It observes holdings at acceptance, without reserving
-future cross-account direction or rechecking other accounts at a later fill.
+when the chain is submitted and when children execute. A resting order that would
+create a counter position cancels with `COUNTER_POSITION` before consuming liquidity,
+including when a price-only change makes it executable. Checks use current marks
+and the proposed fill quantity. Accounts run in deterministic desk order; earlier
+fills in the batch are visible to later accounts.
 
 A `COUNTER_POSITION` refusal creates no order or refusal transaction in the
-account journal. Recovery never reads other accounts. Both direction reasons
-include `actual` (order dollar delta), `limit` (held dollar delta, a comparison
+account journal. Fill-time cancellations and the explicit direction inputs used
+by fills are journaled; recovery never reads other accounts. Both direction reasons
+include `actual` (order dollar delta), `limit` (the compared held or working dollar delta, a comparison
 rather than a cap), `scope` (underlying), and structured `evidence` with
 `underlying`, `order_dollar_delta`, `held_dollar_delta`, and, for a counter position,
 `other_account`. Messages show signed whole dollars with thousands separators
@@ -3894,8 +3903,8 @@ are journaled only when true; plans with both off retain their journal bytes and
 ### Volume-share rule (F66)
 
 `max_volume_percent` is a whole percent from 1 to 100; zero (the default)
-disables it. It is a **server pre-trade gate** reading `ChainBook`'s
-`md::OptionVolume`, not a reducer input. For every option leg of an opening
+disables it. Acceptance reads `ChainBook`’s `md::OptionVolume`; each proposed fill
+rechecks explicit current-volume inputs supplied to the deterministic reducer. For every option leg of an opening
 order, including combo ratios, the exact check is
 `(abs(held contracts) + opening contracts) * 100 <= percent * traded volume`.
 Opening contracts are `quantity × ratio` minus contracts closing an opposite
@@ -3922,10 +3931,15 @@ fractional; the order fits when held plus opening contracts are at most that val
 HTTP `scope` is the underlying.
 The message includes these values for order and strategy tickets. Single-leg,
 multi-leg, modification and playbook paths and their previews share the gate.
-Acceptance checks today's observation; resting orders are not re-gated on later
-fills. A refusal never reaches the session journal. Accepted transactions and
-recovery need no volume inputs, and the rule field is omitted from journals
-when zero, preserving legacy bytes and transaction hashes.
+Acceptance checks today’s observation for the full requested quantity. Each fill
+checks its proposed quantity against current holdings and volume, including earlier
+fills in the same batch and partial fills of the same order. If the fill would
+break the cap, the remaining order cancels with `MAX_VOLUME_SHARE`, retaining its
+evidence and any previous fills. Unknown or stale volume also cancels at fill.
+Acceptance refusals never reach the session journal; fill-time input facts and
+cancellations do. Recovery needs no live feed. Older recorded runs without the
+fill-check capability retain their acceptance-only behavior during verification;
+the rule field remains omitted when zero.
 
 Backtests apply this same gate when recordings carry current-date option volume.
 Every requested recording must contain at least one usable current-date volume

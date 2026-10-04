@@ -136,6 +136,158 @@ TEST_P(DeskPhases, VolumeShareGateChecksKnownUnknownStaleVolumeAndOpeningContrac
   desk.stop();
 }
 
+TEST(Desk, RestingVolumeOrdersCancelOnZeroOrStaleVolumeOnlyWhenTheyCanFill) {
+  for (const bool stale : {false, true}) {
+    test::RecordingFile file;
+    test::ScriptedMarket market;
+    server::Desk::Options options;
+    options.paper.rules.max_volume_percent = 10;
+    options.paper_journal = file.directory / "volume.jsonl";
+    server::Desk desk("test", {}, {{"SPX"}}, options);
+    desk.start_trading();
+    auto batch = market_batch(market);
+    batch.push_back(md::OptionVolume{0, market.time, 10});
+    desk.replay_batch(batch, market.time);
+    server::TradingCommand entry;
+    entry.order = market.limit("resting", 1, "4.00", trading::Side::Buy, trading::TimeInForce::Gtc);
+    ASSERT_TRUE(command(desk, entry, market.time, market.time).decision.ok());
+    if (stale) market.time = md::new_york_to_utc({2026, 9, 23}, 10, 0);
+    else market.next();
+    batch = market_batch(market);
+    if (!stale) batch.push_back(md::OptionVolume{0, market.time, 0});
+    desk.replay_batch(batch, market.time);
+    ASSERT_EQ(desk.trading_view()->snapshot->open_orders.size(), 1U);
+    market.next();
+    desk.replay_batch(market_batch(market, 4.0), market.time);
+    const auto snapshot = desk.trading_view()->snapshot;
+    ASSERT_EQ(snapshot->recent_orders.back().status, trading::OrderStatus::Cancelled);
+    EXPECT_EQ(snapshot->recent_orders.back().reason.code, trading::Reason::MAX_VOLUME_SHARE);
+    ASSERT_TRUE(snapshot->recent_orders.back().reason.evidence);
+    if (stale) { EXPECT_FALSE(snapshot->recent_orders.back().reason.evidence->volume); }
+    else { EXPECT_EQ(snapshot->recent_orders.back().reason.evidence->volume, 0); }
+    EXPECT_TRUE(snapshot->fills.empty());
+    desk.stop();
+    const auto recovered = trading::TradingSession::recover(trading::FileJournal::read(options.paper_journal));
+    EXPECT_EQ(recovered.snapshot()->recent_orders.back().reason.code, trading::Reason::MAX_VOLUME_SHARE);
+  }
+}
+
+TEST(Desk, CounterPositionsCountWorkingOpeningsAndCancelAtFillAfterAnotherAccountChanges) {
+  for (const bool modify : {false, true}) {
+    test::RecordingFile file;
+    test::ScriptedMarket market;
+    server::Desk::Options options;
+    options.paper.rules.no_counter_positions = true;
+    options.paper.limits.aggregate = {1e9, 1e9}; options.paper.limits.per_underlying = {1e9, 1e9};
+    options.paper_journal = file.directory / "paper.jsonl";
+    options.paper_accounts = file.directory / "accounts";
+    server::Desk desk("test", {}, {{"SPX"}}, options);
+    desk.start_trading();
+    server::TradingCommand create;
+    create.kind = server::TradingCommand::Kind::CreateAccount;
+    create.name = "Other"; create.initial_cash = Money::parse("100000");
+    ASSERT_EQ(command(desk, create, market.time, market.time).account, "other");
+    desk.replay_batch(market_batch(market), market.time);
+    server::TradingCommand entry;
+    entry.account = "other"; entry.order = market.limit("working-long", 1, "4.00");
+    const auto other = command(desk, entry, market.time, market.time);
+    ASSERT_TRUE(other.decision.ok());
+    EXPECT_TRUE(desk.trading_view("other")->snapshot->positions.empty());
+    entry.order = market.limit("working-short", 1, "4.50", trading::Side::Sell);
+    ASSERT_TRUE(command(desk, entry, market.time, market.time).decision.ok());
+    // The two working orders have zero net delta; compare each independently.
+    entry.account.clear(); entry.order = market.market("counter", 1, trading::Side::Sell);
+    const auto rejected = command(desk, entry, market.time, market.time);
+    ASSERT_EQ(rejected.decision.code, trading::Reason::COUNTER_POSITION);
+    ASSERT_TRUE(rejected.decision.evidence);
+    EXPECT_EQ(rejected.decision.evidence->other_account, "other");
+    entry.kind = server::TradingCommand::Kind::Preview;
+    const auto preview = command(desk, entry, market.time, market.time);
+    ASSERT_TRUE(preview.preview);
+    EXPECT_EQ(preview.preview->decision.code, trading::Reason::COUNTER_POSITION);
+    server::TradingCommand cancel;
+    cancel.account = "other"; cancel.kind = server::TradingCommand::Kind::Cancel; cancel.order_id = *other.order_id;
+    ASSERT_TRUE(command(desk, cancel, market.time, market.time).decision.ok());
+    entry.kind = server::TradingCommand::Kind::Submit;
+    entry.order = market.limit("resting-short", 1, "4.50", trading::Side::Sell);
+    ASSERT_TRUE(command(desk, entry, market.time, market.time).decision.ok());
+    entry.account = "other"; entry.order = market.market("long");
+    ASSERT_TRUE(command(desk, entry, market.time, market.time).decision.ok());
+    // Its working short is now a pure reduction and must not reserve counter direction.
+    entry.account.clear(); entry.kind = server::TradingCommand::Kind::Preview; entry.order = market.market("permitted-long");
+    const auto allowed = command(desk, entry, market.time, market.time);
+    ASSERT_TRUE(allowed.preview);
+    EXPECT_TRUE(allowed.preview->decision.ok()) << allowed.preview->decision.message;
+    if (modify) {
+      // A price-only modification can execute, even without increasing the quantity.
+      server::TradingCommand change;
+      change.kind = server::TradingCommand::Kind::Modify;
+      change.order_id = desk.trading_view()->snapshot->open_orders.front().id;
+      change.change.limit_price = Money::parse("4.00");
+      ASSERT_TRUE(command(desk, change, market.time, market.time).decision.ok());
+    } else {
+      market.next();
+      desk.replay_batch(market_batch(market, 4.7), market.time);
+    }
+    const auto snapshot = desk.trading_view()->snapshot;
+    EXPECT_EQ(snapshot->recent_orders.back().status, trading::OrderStatus::Cancelled);
+    EXPECT_EQ(snapshot->recent_orders.back().reason.code, trading::Reason::COUNTER_POSITION);
+    EXPECT_TRUE(snapshot->fills.empty());
+    desk.stop();
+    const auto recovered = trading::TradingSession::recover(trading::FileJournal::read(options.paper_journal));
+    EXPECT_EQ(recovered.snapshot()->recent_orders.back().reason.code, trading::Reason::COUNTER_POSITION);
+  }
+}
+
+TEST(Desk, VolumeFillRechecksVerifyAndOlderRecordedRunsKeepAcceptanceOnlyFills) {
+  test::RecordingFile file;
+  test::ScriptedMarket market;
+  auto header = test::recording_header();
+  header.started = market.time; header.capabilities.delay = 0s;
+  md::RecordingSink::Options recording;
+  recording.clock = [&] { return market.time; };
+  test::DiscardEvents discard;
+  {
+    md::RecordingSink sink(file.path, header, discard, recording);
+    for (const auto volume : {10, 0}) {
+      auto batch = market_batch(market, volume == 10 ? 4.2 : 4.0);
+      batch.insert(batch.end() - 1, md::OptionVolume{0, market.time, static_cast<double>(volume)});
+      for (const auto& event : batch) sink.publish(event);
+      market.next();
+    }
+    sink.close();
+  }
+  for (const bool enabled : {false, true}) {
+    md::RecordingReader reader(file.path);
+    server::Desk::Options options;
+    options.replay = true; options.opening_rule_checks = enabled;
+    options.paper.rules.max_volume_percent = 10;
+    options.run_input = server::recording_input(file.path);
+    options.paper_journal = file.directory / (enabled ? "new.jsonl" : "old.jsonl");
+    server::Desk desk("replay", header.capabilities, header.subscription, options);
+    desk.start_trading();
+    providers::ReplayBatches batches(reader, header.subscription);
+    bool submitted = false;
+    while (const auto batch = batches.next()) {
+      desk.replay_batch(batch->events, batch->received, batch->time);
+      if (!submitted) {
+        server::TradingCommand entry; entry.order = market.limit("resting", 1, "4.00");
+        ASSERT_TRUE(command(desk, entry, desk.market_time(), batch->received).decision.ok());
+        submitted = true;
+      }
+    }
+    EXPECT_EQ(desk.trading_view()->snapshot->recent_orders.back().status,
+        enabled ? trading::OrderStatus::Cancelled : trading::OrderStatus::Filled);
+    desk.stop();
+    const auto recovery = trading::FileJournal::read(options.paper_journal);
+    const auto inputs = server::run_inputs(recovery);
+    ASSERT_FALSE(inputs.empty());
+    EXPECT_EQ(json::parse(inputs.front()).contains("opening_rule_checks"), enabled);
+    const auto verified = server::verify_run(options.paper_journal);
+    EXPECT_TRUE(verified.matched) << verified.message;
+  }
+}
+
 TEST(Desk, OrderChainsDefineUnreferencedContractsBeforeAcceptanceAndFill) {
   test::ScriptedMarket market;
   test::ScriptedMarket other;

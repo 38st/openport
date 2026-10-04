@@ -4654,6 +4654,35 @@ TEST_F(PaperEngine, VolumeRuleRoundTripsAndExplainsUnknownVolumeInPreview) {
   }
 }
 
+TEST_F(PaperEngine, VolumeFillCancellationReportsRuleEvidenceAndPreservesEarlierFills) {
+  seed();
+  auto rules = read(*engine, "/api/account")["rules"];
+  rules["max_volume_percent"] = 10;
+  ASSERT_EQ(write(*engine, "POST", "/api/account/reset",
+      {{"reason", "volume fills"}, {"initial_cash", "100000"}, {"rules", rules}}).status, 200);
+  provider.sink->publish(md::OptionVolume{0, market.time, 20});
+  engine->synchronize().get();
+  auto request = order(market, "partial-volume", "4.00"); request["quantity"] = 2;
+  const auto accepted = write(*engine, "POST", "/api/orders", request);
+  ASSERT_EQ(accepted.status, 201) << accepted.body;
+  market.next(); quote("3.80", "4.00", 1);
+  auto orders = read(*engine, "/api/orders")["orders"];
+  ASSERT_EQ(orders.size(), 1U);
+  EXPECT_EQ(orders[0]["filled_quantity"], 1);
+  market.next();
+  provider.sink->publish(md::OptionVolume{0, market.time, 10});
+  quote("3.80", "4.00");
+  const auto response = server::handle_api({"GET", "/api/orders"}, *engine);
+  orders = json::parse(response.body)["orders"];
+  EXPECT_EQ(orders[0]["status"], "cancelled");
+  EXPECT_EQ(orders[0]["filled_quantity"], 1);
+  EXPECT_EQ(orders[0]["reason"]["code"], "MAX_VOLUME_SHARE");
+  EXPECT_EQ(orders[0]["reason"]["actual"], 2);
+  EXPECT_EQ(orders[0]["reason"]["limit"], 1);
+  EXPECT_EQ(orders[0]["reason"]["evidence"], (json{{"contract", market.symbol()}, {"contracts", 2}, {"volume", 10}, {"percent", 10}}));
+  test::capture_contract("volume-rule", "GET", "/api/orders", response);
+}
+
 TEST_F(PaperEngine, DirectionRulesRoundTripAndHedgingPreviewEvidence) {
   for (const auto phase : {"evaluation", "verification"}) {
     SCOPED_TRACE(phase);

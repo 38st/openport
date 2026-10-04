@@ -350,6 +350,7 @@ RunVerification verify_run(const std::filesystem::path& journal,
     options.inputs_first = driver >= 4;
     options.opening_settlement = driver >= 5;
     options.playbook_cancel_labels = driver >= 6;
+    options.opening_rule_checks = start.value("opening_rule_checks", false);
     options.candles = std::make_shared<CandleStore>();
     options.run_input = input.dump();
     if (start.contains("playbooks") && !start.at("playbooks").is_null()) options.initial_playbooks = start.at("playbooks").dump();

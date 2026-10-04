@@ -215,6 +215,23 @@ struct OpeningOrder {
   std::map<std::string, double> dollar_delta;
   Decision decision;
 };
+/// Each other account's held book and working opening orders are compared
+/// separately: opposing working orders must not hide each other by netting.
+struct CounterExposure {
+  std::string account;
+  std::string underlying;
+  std::optional<double> dollar_delta;
+};
+/// Explicit integration inputs; the reducer never reads another account or feed.
+/// Missing volume means unknown. Recorded with each attempted opening fill.
+struct OpeningRuleInputs {
+  std::vector<CounterExposure> counter_positions;
+  std::map<std::string, std::optional<std::int64_t>> volumes;
+};
+[[nodiscard]] Decision counter_position_check(const std::map<std::string, double>& direction,
+    const std::vector<CounterExposure>& others);
+[[nodiscard]] Decision volume_share_check(const std::string& symbol, Quantity held, Quantity opening,
+    std::int64_t percent, std::optional<std::int64_t> volume);
 /// Advice on accepted terms that are rarely meant: STOP_AS_LIMIT (a bracket stop
 /// given only a limit price rests as a limit exit), STOP_REACHED (its trigger is
 /// already reached, so it fires at once), TARGET_REACHED (the take-profit is already
@@ -379,6 +396,9 @@ class TradingSession {
   ~TradingSession();
   /// Owner-thread command context; reset to system after applying a command.
   void set_actor(std::string actor);
+  /// Owner-thread fill context. Null retains legacy acceptance-only behavior.
+  /// This supplies values, never a callback; checks journal the values they use.
+  void set_opening_rule_inputs(std::optional<OpeningRuleInputs> inputs);
   /// Journal a driver input without introducing a clock or an external dependency.
   void record_input(std::string_view input, Timestamp time);
   TradingSession(TradingSession&&) noexcept;
@@ -591,6 +611,8 @@ class TradingSession {
   /// Held positions only, on one underlying, at fresh marks/valuations. Unknown
   /// direction is null, never zero; no position is zero.
   [[nodiscard]] std::optional<double> held_dollar_delta(const std::string& underlying, Timestamp time) const;
+  [[nodiscard]] std::vector<CounterExposure> counter_exposures(const std::string& account, Timestamp time,
+      const std::vector<Valuation>& valuations = {}, const std::vector<StockPrice>& stocks = {}) const;
   [[nodiscard]] std::optional<QuoteObservation> quote(const std::string& symbol) const;
   /// The quotes whose displayed size this account's orders have taken some of.
   [[nodiscard]] std::map<std::string, SizeLeft> sizes_left() const;

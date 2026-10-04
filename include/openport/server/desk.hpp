@@ -55,6 +55,8 @@ class Desk {
     /// Driver 6 labels automatic time-stop cancellations. Drivers 1–5 retain
     /// USER_CANCEL, including their journal bytes during offline verification.
     bool playbook_cancel_labels = true;
+    /// Optional run-start capability. Absent on older runs, preserving their fills.
+    bool opening_rule_checks = true;
     std::filesystem::path paper_journal;  ///< The main account. Empty only for explicit in-process simulations.
     /// More named accounts, one journal each (<id>.jsonl, named in <id>.name). Empty for none.
     std::filesystem::path paper_accounts;
@@ -140,6 +142,11 @@ class Desk {
   void price_stock_command(TradingCommand& command, md::Timestamp driver_time);
   [[nodiscard]] trading::Decision counter_position_gate(const PaperAccount& account,
       const std::map<std::string, double>& direction, md::Timestamp time) const;
+  [[nodiscard]] std::vector<trading::CounterExposure> counter_exposures(const PaperAccount& account,
+      md::Timestamp time) const;
+  [[nodiscard]] std::optional<std::int64_t> option_volume(const std::string& symbol, md::Timestamp time) const;
+  [[nodiscard]] std::optional<trading::OpeningRuleInputs> opening_rule_inputs(const PaperAccount& account,
+      md::Timestamp time) const;
   [[nodiscard]] trading::Decision opening_gate(const PaperAccount& account, const trading::OrderRequest& order,
       md::Timestamp time, const trading::PreviewMarket& market = {},
       const std::map<std::string, trading::Quantity>& preceding = {}) const;

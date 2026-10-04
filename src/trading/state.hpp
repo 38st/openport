@@ -90,6 +90,8 @@ inline void from_json(const Json& j, AlertScope& scope) {
 }
 NLOHMANN_DEFINE_TYPE_NON_INTRUSIVE(Bracket, stop_loss, take_profit)
 NLOHMANN_DEFINE_TYPE_NON_INTRUSIVE(Leg, symbol, side, ratio)
+NLOHMANN_DEFINE_TYPE_NON_INTRUSIVE(CounterExposure, account, underlying, dollar_delta)
+NLOHMANN_DEFINE_TYPE_NON_INTRUSIVE(OpeningRuleInputs, counter_positions, volumes)
 NLOHMANN_DEFINE_TYPE_NON_INTRUSIVE(AlertCondition, scope, metric, symbol, legs, direction, level)
 NLOHMANN_DEFINE_TYPE_NON_INTRUSIVE(AlertSpec, label, condition, repeat)
 NLOHMANN_DEFINE_TYPE_NON_INTRUSIVE(Alert, id, spec, created, actor, armed, fired, fired_at, value)
@@ -725,6 +727,7 @@ struct State {
   };
   std::optional<TradeObjectives> trade_objectives;
   std::string actor = "system"; ///< Transient command context, not persisted as account state.
+  std::optional<OpeningRuleInputs> opening_rule_inputs; ///< Transient explicit fill inputs; recorded as events.
   std::set<std::string> walked; ///< Transient symbols to match after this transaction's market is in place.
   SessionConfig config;
   Timestamp time = 0;
