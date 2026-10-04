@@ -372,7 +372,7 @@ it("explains direction bans and fill rechecks in Rules and the editor", () => {
 it("explains the strict volume gate and exposes its editor field", () => {
   const value: Account = { ...planned, rules: { ...planned.rules, max_volume_percent: 25 } }
   const html = render(<RulesView />, value)
-  for (const text of ["Maximum share of option volume", "25%", "Unknown or stale volume refuses", "scenario backtests", "cancel with MAX_VOLUME_SHARE"])
+  for (const text of ["Maximum share of option volume", "25%", "Unknown or stale volume refuses", "Scenario backtests support this rule with generated opening volume", "Recording days need current-date option volume", "HTTP 400", "cancel with MAX_VOLUME_SHARE"])
     expect(html).toContain(text)
   const editor = renderToStaticMarkup(<PlanEditor form={planForm({ initial_cash: "100000", rules: value.rules })} onChange={() => {}} />)
   expect(editor).toContain("Maximum volume %")

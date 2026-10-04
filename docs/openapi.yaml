@@ -9348,7 +9348,7 @@
             "minimum": 0,
             "maximum": 100,
             "default": 0,
-            "description": "At acceptance and each proposed fill, per option leg, (absolute held contracts + opening contracts including ratio) * 100 <= percent * current trading-date volume. Zero disables. Unknown/invalid/stale volume refuses MAX_VOLUME_SHARE. Pure reductions and shares are exempt. Acceptance refusal is not journaled. At fill, violations cancel the remaining order with MAX_VOLUME_SHARE and its evidence; prior partial fills remain. Backtests require volume-bearing recordings; scenario backtests and recordings without volume reject with HTTP 400."
+            "description": "At acceptance and each proposed fill, per option leg, (absolute held contracts + opening contracts including ratio) * 100 <= percent * current trading-date volume. Zero disables. Unknown/invalid/stale volume refuses MAX_VOLUME_SHARE. Pure reductions and shares are exempt. Acceptance refusal is not journaled. At fill, violations cancel the remaining order with MAX_VOLUME_SHARE and its evidence; prior partial fills remain. Scenario backtests support this rule using current-revision generated option volume. Recording days without usable current-date option volume reject with HTTP 400."
           },
           "evaluation_fee": {
             "$ref": "#/components/schemas/Money",
@@ -18616,7 +18616,7 @@
                         "minimum": 0,
                         "maximum": 100,
                         "default": 0,
-                        "description": "At acceptance and each proposed fill, per option leg, (absolute held contracts + opening contracts including ratio) * 100 <= percent * current trading-date volume. Zero disables. Unknown/invalid/stale volume refuses MAX_VOLUME_SHARE. Pure reductions and shares are exempt. Acceptance refusal is not journaled. At fill, violations cancel the remaining order with MAX_VOLUME_SHARE and its evidence; prior partial fills remain. Backtests require volume-bearing recordings; scenario backtests and recordings without volume reject with HTTP 400."
+                        "description": "At acceptance and each proposed fill, per option leg, (absolute held contracts + opening contracts including ratio) * 100 <= percent * current trading-date volume. Zero disables. Unknown/invalid/stale volume refuses MAX_VOLUME_SHARE. Pure reductions and shares are exempt. Acceptance refusal is not journaled. At fill, violations cancel the remaining order with MAX_VOLUME_SHARE and its evidence; prior partial fills remain. Scenario backtests support this rule using current-revision generated option volume. Recording days without usable current-date option volume reject with HTTP 400."
                       },
                       "trade_consistency_percent": {
                         "type": "integer",
@@ -21544,7 +21544,7 @@
             "minimum": 0,
             "maximum": 100,
             "default": 0,
-            "description": "At acceptance and each proposed fill, per option leg, (absolute held contracts + opening contracts including ratio) * 100 <= percent * current trading-date volume. Zero disables. Unknown/invalid/stale volume refuses MAX_VOLUME_SHARE. Pure reductions and shares are exempt. Acceptance refusal is not journaled. At fill, violations cancel the remaining order with MAX_VOLUME_SHARE and its evidence; prior partial fills remain. Backtests require volume-bearing recordings; scenario backtests and recordings without volume reject with HTTP 400."
+            "description": "At acceptance and each proposed fill, per option leg, (absolute held contracts + opening contracts including ratio) * 100 <= percent * current trading-date volume. Zero disables. Unknown/invalid/stale volume refuses MAX_VOLUME_SHARE. Pure reductions and shares are exempt. Acceptance refusal is not journaled. At fill, violations cancel the remaining order with MAX_VOLUME_SHARE and its evidence; prior partial fills remain. Scenario backtests support this rule using current-revision generated option volume. Recording days without usable current-date option volume reject with HTTP 400."
           },
           "evaluation_fee": {
             "type": "string",
