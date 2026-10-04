@@ -16427,15 +16427,7 @@
                   "string",
                   "null"
                 ],
-                "description": "Numeric for existing checks. NEWS_BLACKOUT: ISO UTC actual time/window end. HOLD_RESTRICTED: actual null, limit HH:MM ET, scope kind:underlying or kind:account.",
-                "anyOf": [
-                  {
-                    "type": "number"
-                  },
-                  {
-                    "type": "null"
-                  }
-                ]
+                "description": "Numeric for existing checks. NEWS_BLACKOUT: ISO UTC actual time/window end. HOLD_RESTRICTED: actual null, limit HH:MM ET, scope kind:underlying or kind:account."
               },
               "limit": {
                 "type": [
@@ -16443,15 +16435,7 @@
                   "string",
                   "null"
                 ],
-                "description": "Numeric for existing checks. NEWS_BLACKOUT: ISO UTC actual time/window end. HOLD_RESTRICTED: actual null, limit HH:MM ET, scope kind:underlying or kind:account.",
-                "anyOf": [
-                  {
-                    "type": "number"
-                  },
-                  {
-                    "type": "null"
-                  }
-                ]
+                "description": "Numeric for existing checks. NEWS_BLACKOUT: ISO UTC actual time/window end. HOLD_RESTRICTED: actual null, limit HH:MM ET, scope kind:underlying or kind:account."
               },
               "scope": {
                 "anyOf": [
@@ -20216,15 +20200,7 @@
               "string",
               "null"
             ],
-            "description": "Numeric for existing checks. NEWS_BLACKOUT: ISO UTC actual time/window end. HOLD_RESTRICTED: actual null, limit HH:MM ET, scope kind:underlying or kind:account.",
-            "anyOf": [
-              {
-                "type": "number"
-              },
-              {
-                "type": "null"
-              }
-            ]
+            "description": "Numeric for existing checks. NEWS_BLACKOUT: ISO UTC actual time/window end. HOLD_RESTRICTED: actual null, limit HH:MM ET, scope kind:underlying or kind:account."
           },
           "limit": {
             "type": [
@@ -20232,15 +20208,7 @@
               "string",
               "null"
             ],
-            "description": "Numeric for existing checks. NEWS_BLACKOUT: ISO UTC actual time/window end. HOLD_RESTRICTED: actual null, limit HH:MM ET, scope kind:underlying or kind:account.",
-            "anyOf": [
-              {
-                "type": "number"
-              },
-              {
-                "type": "null"
-              }
-            ]
+            "description": "Numeric for existing checks. NEWS_BLACKOUT: ISO UTC actual time/window end. HOLD_RESTRICTED: actual null, limit HH:MM ET, scope kind:underlying or kind:account."
           },
           "scope": {
             "anyOf": [

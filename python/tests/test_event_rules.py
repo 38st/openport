@@ -8,6 +8,17 @@ from openport.types import AccountRules, Evaluation, PlanEvent, EventWindow
 from tools.contract_test import Contract
 
 
+@pytest.mark.parametrize("code,actual,limit,scope", [
+    ("SCALING_LIMIT", 3, 2, "aggregate"),
+    ("NEWS_BLACKOUT", "2026-09-22T14:00:00Z", "2026-09-22T14:10:00Z", "account"),
+    ("HOLD_RESTRICTED", None, "15:45", "split:SPY"),
+])
+def test_scaling_and_calendar_evidence_share_response_schemas(code, actual, limit, scope):
+    decision = {"code": code, "message": "Opening restricted", "actual": actual, "limit": limit, "scope": scope}
+    for name, body in (("Decision", decision), ("Error", {"error": decision})):
+        jsonschema.Draft202012Validator(SPEC["components"]["schemas"][name]).validate(body)
+
+
 def test_calendar_types_and_schemas():
     fields = {"events", "news_before_minutes", "news_after_minutes", "news_action", "hold_restrictions", "hold_cutoff"}
     assert fields <= AccountRules.__optional_keys__
