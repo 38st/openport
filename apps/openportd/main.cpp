@@ -134,7 +134,7 @@ int usage(const char* error = nullptr) {
       "                 [--series-dir DIR] [--no-series]\n"
       "       openportd --backfill-series FILE... [--force] [--series-dir DIR]\n"
       "       openportd --verify-run JOURNAL\n"
-      "       openportd --backtest PLAYBOOK[@VERSION] --plan PLAN (--days FILE | --recordings DIR | --scenarios N --seed S) --out REPORT.json\n"
+      "       openportd --backtest PLAYBOOK[@VERSION][,PLAYBOOK[@VERSION]...] --plan PLAN (--days FILE | --recordings DIR | --scenarios N --seed S) --out REPORT.json\n"
       "                 [--playbooks FILE] [--paper-journal PATH] [--scenario-dir DIR] [--workers 1..16]\n"
       "       openportd --import-day databento|thetadata --date YYYY-MM-DD --symbols SPX,SPY\n"
       "                 [--expiries N] [--window F] [--out DIR] (default ./recordings)\n"
@@ -830,7 +830,19 @@ int backtest_cli(int argc, char** argv) {
   else if (args.contains("--paper-journal")) catalogue = std::filesystem::path(args.at("--paper-journal")).parent_path() / "playbooks.json";
   else if (const auto* home = std::getenv("HOME")) catalogue = std::filesystem::path(home) / ".openport/playbooks.json";
   else throw std::invalid_argument("Supply --playbooks FILE");
-  json body{{"playbook", args.at("--backtest")}, {"plan", args.at("--plan")}};
+  json body{{"plan", args.at("--plan")}};
+  const auto& selectors = args.at("--backtest");
+  if (selectors.find(',') == std::string::npos) body["playbook"] = selectors;
+  else {
+    body["playbooks"] = json::array();
+    std::size_t start = 0;
+    do {
+      const auto end = selectors.find(',', start);
+      body["playbooks"].push_back(selectors.substr(start, end == std::string::npos ? end : end - start));
+      if (end == std::string::npos) break;
+      start = end + 1;
+    } while (start <= selectors.size());
+  }
   if (!server::find_plan(args.at("--plan"))) body["plan"] = read(args.at("--plan"));
   if (args.contains("--workers")) body["workers"] = json::parse(args.at("--workers"));
   std::filesystem::path base;

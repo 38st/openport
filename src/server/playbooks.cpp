@@ -698,6 +698,9 @@ void Playbooks::evaluate(const std::string& account, bool replay, md::Timestamp 
     const auto reply = send(close);
     if (reply.view) { updated = reply.view; current = updated.get(); }
   }
+  // nlohmann::json objects use std::map: lexical ID order is the entry priority
+  // contract, including joint backtests. Never substitute hash or pointer order.
+  // Each successful send above/below updates current before the next definition.
   for (const auto& [id, record] : catalogue_.at("definitions").items()) {
     const auto mode = modes.value(id, "off");
     if (record.at("deleted") == true || mode == "off") continue;

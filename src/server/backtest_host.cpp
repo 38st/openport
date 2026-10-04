@@ -56,8 +56,14 @@ struct BacktestHost::Impl {
     if (std::filesystem::is_regular_file(directory / "report.json")) {
       const auto saved_report = read_json(directory / "report.json");
       if (report) state["report"] = saved_report;
-      else if (saved_report.contains("playbook") && saved_report.contains("summary")) {
-        state["playbook"] = {{"id", saved_report.at("playbook").at("id")}, {"version", saved_report.at("playbook").at("version")}};
+      else if (saved_report.contains("summary")) {
+        if (saved_report.value("mode", "") == "joint") {
+          state["mode"] = "joint";
+          state["playbooks"] = json::array();
+          for (const auto& definition : saved_report.at("playbooks"))
+            state["playbooks"].push_back({{"id", definition.at("id")}, {"version", definition.at("version")}, {"name", definition.at("name")}});
+        } else if (saved_report.contains("playbook"))
+          state["playbook"] = {{"id", saved_report.at("playbook").at("id")}, {"version", saved_report.at("playbook").at("version")}};
         state["summary"] = saved_report.at("summary");
       }
     }
@@ -117,7 +123,8 @@ bool BacktestHost::handle(const ApiRequest& request, const MetricsSource& source
     const bool purge = request.method == "DELETE" && query->contains("purge") && query->at("purge") == "true";
     for (const auto& [key, value] : *query) {
       (void)value;
-      if (!(request.method == "GET" && id == "compare" && key == "ids") && !(purge && key == "purge"))
+      if (!(request.method == "GET" && id == "compare" && key == "ids") &&
+          !(request.method == "GET" && id.empty() && key == "playbook") && !(purge && key == "purge"))
         throw std::invalid_argument("Unknown backtest query parameter");
     }
     if (id == "compare" && request.method == "GET") {
@@ -162,6 +169,22 @@ bool BacktestHost::handle(const ApiRequest& request, const MetricsSource& source
         std::reverse(ids.begin(), ids.end());
         for (const auto& item : ids) runs.push_back(host.saved(item, false));
         if (!host.current.is_null() && std::find(ids.begin(), ids.end(), host.current.at("id").get<std::string>()) == ids.end()) runs.insert(runs.begin(), host.current);
+        if (query->contains("playbook")) {
+          const auto& selector = query->at("playbook");
+          if (selector.empty()) throw std::invalid_argument("playbook filter must be ID or ID@VERSION");
+          const auto matches = [&](const json& definition) {
+            const auto name = definition.at("id").get<std::string>();
+            return selector == name || selector == name + "@" + std::to_string(definition.at("version").get<unsigned>());
+          };
+          json filtered = json::array();
+          for (const auto& run : runs) {
+            bool match = run.contains("playbook") && matches(run.at("playbook"));
+            if (run.contains("playbooks"))
+              for (const auto& definition : run.at("playbooks")) match = match || matches(definition);
+            if (match) filtered.push_back(run);
+          }
+          runs = std::move(filtered);
+        }
         response.body = json{{"runs", runs}, {"active", host.running ? host.current.at("id") : json(nullptr)}, {"label", kBacktestLabel}}.dump();
       }
     } else if (!host.options.enabled || source.status().trading.write == "disabled") {
@@ -197,7 +220,7 @@ bool BacktestHost::handle(const ApiRequest& request, const MetricsSource& source
       else {
         auto state = host.saved(id, false);
         state["keep"] = body.at("keep");
-        state.erase("bytes"); state.erase("summary"); state.erase("playbook");
+        state.erase("bytes"); state.erase("summary"); state.erase("playbook"); state.erase("playbooks"); state.erase("mode");
         write_backtest_report(host.options.directory / id / "state.json", state);
         response.body = host.saved(id, true).dump();
       }

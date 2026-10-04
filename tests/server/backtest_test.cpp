@@ -25,13 +25,14 @@ json catalogue() {
 std::string bytes(const std::filesystem::path& path) {
   std::ifstream input(path); std::ostringstream out; out << input.rdbuf(); return out.str();
 }
-std::filesystem::path recorded_day(const std::filesystem::path& directory, md::Date date, bool loss = false, bool breadth = false, std::optional<double> volume = {}) {
+std::filesystem::path recorded_day(const std::filesystem::path& directory, md::Date date, bool loss = false, bool breadth = false, std::optional<double> volume = {}, bool stale_end = false) {
   const auto path = directory / (md::format_date(date) + ".oprec");
   auto contract = *md::parse_osi("SPXW  260916P05000000");
   contract.expiry = date;
   auto lower = contract; lower.strike = 4995;
   md::RecordingHeader header;
   header.provider = "simulated test";
+  header.market_controls = stale_end;
   header.subscription.underlyings = {"SPX", "SPY"};
   header.started = md::new_york_to_utc(date, 9, 30);
   header.capabilities.poll_interval = std::chrono::seconds(60);
@@ -45,6 +46,12 @@ std::filesystem::path recorded_day(const std::filesystem::path& directory, md::D
   if (breadth) sink.publish(md::UnderlyingClose{"SPX", time, md::previous_business_day(date), 5000});
   for (int minute = 0; minute < 3; ++minute) {
     time = header.started + minute * md::kNanosPerMinute;
+    if (stale_end && minute == 2) {
+      time += 15 * md::kNanosPerMinute;
+      // A heartbeat advances time without vouching for unchanged option quotes.
+      sink.publish(md::SnapshotHeartbeat{"SPX", time});
+      break;
+    }
     const double high = minute == 0 ? 10 : breadth && minute == 2 ? 9.5 : loss && minute == 2 ? 13 : 9;
     sink.publish(md::UnderlyingQuote{"SPX", time, 5000, 5000, 5000});
     sink.publish(md::OptionQuote{0, time, high, high + .1, 20, 20});
@@ -367,7 +374,7 @@ TEST(Backtest, RejectsInvalidInputsAndPinsArchivedHistoricalVersions) {
     auto bad = good; bad[key] = value;
     EXPECT_THROW((void)server::parse_backtest(bad, definitions, scenarios, {}), std::exception) << key;
   }
-  for (const auto& [key, message] : std::vector<std::pair<std::string, std::string>>{{"playbook", "playbook is required"}, {"plan", "plan is required"}}) {
+  for (const auto& [key, message] : std::vector<std::pair<std::string, std::string>>{{"playbook", "Supply exactly one of playbook or playbooks"}, {"plan", "plan is required"}}) {
     auto bad = good; bad.erase(key);
     try { (void)server::parse_backtest(bad, definitions, scenarios, {}); ADD_FAILURE() << key; }
     catch (const std::invalid_argument& error) { EXPECT_EQ(error.what(), message); }
@@ -448,12 +455,13 @@ TEST(Backtest, RejectsInvalidInputsAndPinsArchivedHistoricalVersions) {
 }
 class BacktestSource final : public server::MetricsSource {
  public:
+  json saved_catalogue = catalogue();
   using MetricsSource::trading_view;
   std::vector<std::string> symbols() const override { return {}; }
   std::shared_ptr<const analytics::UnderlyingMetrics> metrics(const std::string&) const override { return {}; }
   server::EngineStatus status() const override { server::EngineStatus result; result.trading.write = "open"; return result; }
   std::shared_ptr<const server::TradingView> trading_view() const override {
-    auto result = std::make_shared<server::TradingView>(); result->playbooks_json = catalogue().dump(); return result;
+    auto result = std::make_shared<server::TradingView>(); result->playbooks_json = saved_catalogue.dump(); return result;
   }
 };
 server::ApiResponse call(server::BacktestHost& host, const server::ApiRequest& request, bool capture = true) {
@@ -984,3 +992,216 @@ TEST(Backtest, VolumeRuleRejectsMissingDataAndGatesRecordedPlaybookEntries) {
   EXPECT_TRUE(report.at("days")[0].at("fills").empty());
   EXPECT_NE(report.at("days")[0].at("entry_reasons").dump().find("volume"), std::string::npos);
 }
+
+namespace {
+json joint_catalogue() {
+  auto result = catalogue();
+  auto first = result.at("definitions").at("batch").at("versions")[0];
+  first["id"] = "alpha";
+  first["name"] = "Alpha put";
+  first["structure"]["template"]["target"] = {{"mode", "delta"}, {"value", 15}};
+  auto second = first;
+  second["id"] = "zeta";
+  second["name"] = "Zeta call";
+  second["structure"]["template"]["type"] = "call";
+  result["definitions"] = {{"alpha", {{"versions", {first}}, {"deleted", false}}},
+      {"zeta", {{"versions", {second}}, {"deleted", false}}}};
+  return result;
+}
+TEST(Backtest, JointSelectorsValidateDistinctIdsAndPinLatest) {
+  auto definitions = joint_catalogue();
+  auto next = definitions["definitions"]["alpha"]["versions"][0];
+  next["version"] = 2;
+  definitions["definitions"]["alpha"]["versions"].push_back(next);
+  const auto scenarios = providers::builtin_scenarios();
+  const json good{{"playbooks", {"zeta@1", "alpha"}}, {"plan", "eod-50k"}, {"scenarios", 1}, {"seed", "1"}};
+  const auto parsed = server::parse_backtest(good, definitions, scenarios, {});
+  EXPECT_TRUE(parsed.playbook.empty());
+  EXPECT_EQ(parsed.playbooks.at("definitions").size(), 2U);
+  EXPECT_EQ(parsed.playbooks.at("definitions").at("alpha").at("versions").back().at("version"), 2);
+  EXPECT_EQ(parsed.playbooks.at("modes").at("main"), (json{{"alpha", "auto"}, {"zeta", "auto"}}));
+  for (const auto& selection : {json::array(), json{"alpha"}, json{"alpha", "alpha@2"}, json{"alpha", "missing"},
+      json{"alpha@0", "zeta"}, json{"alpha@3", "zeta"}, json{"alpha@x", "zeta"}, json{"alpha", 2}, json("alpha,zeta"),
+      json{"a", "b", "c", "d", "e", "f", "g", "h", "i"}}) {
+    auto bad = good; bad["playbooks"] = selection;
+    EXPECT_THROW((void)server::parse_backtest(bad, definitions, scenarios, {}), std::invalid_argument) << bad.dump();
+  }
+  for (const bool both : {false, true}) {
+    auto bad = good;
+    if (both) bad["playbook"] = "alpha";
+    else bad.erase("playbooks");
+    try { (void)server::parse_backtest(bad, definitions, scenarios, {}); ADD_FAILURE(); }
+    catch (const std::invalid_argument& error) { EXPECT_STREQ(error.what(), "Supply exactly one of playbook or playbooks"); }
+  }
+  auto eight = good;
+  eight["playbooks"] = json::array();
+  for (int index = 0; index < 8; ++index) {
+    const auto id = "book-" + std::to_string(index);
+    auto definition = next; definition["id"] = id; definition["version"] = 1;
+    definitions["definitions"][id] = {{"versions", {definition}}, {"deleted", false}};
+    eight["playbooks"].push_back(id);
+  }
+  EXPECT_EQ(server::parse_backtest(eight, definitions, scenarios, {}).playbooks.at("definitions").size(), 8U);
+  auto single = good; single.erase("playbooks"); single["playbook"] = "alpha@1";
+  const auto pinned = server::parse_backtest(single, definitions, scenarios, {});
+  EXPECT_EQ(pinned.playbook, "alpha");
+  EXPECT_EQ(pinned.playbooks.at("definitions").size(), 1U);
+  EXPECT_EQ(pinned.playbooks.at("definitions").at("alpha").at("versions").size(), 1U);
+}
+TEST(Backtest, JointGeneratedAccountSharesCapAndIsIdenticalAtOneAndEightWorkers) {
+  test::RecordingFile storage;
+  const auto definitions = joint_catalogue();
+  const json body{{"playbooks", {"zeta@1", "alpha"}},
+      {"plan", {{"initial_cash", "50000"}, {"rules", {{"profit_target", "10000"}, {"max_drawdown", "2000"}, {"max_contracts_held", 2}}}}},
+      {"scenarios", 2}, {"seed", "18446744073709551610"}};
+  auto request = server::parse_backtest(body, definitions, providers::builtin_scenarios(), {});
+  for (std::size_t index = 0; index < request.days.size(); ++index) {
+    auto source = json::parse(request.days[index].scenario->source);
+    source["symbols"] = {"SPX"};
+    const auto file = storage.directory / ("joint-scenario-" + std::to_string(index) + ".json");
+    std::ofstream(file) << source.dump();
+    request.days[index].scenario = providers::read_scenario(file);
+  }
+  const std::atomic_bool cancel{false};
+  request.workers = 1;
+  const auto first = server::run_backtest(request, storage.directory / "one", cancel);
+  ASSERT_EQ(first.at("status"), "completed") << first.dump();
+  EXPECT_EQ(first.at("schema"), 3);
+  EXPECT_EQ(first.at("mode"), "joint");
+  EXPECT_FALSE(first.contains("playbook"));
+  ASSERT_EQ(first.at("playbooks").size(), 2U);
+  EXPECT_EQ(first.at("playbooks")[0].at("id"), "alpha");
+  EXPECT_EQ(first.at("playbooks")[1].at("id"), "zeta");
+  request.workers = 8;
+  const auto second = server::run_backtest(request, storage.directory / "eight", cancel);
+  EXPECT_EQ(bytes(storage.directory / "one/report.json"), bytes(storage.directory / "eight/report.json"));
+  EXPECT_EQ(first.dump(), second.dump());
+  for (const auto& name : first.at("journals")) {
+    const auto path = name.get<std::string>();
+    EXPECT_EQ(bytes(storage.directory / "one" / path), bytes(storage.directory / "eight" / path));
+    const auto verified = server::verify_run(storage.directory / "one" / path);
+    EXPECT_TRUE(verified.matched) << path << ": " << verified.message;
+  }
+  for (const auto* collection : {"days", "attempts"}) for (const auto& day : first.at(collection)) {
+    const auto& stats = day.at("per_playbook");
+    EXPECT_GT(stats.at("alpha").at("trades").get<int>(), 0) << day.dump();
+    EXPECT_EQ(stats.at("zeta").at("trades"), 0);
+    EXPECT_EQ(stats.at("zeta").at("realised_pnl"), "0.00");
+    EXPECT_EQ(stats.at("alpha").at("marked_pnl"), day.at("pnl"));
+    EXPECT_NE(stats.at("zeta").at("entry_reasons").at("zeta:SPX").get<std::string>().find("Held options"), std::string::npos) << stats.dump();
+    for (const auto& trade : day.at("trades")) { EXPECT_EQ(trade.at("tag"), "playbook:alpha@v1"); }
+  }
+  EXPECT_EQ(first.at("summary").at("per_playbook").at("alpha").at("trades"), first.at("summary").at("trades"));
+  // The other strategy trades under exactly the same cap when it has its own account.
+  auto alone = request;
+  alone.playbook = "zeta";
+  alone.playbooks["definitions"].erase("alpha");
+  alone.playbooks["modes"]["main"].erase("alpha");
+  const auto single = server::run_backtest(alone, storage.directory / "alone", cancel);
+  ASSERT_EQ(single.at("status"), "completed") << single.dump();
+  EXPECT_GT(single.at("summary").at("trades").get<int>(), 0);
+  EXPECT_EQ(single.at("schema"), 2);
+  EXPECT_FALSE(single.contains("mode"));
+  EXPECT_FALSE(single.contains("playbooks"));
+  EXPECT_FALSE(single.at("summary").contains("per_playbook"));
+  EXPECT_FALSE(single.at("days")[0].contains("per_playbook"));
+
+  const auto compared = server::compare_backtests(json::array({{{"id", "000001"}, {"status", "completed"}, {"report", first}},
+      {{"id", "000002"}, {"status", "completed"}, {"report", single}}}));
+  EXPECT_EQ(compared.at("combined").at("includes_joint"), true);
+  EXPECT_EQ(compared.at("runs")[0].at("mode"), "joint");
+  EXPECT_EQ(compared.at("runs")[0].at("playbooks")[0].at("name"), "Alpha put");
+  for (const auto* id : {"000001", "000002"}) saved_fixture(storage.directory, id);
+  server::write_backtest_report(storage.directory / "000001/report.json", first);
+  server::write_backtest_report(storage.directory / "000002/report.json", single);
+  server::BacktestHost host({storage.directory, {}, {}, {}, {}, true});
+  const auto listed = json::parse(call(host, {"GET", "/api/backtests?playbook=alpha@1"}).body);
+  ASSERT_EQ(listed.at("runs").size(), 1U);
+  EXPECT_EQ(listed.at("runs")[0].at("playbooks"), compared.at("runs")[0].at("playbooks"));
+  EXPECT_EQ(json::parse(call(host, {"GET", "/api/backtests?playbook=zeta"}).body).at("runs").size(), 2U);
+  EXPECT_TRUE(json::parse(call(host, {"GET", "/api/backtests?playbook=alpha@2"}).body).at("runs").empty());
+  EXPECT_EQ(call(host, {"GET", "/api/backtests/compare?ids=000001,000002"}).status, 200);
+  EXPECT_EQ(call(host, {"PUT", "/api/backtests/000001", "{\"keep\":true}"}).status, 200);
+  EXPECT_EQ(json::parse(call(host, {"GET", "/api/backtests/000001"}).body).at("report"), first);
+}
+}  // namespace
+
+namespace {
+TEST(Backtest, JointOpenTradeAttributionUsesOptionMarksAndFees) {
+  test::RecordingFile storage;
+  const auto file = recorded_day(storage.directory, {2026, 9, 14});
+  auto definitions = catalogue();
+  auto second = definitions["definitions"]["batch"]["versions"][0];
+  second["id"] = "zeta";
+  definitions["definitions"]["zeta"] = {{"versions", {second}}, {"deleted", false}};
+  definitions["definitions"]["batch"]["versions"][0]["management"]["close_by"] = "15:45";
+  auto request = server::parse_backtest({{"playbooks", {"zeta", "batch"}}, {"plan", "eod-50k"},
+      {"days", {{{"file", file.string()}}}}}, definitions, {}, {}, false);
+  request.analytics.fallback_rate = 0;
+  const std::atomic_bool cancel{false};
+  const auto report = server::run_backtest(request, storage.directory / "marked", cancel);
+  ASSERT_EQ(report.at("status"), "completed") << report.dump();
+  const auto& day = report.at("days")[0];
+  const auto& own = day.at("per_playbook").at("batch");
+  EXPECT_EQ(own.at("trades"), 0);
+  EXPECT_EQ(own.at("open_trades"), 1);
+  EXPECT_EQ(own.at("expectancy"), nullptr);
+  EXPECT_EQ(own.at("realised_pnl"), "-1.30");
+  test::capture_contract("backtests", "GET", "/api/backtests/000098", {200, json{{"id", "000098"}, {"status", "completed"},
+      {"phase", "finished"}, {"completed", 2}, {"total", 2}, {"label", server::kBacktestLabel}, {"report", report}}.dump()});
+  EXPECT_EQ(own.at("marked_pnl"), day.at("pnl"));
+  EXPECT_EQ(report.at("summary").at("per_playbook").at("batch").at("marked_pnl"), own.at("marked_pnl"));
+  // Stale option marks must not be presented as known per-playbook P&L.
+  const auto stale = recorded_day(storage.directory, {2026, 9, 15}, false, false, {}, true);
+  request.days[0].file = stale;
+  request.days[0].date = {2026, 9, 15};
+  const auto unmarked = server::run_backtest(request, storage.directory / "unmarked", cancel);
+  ASSERT_EQ(unmarked.at("status"), "completed") << unmarked.dump();
+  EXPECT_EQ(unmarked.at("days")[0].at("pnl"), nullptr);
+  EXPECT_EQ(unmarked.at("days")[0].at("per_playbook").at("batch").at("marked_pnl"), nullptr);
+  EXPECT_EQ(unmarked.at("summary").at("per_playbook").at("batch").at("marked_pnl"), nullptr);
+}
+TEST(BacktestApi, JointPostValidationNamesConflictingAndUnknownSelectors) {
+  test::RecordingFile storage;
+  server::BacktestHost host({storage.directory, {}, {}, {}, {}, true});
+  const json base{{"plan", "eod-50k"}, {"scenarios", 1}, {"seed", "1"}};
+  for (const auto& selectors : {json{{"playbook", "batch"}, {"playbooks", {"batch", "missing"}}},
+      json{{"playbooks", {"batch", "batch@1"}}}, json{{"playbooks", {"batch", "missing"}}}, json::object()}) {
+    auto body = base; body.update(selectors);
+    const auto response = call(host, {"POST", "/api/backtests", body.dump()});
+    EXPECT_EQ(response.status, 400) << response.body;
+    EXPECT_NE(response.body.find(selectors.empty() || selectors.contains("playbook") ? "exactly one" :
+        selectors.at("playbooks")[1] == "missing" ? "Unknown playbook: missing" : "Duplicate playbook ID: batch"), std::string::npos);
+  }
+}
+}  // namespace
+
+namespace {
+TEST(BacktestApi, JointPostRunsPinnedDefinitionsAndListsEveryMember) {
+  test::RecordingFile storage;
+  const auto file = recorded_day(storage.directory, {2026, 9, 14});
+  BacktestSource source;
+  auto second = source.saved_catalogue["definitions"]["batch"]["versions"][0];
+  second["id"] = "zeta";
+  source.saved_catalogue["definitions"]["zeta"] = {{"versions", {second}}, {"deleted", false}};
+  server::BacktestHost host({storage.directory / "runs", storage.directory, {}, {}, {}, true});
+  const json body{{"playbooks", {"zeta", "batch"}}, {"plan", "eod-50k"}, {"days", {{{"file", file.filename().string()}}}}};
+  server::ApiResponse response;
+  ASSERT_TRUE(host.handle({"POST", "/api/backtests", body.dump()}, source, [&](server::ApiResponse value) { response = std::move(value); }));
+  ASSERT_EQ(response.status, 202) << response.body;
+  const auto id = json::parse(response.body).at("id").get<std::string>();
+  // Editing the source publication after start cannot change the pinned job.
+  source.saved_catalogue["definitions"].erase("zeta");
+  json saved;
+  ASSERT_TRUE(test::recording_eventually([&] {
+    saved = json::parse(call(host, {"GET", "/api/backtests/" + id}, false).body);
+    return saved.at("status") != "running";
+  }));
+  ASSERT_EQ(saved.at("status"), "completed") << saved.dump();
+  EXPECT_EQ(saved.at("report").at("playbooks").size(), 2U);
+  test::capture_contract("backtests", "GET", "/api/backtests/" + id, {200, saved.dump()});
+  const auto listing = json::parse(call(host, {"GET", "/api/backtests?playbook=zeta"}).body);
+  ASSERT_EQ(listing.at("runs").size(), 1U);
+  EXPECT_EQ(listing.at("runs")[0].at("mode"), "joint");
+}
+}  // namespace

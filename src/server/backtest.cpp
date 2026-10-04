@@ -12,6 +12,7 @@
 #include <thread>
 #include "openport/providers/replay_batches.hpp"
 #include "openport/server/plans.hpp"
+#include "openport/trading/history.hpp"
 #include "openport/server/web_policy.hpp"
 #include "run_json.hpp"
 #include "event_calendar.hpp"
@@ -169,13 +170,89 @@ Desk::Options options_for(const BacktestRequest& request, const Prepared& input,
   options.equity_sample = [&](std::string_view, const EquitySample& sample) { measurements.sample(sample); };
   return options;
 }
+// All calculations retain integer micro-dollars. These summaries cover the option
+// lifecycles the existing playbook report can attribute, not delivered shares.
+json attributed_stats(const json& trades, Money realised, std::optional<Money> marked,
+    const json& reasons, const json& trips) {
+  Money closed_net;
+  std::size_t closed = 0, open = 0, wins = 0, losses = 0, passed = 0, measured = 0, bp_count = 0;
+  double bp_total = 0;
+  for (const auto& trade : trades) {
+    passed += trade.at("passed_rules").get<std::size_t>();
+    measured += trade.at("measured_rules").get<std::size_t>();
+    if (trade.at("closed").is_null()) { ++open; continue; }
+    ++closed;
+    const auto net = Money::parse(trade.at("net").get<std::string>());
+    closed_net = closed_net + net;
+    if (net > Money{}) ++wins;
+    if (net < Money{}) ++losses;
+    if (trade.contains("return_on_buying_power") && trade.at("return_on_buying_power").is_number()) {
+      ++bp_count; bp_total += trade.at("return_on_buying_power").get<double>();
+    }
+  }
+  return {{"trades", closed}, {"open_trades", open},
+      {"expectancy", closed ? json(closed_net.prorate(1, static_cast<std::int64_t>(closed)).str()) : json(nullptr)},
+      {"win_rate", wins + losses ? json(static_cast<double>(wins) / static_cast<double>(wins + losses)) : json(nullptr)},
+      {"adherence", measured ? json(static_cast<double>(passed) / static_cast<double>(measured)) : json(nullptr)},
+      {"average_return_on_buying_power", bp_count ? json(bp_total / static_cast<double>(bp_count)) : json(nullptr)},
+      {"realised_pnl", realised.str()}, {"marked_pnl", marked ? json(marked->str()) : json(nullptr)},
+      {"entry_reasons", reasons}, {"rule_trips", trips}};
+}
+json joint_breakdown(const json& reports, const TradingView& view, const EntryReasons& entries, const json& trips) {
+  json result = json::object();
+  const auto history = trading::lifecycles(view.snapshot->recent_fills, view.snapshot->closures, view.contracts);
+  for (const auto& [id, report] : reports.items()) {
+    Money realised, unrealised;
+    bool complete = true;
+    std::set<trading::OrderId> orders;
+    for (const auto& trade : report.at("trades")) {
+      realised = realised + Money::parse(trade.at("net").get<std::string>());
+      orders.insert(std::stoull(trade.at("order").get<std::string>()));
+    }
+    for (const auto& life : history) {
+      if (!life.quantity || !orders.contains(life.entry_order)) continue;
+      const auto position = std::find_if(view.snapshot->positions.begin(), view.snapshot->positions.end(),
+          [&](const auto& item) { return item.position.contract.osi_symbol() == life.symbol; });
+      if (position == view.snapshot->positions.end() || !position->fresh || !position->unrealised) complete = false;
+      else unrealised = unrealised + *position->unrealised;
+    }
+    json reasons = json::object(), own_trips = json::array();
+    for (const auto& [key, reason] : entries.reasons.items())
+      if (key.starts_with(id + ":")) reasons[key] = reason;
+    for (const auto& trip : trips)
+      if (trip.value("playbook", "") == id) own_trips.push_back(trip);
+    result[id] = attributed_stats(report.at("trades"), realised,
+        complete ? std::optional<Money>(realised + unrealised) : std::nullopt, reasons, own_trips);
+  }
+  return result;
+}
+// A compact identity used by compare and saved listings. Single-run callers keep
+// their historical id/version-only representation.
+json joint_identities(const json& definitions) {
+  json result = json::array();
+  for (const auto& definition : definitions)
+    result.push_back({{"id", definition.at("id")}, {"version", definition.at("version")}, {"name", definition.at("name")}});
+  return result;
+}
 json result_for(Desk& desk, const BacktestRequest& request, const std::filesystem::path& directory,
     const std::string& journal, const Measurements& measurements, const EntryReasons& entries) {
   desk.flush_journals();
   check_desk(desk);
   const auto view = desk.trading_view();
   const auto& snapshot = *view->snapshot;
-  const auto stats = playbook_report(request.playbooks, *view).at(request.playbook);
+  const bool joint = request.playbook.empty();
+  const auto reports = playbook_report(request.playbooks, *view);
+  json stats;
+  if (!joint) stats = reports.at(request.playbook);
+  else {
+    stats["trades"] = json::array();
+    for (const auto& report : reports)
+      for (const auto& trade : report.at("trades")) stats["trades"].push_back(trade);
+    std::sort(stats["trades"].begin(), stats["trades"].end(), [](const json& a, const json& b) {
+      return std::stoull(a.at("order").get<std::string>()) < std::stoull(b.at("order").get<std::string>());
+    });
+    stats["all"] = attributed_stats(stats.at("trades"), {}, {}, json::object(), json::array());
+  }
   json fills = json::array();
   for (const auto& fill : snapshot.recent_fills) fills.push_back({
       {"id", std::to_string(fill.id)}, {"order", std::to_string(fill.order_id)}, {"symbol", fill.symbol},
@@ -195,15 +272,24 @@ json result_for(Desk& desk, const BacktestRequest& request, const std::filesyste
     const auto payload = json::parse(record.payload);
     for (const auto& event : payload.at("events")) {
       const auto type = event.at("type").get<std::string>();
-      if (type == "evaluation_failed" || type == "day_locked" || type == "kill_trip" || type == "order_rejected")
-        trips.push_back({{"time", md::format_timestamp(record.time)}, {"type", type}, {"detail", event.at("payload")}});
+      if (type == "evaluation_failed" || type == "day_locked" || type == "kill_trip" || type == "order_rejected") {
+        json trip{{"time", md::format_timestamp(record.time)}, {"type", type}, {"detail", event.at("payload")}};
+        if (joint && type == "order_rejected") {
+          const auto order = event.at("payload").get<trading::Order>();
+          for (const auto& [id, definition] : request.playbooks.at("definitions").items()) {
+            const auto tag = playbook_tag(definition.at("versions").back());
+            if (std::find(order.request.tags.begin(), order.request.tags.end(), tag) != order.request.tags.end()) trip["playbook"] = id;
+          }
+        }
+        trips.push_back(std::move(trip));
+      }
     }
   }
   auto distance = measurements.distance;
   if (snapshot.evaluation.closest_floor && (!distance || *snapshot.evaluation.closest_floor < *distance)) distance = snapshot.evaluation.closest_floor;
   json flags = json::array();
   for (const auto flag : snapshot.quality_flags) flags.push_back(trading::to_string(flag));
-  return {{"started", md::format_timestamp(snapshot.evaluation.started)}, {"ended", md::format_timestamp(snapshot.time)},
+  json result{{"started", md::format_timestamp(snapshot.evaluation.started)}, {"ended", md::format_timestamp(snapshot.time)},
       {"pnl", snapshot.valuation_complete ? json((snapshot.equity - snapshot.evaluation.starting_balance).str()) : json(nullptr)},
       {"last_mark_pnl", (snapshot.equity - snapshot.evaluation.starting_balance).str()}, {"valuation_complete", snapshot.valuation_complete},
       {"quality_flags", flags}, {"max_drawdown", measurements.drawdown.str()},
@@ -212,6 +298,8 @@ json result_for(Desk& desk, const BacktestRequest& request, const std::filesyste
       {"fills", fills}, {"stock_fills", stock_fills}, {"stock_trades", stock_trades}, {"adherence", stats.at("all").at("adherence")},
       {"entry_reasons", entries.reasons},
       {"open_positions", snapshot.positions.size() + snapshot.stocks.size()}, {"journal", journal}, {"journal_head", recovery.head}};
+  if (joint) result["per_playbook"] = joint_breakdown(reports, *view, entries, trips);
+  return result;
 }
 json evaluation_day(const trading::TradingSnapshot& start, const trading::TradingSnapshot& end,
     const trading::AccountRules& rules, const BacktestDay& day, std::size_t index) {
@@ -293,7 +381,7 @@ json compare_backtests(const json& runs) {
   json result{{"runs", json::array()}, {"daily", json::array()}, {"label", kBacktestLabel}};
   std::map<std::string, std::map<std::string, json>> dates;
   json first_inputs, first_plan;
-  bool different_inputs = false, different_plans = false, incomplete_inputs = false;
+  bool different_inputs = false, different_plans = false, incomplete_inputs = false, includes_joint = false;
   for (const auto& run : runs) {
     const auto id = run.at("id").get<std::string>();
     const auto& report = run.at("report");
@@ -313,9 +401,13 @@ json compare_backtests(const json& runs) {
     const auto& plan = report.at("config");
     if (result["runs"].empty()) { first_inputs = inputs; first_plan = plan; }
     else { different_inputs = different_inputs || inputs != first_inputs; different_plans = different_plans || plan != first_plan; }
-    result["runs"].push_back({{"id", id}, {"status", run.at("status")},
-        {"playbook", {{"id", report.at("playbook").at("id")}, {"version", report.at("playbook").at("version")}}},
-        {"plan", plan}, {"input_set", inputs}, {"summary", report.at("summary")}});
+    json row{{"id", id}, {"status", run.at("status")}, {"plan", plan}, {"input_set", inputs}, {"summary", report.at("summary")}};
+    if (report.value("mode", "") == "joint") {
+      includes_joint = true;
+      row["mode"] = "joint";
+      row["playbooks"] = joint_identities(report.at("playbooks"));
+    } else row["playbook"] = {{"id", report.at("playbook").at("id")}, {"version", report.at("playbook").at("version")}};
+    result["runs"].push_back(std::move(row));
   }
   result["different_inputs"] = different_inputs;
   result["different_plans"] = different_plans;
@@ -365,32 +457,47 @@ json compare_backtests(const json& runs) {
   result["combined"] = {{"label", "Sum of independent single-playbook days. No shared buying power, risk limits or plan floor; not a joint account simulation."},
       {"daily_pnl", distribution(pnls)}, {"curve", curve}, {"max_drawdown", curve_complete ? json(drawdown.str()) : json(nullptr)},
       {"worst_days", worst_days}, {"day_win_rate", wins + losses ? json(static_cast<double>(wins) / static_cast<double>(wins + losses)) : json(nullptr)}};
+  if (includes_joint) {
+    result["combined"]["includes_joint"] = true;
+    result["combined"]["label"] = "Sum of independent run days; includes already-joint account reports. No shared buying power, risk limits or plan floor across runs.";
+  }
   return result;
 }
 
 BacktestRequest parse_backtest(const json& body, const json& catalogue,
     const std::vector<providers::Scenario>& scenarios, const std::filesystem::path& recordings, bool confined) {
-  keys(body, {"playbook", "plan", "days", "scenarios", "scenario", "seed", "workers"});
+  keys(body, {"playbook", "playbooks", "plan", "days", "scenarios", "scenario", "seed", "workers"});
   BacktestRequest result;
   result.workers = bounded(body.value("workers", json(4)), 16, "workers");
-  const auto& named = required(body, "playbook", "playbook");
-  if (!named.is_string()) throw std::invalid_argument("playbook must be ID or ID@VERSION");
-  const auto selector = named.get<std::string>();
-  const auto at = selector.find('@');
-  result.playbook = selector.substr(0, at);
-  if (!catalogue.at("definitions").contains(result.playbook)) throw std::invalid_argument("Unknown playbook");
-  const auto& history = catalogue.at("definitions").at(result.playbook).at("versions");
-  std::size_t version = history.size();
-  if (at != std::string::npos) {
-    const auto text = selector.substr(at + 1);
-    const auto [end, error] = std::from_chars(text.data(), text.data() + text.size(), version);
-    if (error != std::errc{} || end != text.data() + text.size()) throw std::invalid_argument("Invalid playbook version");
+  if (body.contains("playbook") == body.contains("playbooks"))
+    throw std::invalid_argument("Supply exactly one of playbook or playbooks");
+  const bool joint = body.contains("playbooks");
+  const auto selectors = joint ? body.at("playbooks") : json::array({body.at("playbook")});
+  if (joint && (!selectors.is_array() || selectors.size() < 2 || selectors.size() > 8))
+    throw std::invalid_argument("playbooks must be an array of 2–8 distinct playbook IDs");
+  result.playbooks = {{"schema", 1}, {"definitions", json::object()}, {"modes", {{"main", json::object()}}}};
+  for (const auto& named : selectors) {
+    if (!named.is_string()) throw std::invalid_argument("playbook must be ID or ID@VERSION");
+    const auto selector = named.get<std::string>();
+    const auto at = selector.find('@');
+    const auto id = selector.substr(0, at);
+    if (result.playbooks.at("definitions").contains(id))
+      throw std::invalid_argument("Duplicate playbook ID: " + id);
+    if (!catalogue.at("definitions").contains(id)) throw std::invalid_argument(joint ? "Unknown playbook: " + id : "Unknown playbook");
+    const auto& history = catalogue.at("definitions").at(id).at("versions");
+    std::size_t version = history.size();
+    if (at != std::string::npos) {
+      const auto text = selector.substr(at + 1);
+      const auto [end, error] = std::from_chars(text.data(), text.data() + text.size(), version);
+      if (error != std::errc{} || end != text.data() + text.size()) throw std::invalid_argument("Invalid playbook version");
+    }
+    if (!version || version > history.size()) throw std::invalid_argument("Unknown playbook version");
+    json versions = json::array();
+    for (std::size_t index = 0; index < version; ++index) versions.push_back(history[index]);
+    result.playbooks["definitions"][id] = {{"deleted", false}, {"versions", versions}};
+    result.playbooks["modes"]["main"][id] = "auto";
+    if (!joint) result.playbook = id;
   }
-  if (!version || version > history.size()) throw std::invalid_argument("Unknown playbook version");
-  json versions = json::array();
-  for (std::size_t index = 0; index < version; ++index) versions.push_back(history[index]);
-  result.playbooks = {{"schema", 1}, {"definitions", {{result.playbook, {{"deleted", false}, {"versions", versions}}}}},
-      {"modes", {{"main", {{result.playbook, "auto"}}}}}};
   const Playbooks validated({}, result.playbooks);
   (void)validated;
   const auto& plan = required(body, "plan", "plan");
@@ -604,7 +711,9 @@ json run_backtest(const BacktestRequest& request, const std::filesystem::path& d
   if (!std::filesystem::create_directory(directory)) throw std::invalid_argument("Backtest output directory already exists");
   for (const auto* child : {"days", "attempts", "inputs"}) std::filesystem::create_directory(directory / child);
   if (progress) progress(0, "days");
-  const auto& definition = request.playbooks.at("definitions").at(request.playbook).at("versions").back();
+  const bool joint = request.playbook.empty();
+  json definitions = json::array();
+  for (const auto& record : request.playbooks.at("definitions")) definitions.push_back(record.at("versions").back());
   std::vector<Prepared> prepared(request.days.size());
   std::vector<json> results(request.days.size());
   std::vector<std::string> errors(request.days.size());
@@ -665,9 +774,14 @@ json run_backtest(const BacktestRequest& request, const std::filesystem::path& d
       });
     }
   }
-  json report{{"schema", 2}, {"simulated", true}, {"label", kBacktestLabel}, {"actor", request.actor}, {"playbook", definition},
+  json report{{"schema", 2}, {"simulated", true}, {"label", kBacktestLabel}, {"actor", request.actor},
       {"config", request.config}, {"analytics", request.analytics}, {"dividends", request.dividends},
       {"days", results}, {"attempts", json::array()}, {"errors", json::array()}, {"status", "completed"}};
+  if (joint) {
+    report["schema"] = 3;
+    report["mode"] = "joint";
+    report["playbooks"] = definitions;
+  } else report["playbook"] = definitions.at(0);
   report["input_set"] = json::array();
   for (std::size_t index = 0; index < request.days.size(); ++index) {
     // Preserve supplied dates even when a day was cancelled before preparation.
@@ -762,6 +876,27 @@ json run_backtest(const BacktestRequest& request, const std::filesystem::path& d
     for (const auto& journal : journals) report["journals"].push_back(journal);
   }
   report["summary"] = aggregate(report.at("days"), report.at("attempts"));
+  if (joint) {
+    auto& breakdown = report["summary"]["per_playbook"] = json::object();
+    for (const auto& definition : definitions) {
+      const auto id = definition.at("id").get<std::string>();
+      const auto tag = playbook_tag(definition);
+      json trades = json::array(), reasons = json::object(), trips = json::array();
+      Money realised, marked;
+      bool complete = true;
+      for (const auto& day : report.at("days")) {
+        if (day.is_null()) continue;
+        const auto& own = day.at("per_playbook").at(id);
+        realised = realised + Money::parse(own.at("realised_pnl").get<std::string>());
+        if (own.at("marked_pnl").is_null()) complete = false;
+        else marked = marked + Money::parse(own.at("marked_pnl").get<std::string>());
+        for (const auto& trade : day.at("trades")) if (trade.at("tag") == tag) trades.push_back(trade);
+        for (const auto& trip : own.at("rule_trips")) trips.push_back(trip);
+        for (const auto& [key, reason] : own.at("entry_reasons").items()) reasons[day.at("date").get<std::string>() + "/" + key] = reason;
+      }
+      breakdown[id] = attributed_stats(trades, realised, complete ? std::optional<Money>(marked) : std::nullopt, reasons, trips);
+    }
+  }
   write_backtest_report(directory / "report.json", report);
   return report;
 }

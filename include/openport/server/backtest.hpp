@@ -20,7 +20,7 @@ struct BacktestDay {
 };
 struct BacktestRequest {
   nlohmann::json playbooks;
-  std::string playbook;
+  std::string playbook;  ///< Single selected ID; empty for a joint run.
   trading::SessionConfig config;
   analytics::AnalyticsOptions analytics;
   std::vector<trading::Dividend> dividends;
@@ -28,7 +28,7 @@ struct BacktestRequest {
   unsigned workers = 4;
   std::string actor = "system";
 };
-/// Pin a definition and plan before starting. API file names stay under recordings;
+/// Pin one definition or 2–8 distinct IDs (lexical evaluation order), and a plan. API file names stay under recordings;
 /// CLI manifests may supply paths relative to their directory.
 [[nodiscard]] BacktestRequest parse_backtest(const nlohmann::json& body, const nlohmann::json& catalogue,
     const std::vector<providers::Scenario>& scenarios, const std::filesystem::path& recordings, bool confined = true);
