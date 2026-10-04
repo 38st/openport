@@ -152,7 +152,9 @@ export type DailyLossBasis = "equity" | "balance" | "higher" | "peak"
  * absent on older servers and null when a check has none.
  */
 /** Codes include PLAYBOOK_TIME_STOP, PLAYBOOK_TRAILING_STOP, PLAYBOOK_DTE_STOP and PLAYBOOK_DAYS_IN_TRADE_STOP for automatic entry/exit cancellations; older runs use USER_CANCEL. */
-export type PlanRuleReason = "MAX_VOLUME_SHARE" | "HEDGING" | "COUNTER_POSITION" | "TRADE_CONSISTENCY" | "MIN_TRADES" | "MIN_HOLD" | "MICROSCALPING"
+export type PlanRuleReason =
+  | "TIME_LIMIT" | "INACTIVITY" | "INSTRUMENT_NOT_ALLOWED" | "OUTSIDE_PLAN_HOURS" | "FLAT_TIME" | "OVERNIGHT_HOLD"
+  | "TRADE_CONSISTENCY" | "MIN_TRADES" | "MIN_HOLD" | "MICROSCALPING" | "HEDGING" | "COUNTER_POSITION" | "MAX_VOLUME_SHARE"
 export type RuleEvidence = { underlying: string; order_dollar_delta: number; held_dollar_delta: number; other_account?: string }
   | { contract: string; contracts: number; volume: number | null; percent: number }
 export interface Decision { evidence?: RuleEvidence; code: PlanRuleReason | string; message: string; actual?: number | null; limit?: number | null; scope?: string | null }

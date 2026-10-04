@@ -6,7 +6,10 @@ Unknown fields are preserved. Money and identifiers stay strings, not floats.
 from typing import Any, Literal, TypedDict
 
 JSON = dict[str, Any]
-PlanRuleReason = Literal["MAX_VOLUME_SHARE", "HEDGING", "COUNTER_POSITION", "TRADE_CONSISTENCY", "MIN_TRADES", "MIN_HOLD", "MICROSCALPING"]
+PlanRuleReason = Literal[
+    "TIME_LIMIT", "INACTIVITY", "INSTRUMENT_NOT_ALLOWED", "OUTSIDE_PLAN_HOURS", "FLAT_TIME", "OVERNIGHT_HOLD",
+    "TRADE_CONSISTENCY", "MIN_TRADES", "MIN_HOLD", "MICROSCALPING", "HEDGING", "COUNTER_POSITION", "MAX_VOLUME_SHARE",
+]
 
 
 class RuleEvidence(TypedDict, total=False):
@@ -343,10 +346,13 @@ class EvaluationProgress(TypedDict, total=False):
     decision_code: str | None
     balance: str
     profit_basis: str
-    objectives: list[JSON]
+    objectives: list[EvaluationObjective]
     trading_days: int | None
     profitable_days: int
     best_day: JSON | None
+    best_trade: BestTrade | None
+    closed_trades: int | None
+    short_profit: str | None
     consistency_target: str | None
     daily_loss: JSON | None
     day_lock: str | None

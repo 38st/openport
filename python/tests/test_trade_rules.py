@@ -1,10 +1,11 @@
-from typing import get_type_hints
+import re
+from typing import get_args, get_type_hints
 
 import jsonschema
 import pytest
 
-from conftest import SPEC
-from openport.types import AccountRules, OrderPreview
+from conftest import ROOT, SPEC
+from openport.types import AccountRules, OrderPreview, PlanRuleReason
 from tools.contract_test import Contract
 
 
@@ -28,9 +29,11 @@ def test_trade_rule_wire_types_and_optional_defaults():
 
 
 def test_new_reason_codes_and_microscalp_pair():
-    from typing import get_args
-    from openport.types import PlanRuleReason
-    assert set(get_args(PlanRuleReason)) == {"MAX_VOLUME_SHARE", "HEDGING", "COUNTER_POSITION", "TRADE_CONSISTENCY", "MIN_TRADES", "MIN_HOLD", "MICROSCALPING"}
+    expected = {"TIME_LIMIT", "INACTIVITY", "INSTRUMENT_NOT_ALLOWED", "OUTSIDE_PLAN_HOURS", "FLAT_TIME", "OVERNIGHT_HOLD",
+                "TRADE_CONSISTENCY", "MIN_TRADES", "MIN_HOLD", "MICROSCALPING", "HEDGING", "COUNTER_POSITION", "MAX_VOLUME_SHARE"}
+    assert set(get_args(PlanRuleReason)) == expected
+    typescript = (ROOT / "web/src/api/trading-types.ts").read_text().split("export type PlanRuleReason =", 1)[1].split("export type RuleEvidence", 1)[0]
+    assert set(re.findall(r'"([A-Z_]+)"', typescript)) == expected
     contract = Contract("", None, SPEC)
     validator = jsonschema.Draft202012Validator(
         {"$ref": "urn:openport#/components/schemas/AccountRulesInput"}, registry=contract.registry)
@@ -39,6 +42,36 @@ def test_new_reason_codes_and_microscalp_pair():
     for pair in [{"microscalp_seconds": 30}, {"microscalp_percent": 25}]:
         with pytest.raises(jsonschema.ValidationError):
             validator.validate({**base, **pair})
+
+
+def test_every_reducer_reason_has_a_wire_code():
+    header = (ROOT / "include/openport/trading/types.hpp").read_text()
+    enum = header.split("enum class Reason {", 1)[1].split("};", 1)[0]
+    codes = re.findall(r"\b[A-Z][A-Z_]+\b", re.sub(r"//[^\n]*", "", enum))
+    assert len(codes) == len(set(codes))
+    assert f"kLastReason = Reason::{codes[-1]};" in header
+    implementation = (ROOT / "src/trading/types.cpp").read_text()
+    assert set(re.findall(r"CASE\(([A-Z_]+)\)", implementation)) == set(codes)
+    assert set(SPEC["components"]["schemas"]["Decision"]["properties"]["code"]["enum"]) == set(codes)
+
+
+def test_backtest_schema_accepts_combined_plan_rules():
+    rules = {"profit_target": "100.00", "time_limit_days": 30, "inactivity_days": 14, "underlyings": ["SPX"],
+             "trading_start": "09:30", "trading_end": "16:00", "flat_time": "15:45", "no_overnight": True,
+             "trade_consistency_percent": 40, "min_trades": 12, "min_hold_seconds": 60,
+             "microscalp_seconds": 30, "microscalp_percent": 25, "no_hedging": True,
+             "no_counter_positions": True, "max_volume_percent": 25}
+    schemas = SPEC["components"]["schemas"]
+    validator = jsonschema.Draft202012Validator(
+        {"$ref": "urn:openport#/components/schemas/BacktestRequest/properties/plan/oneOf/1/properties/rules"},
+        registry=Contract("", None, SPEC).registry)
+    validator.validate(rules)
+    for name in ["AccountRules", "AccountRulesInput"]:
+        assert rules.keys() <= schemas[name]["properties"].keys()
+    assert rules.keys() <= AccountRules.__optional_keys__
+    for key in ["microscalp_seconds", "microscalp_percent", "trading_start", "trading_end"]:
+        with pytest.raises(jsonschema.ValidationError):
+            validator.validate({k: v for k, v in rules.items() if k != key})
 
 
 @pytest.mark.parametrize("code,evidence", [

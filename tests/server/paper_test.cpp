@@ -4582,6 +4582,8 @@ TEST_F(PaperEngine, TimeAndTradeRulesSurviveCreateResetAndPresetMatching) {
   auto rules = read(*engine, "/api/account")["rules"];
   rules.update({{"plan", "Combined rules"}, {"plan_id", nullptr}, {"flat_time", "15:45"}, {"no_overnight", true}, {"time_limit_days", 30}, {"inactivity_days", 14},
                 {"underlyings", {"SPX"}}, {"trading_start", "09:30"}, {"trading_end", "16:00"},
+                {"trade_consistency_percent", 40}, {"min_trades", 12}, {"min_hold_seconds", 60},
+                {"microscalp_seconds", 30}, {"microscalp_percent", 25}, {"no_hedging", true}, {"no_counter_positions", true}, {"max_volume_percent", 25},
                 {"max_contracts_held", 5}, {"require_stop_loss", true}, {"max_trade_risk", "123.456789"},
                 {"max_trade_risk_percent", 25}, {"scaling", {{{"profit", "0.00"}, {"contracts", 2}}}}});
   auto response = write(*engine, "POST", "/api/accounts", {{"name", "Combined rules"}, {"initial_cash", "100000"}, {"rules", rules}});

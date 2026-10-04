@@ -18179,6 +18179,36 @@
                         "maximum": 100,
                         "default": 0,
                         "description": "Server pre-trade gate: per option leg, (absolute held contracts + opening contracts including ratio) * 100 <= percent * current trading-date volume. Zero disables. Unknown/invalid/stale volume refuses MAX_VOLUME_SHARE. Pure reductions and shares are exempt. Refusal is not journaled. Backtests require volume-bearing recordings; scenario backtests and recordings without volume reject with HTTP 400."
+                      },
+                      "trade_consistency_percent": {
+                        "type": "integer",
+                        "minimum": 0,
+                        "maximum": 100,
+                        "description": "F29: best profitable closed whole option trade, net of fees, at most this percent of attempt profit under profit_basis. Zero disables; ignored in funded phase. Satisfied when no profitable closed trade exists."
+                      },
+                      "min_trades": {
+                        "type": "integer",
+                        "minimum": 0,
+                        "maximum": 10000,
+                        "description": "F30: minimum fully closed whole option trades; includes settlement, expiry, assignment and account liquidation. Zero disables; ignored in funded phase."
+                      },
+                      "min_hold_seconds": {
+                        "type": "integer",
+                        "minimum": 0,
+                        "maximum": 3600,
+                        "description": "Minimum market-time age for ordinary user reductions, measured from first opening fill. Zero disables. Protective triggers, brackets, OCO, trailing stops, flatten and system exits bypass. MIN_HOLD reports actual and limit seconds."
+                      },
+                      "microscalp_seconds": {
+                        "type": "integer",
+                        "minimum": 0,
+                        "maximum": 3600,
+                        "description": "Round trips with final close strictly before this many seconds are short. Set with microscalp_percent; seconds 1-3600 when active, zero allowed while disabled."
+                      },
+                      "microscalp_percent": {
+                        "type": "integer",
+                        "minimum": 0,
+                        "maximum": 100,
+                        "description": "Maximum share of attempt profit from positive net P&L of short closed option/share round trips. Set with microscalp_seconds; 0 disables, 1-100 enables. Evaluation only."
                       }
                     },
                     "required": [],
@@ -18289,8 +18319,38 @@
                             }
                           }
                         }
+                      },
+                      {
+                        "if": {
+                          "properties": {
+                            "microscalp_percent": {
+                              "minimum": 1
+                            }
+                          },
+                          "required": [
+                            "microscalp_percent"
+                          ]
+                        },
+                        "then": {
+                          "required": [
+                            "microscalp_seconds"
+                          ],
+                          "properties": {
+                            "microscalp_seconds": {
+                              "minimum": 1
+                            }
+                          }
+                        }
                       }
-                    ]
+                    ],
+                    "dependentRequired": {
+                      "microscalp_seconds": [
+                        "microscalp_percent"
+                      ],
+                      "microscalp_percent": [
+                        "microscalp_seconds"
+                      ]
+                    }
                   },
                   "fee_per_contract": {
                     "$ref": "#/components/schemas/Money"
@@ -19940,6 +20000,12 @@
               "MAX_CONTRACTS_HELD",
               "STOP_REQUIRED",
               "MAX_TRADE_RISK",
+              "TIME_LIMIT",
+              "INACTIVITY",
+              "INSTRUMENT_NOT_ALLOWED",
+              "OUTSIDE_PLAN_HOURS",
+              "FLAT_TIME",
+              "OVERNIGHT_HOLD",
               "TRADE_CONSISTENCY",
               "MIN_TRADES",
               "MIN_HOLD",

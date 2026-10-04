@@ -365,6 +365,8 @@ TEST(Backtest, RejectsInvalidInputsAndPinsArchivedHistoricalVersions) {
   auto timed = good;
   timed["plan"] = {{"initial_cash", "10000"}, {"rules", {{"profit_target", "100"}, {"time_limit_days", 30},
       {"inactivity_days", 14}, {"flat_time", "15:45"}, {"no_overnight", true}, {"underlyings", {"SPX"}}, {"trading_start", "09:30"}, {"trading_end", "16:00"},
+      {"trade_consistency_percent", 40}, {"min_trades", 12}, {"min_hold_seconds", 60},
+      {"microscalp_seconds", 30}, {"microscalp_percent", 25}, {"no_hedging", true}, {"no_counter_positions", true},
       {"max_contracts_held", 5}, {"require_stop_loss", true}, {"max_trade_risk", "123.456789"}, {"max_trade_risk_percent", 25},
       {"scaling", {{{"profit", "0.00"}, {"contracts", 2}}}}, {"size_scaling", nullptr}}}};
   const auto time_rules = server::parse_backtest(timed, definitions, scenarios, {}).config.rules;
@@ -376,6 +378,9 @@ TEST(Backtest, RejectsInvalidInputsAndPinsArchivedHistoricalVersions) {
   EXPECT_EQ(time_rules.max_trade_risk, Money::parse("123.456789")); EXPECT_EQ(time_rules.max_trade_risk_percent, 25);
   EXPECT_EQ(time_rules.scaling, (std::vector<trading::ScalingStep>{{Money{}, 2}}));
   EXPECT_FALSE(time_rules.size_scaling);
+  EXPECT_EQ(time_rules.trade_consistency_percent, 40); EXPECT_EQ(time_rules.min_trades, 12);
+  EXPECT_EQ(time_rules.min_hold_seconds, 60); EXPECT_EQ(time_rules.microscalp_seconds, 30); EXPECT_EQ(time_rules.microscalp_percent, 25);
+  EXPECT_TRUE(time_rules.no_hedging); EXPECT_TRUE(time_rules.no_counter_positions);
   for (const auto& patch : std::vector<json>{{{"flat_time", "24:00"}}, {{"flat_time", "17:00"}}, {{"no_overnight", 1}}, {{"time_limit_days", 367}}, {{"inactivity_days", 1.5}},
       {{"underlyings", "SPX"}}, {{"trading_end", nullptr}}, {{"trading_start", "09:60"}}}) {
     auto bad = timed; bad["plan"]["rules"].update(patch);
