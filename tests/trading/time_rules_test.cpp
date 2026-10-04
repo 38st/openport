@@ -56,7 +56,8 @@ TEST(TimeRules, LegacyPlanJournalBytes) {
   // its omission from rules is covered by the unchanged hash above.
   for (const auto& record : recovery.records)
     for (const auto* key : {"max_contracts_held", "require_stop_loss", "max_trade_risk", "max_trade_risk_percent", "time_limit_days", "inactivity_days", "underlyings", "trading_start", "trading_end", "last_activity", "flat_time", "no_overnight", "flat_time_day", "flat_pending", "news_before_minutes", "news_after_minutes", "news_action",
-                            "hold_restrictions", "hold_cutoff", "hold_calendar", "event_actions", "holding_violations", "event_checked"})
+                            "hold_restrictions", "hold_cutoff", "hold_calendar", "event_actions", "holding_violations", "event_checked",
+                            "scaling", "size_scaling", "scaling_limit"})
       EXPECT_EQ(record.payload.find(std::string("\"") + key + "\""), std::string::npos) << key;
   // Explicitly disabling each field takes exactly the legacy command path.
   rules.max_contracts_held = 0; rules.require_stop_loss = false; rules.max_trade_risk = {}; rules.max_trade_risk_percent = 0;
@@ -64,6 +65,7 @@ TEST(TimeRules, LegacyPlanJournalBytes) {
   rules.trading_start.reset(); rules.trading_end.reset(); rules.flat_time.reset(); rules.no_overnight = false;
   rules.events.clear(); rules.news_before_minutes = 0; rules.news_after_minutes = 0; rules.news_action = "block";
   rules.hold_restrictions.clear(); rules.hold_cutoff = 15 * 60 + 45; rules.hold_calendar.reset();
+  rules.scaling.clear(); rules.size_scaling.reset();
   ScriptedMarket g;
   JournalFile again;
   {
@@ -76,6 +78,7 @@ TEST(TimeRules, LegacyPlanJournalBytes) {
   ASSERT_EQ(recovery.records.size(), repeated.records.size());
   for (std::size_t i = 0; i < recovery.records.size(); ++i) EXPECT_EQ(recovery.records[i].payload, repeated.records[i].payload);
   EXPECT_EQ(recovery.head, repeated.head);
+  EXPECT_EQ(TradingSession::recover(recovery).snapshot_json(), TradingSession::recover(repeated).snapshot_json());
 }
 
 void next_day(TradingSession& s, ScriptedMarket& f, md::Date day) {

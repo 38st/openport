@@ -82,6 +82,133 @@ TEST(EventRules, FlattenOnceWithRecoveryAndIdenticalReplay) {
   EXPECT_EQ(s.snapshot()->evaluation.event_actions.size(), 1U);
   EXPECT_EQ(TradingSession::recover(FileJournal::read(file.path)).snapshot_json(), s.snapshot_json());
 }
+TEST(EventRules, FundedScalingWithFlatNewsAndHoldingRulesSurvivesResetAndRecovery) {
+  for (const auto* first : {"flat_time", "news", "hold"}) {
+    SCOPED_TRACE(first);
+    const std::string trigger(first);
+    ScriptedMarket f;
+    AccountRules r;
+    r.phase = Phase::Funded;
+    r.payouts.qualifying_days = 1;
+    r.scaling = {{Money{}, 2}, {m("100"), 4}};
+    r.size_scaling = SizeScaling{1, 0, 1, 25, m("14000")};
+    r.max_contracts_held = 4;
+    r.flat_time = trigger == "flat_time" ? 601 : 602;
+    r.no_overnight = true;
+    r.news_after_minutes = 5;
+    r.news_action = "flatten";
+    r.events = {{"news", trigger == "news" ? "2026-09-22T14:01:00Z" : "2026-09-22T14:02:00Z"},
+                {"split", "2026-09-23", "SPX"}};
+    r.hold_restrictions = {"split"};
+    r.hold_cutoff = trigger == "hold" ? 601 : 602;
+    EXPECT_TRUE(r.evaluation()); // Holding rules can decide even without a profit target or floor.
+    auto evaluation_phase = r;
+    evaluation_phase.phase = Phase::Evaluation;
+    EXPECT_THROW(TradingSession(config(evaluation_phase), f.time), TradingError);
+
+    JournalFile file;
+    TradingSession s(config(r), f.time, FileJournal::create(file.path));
+    const auto recorded_rules = s.config().rules;
+    ASSERT_TRUE(recorded_rules.hold_calendar);
+    f.seed(s);
+    ASSERT_TRUE(s.submit(f.market("held"), f.time).decision.ok());
+    const auto working = s.submit(f.limit("reserved", 1, "3.50", Side::Buy, TimeInForce::Gtc), f.time);
+    ASSERT_TRUE(working.decision.ok());
+    // One held contract and one working entry consume the session's scaling cap.
+    EXPECT_EQ(s.preview(f.market("over-cap"), f.time).decision.code, Reason::SCALING_LIMIT);
+    auto recovered = TradingSession::recover(FileJournal::read(file.path));
+    EXPECT_EQ(recovered.config().rules, recorded_rules);
+    EXPECT_EQ(recovered.snapshot_json(), s.snapshot_json());
+
+    // Each close mechanism must release the reservation, close through the cap,
+    // and retain its label when the other two mechanisms become due.
+    for (const auto minute : {1, 2}) {
+      f.time = md::new_york_to_utc({2026, 9, 22}, 10, minute);
+      ++f.observation;
+      for (auto* session : {&s, &recovered}) {
+        session->on_quotes({f.quote("6.20", "6.40")}, {f.valuation()}, f.time);
+        EXPECT_TRUE(session->snapshot()->positions.empty());
+        EXPECT_TRUE(session->snapshot()->open_orders.empty());
+        EXPECT_TRUE(session->snapshot()->recent_orders.back().request.client_order_id.starts_with("system:" + trigger + ":"));
+        EXPECT_EQ(session->snapshot()->evaluation.scaling_limit, 2);
+        EXPECT_EQ(session->snapshot()->evaluation.status, EvaluationStatus::Active);
+      }
+      EXPECT_EQ(recovered.snapshot_json(), s.snapshot_json());
+    }
+    const auto closed = s.snapshot();
+    EXPECT_EQ(closed->recent_orders.size(), 3U);
+    EXPECT_EQ(closed->recent_orders.at(*working.order_id - 1).reason.code,
+        trigger == "flat_time" ? Reason::FLAT_TIME : trigger == "news" ? Reason::NEWS_BLACKOUT : Reason::HOLD_RESTRICTED);
+    EXPECT_EQ(closed->evaluation.event_actions.size(), 2U);
+    EXPECT_EQ(size_scaling_profit(closed->evaluation, plan_inputs(*closed).balance), m("198.70"));
+    EXPECT_EQ(TradingSession::recover(FileJournal::read(file.path)).snapshot_json(), s.snapshot_json());
+
+    f.time = md::new_york_to_utc({2026, 9, 23}, 10, 0);
+    for (auto* session : {&s, &recovered}) {
+      ASSERT_TRUE(session->roll_day(f.time).decision.ok());
+      const auto scaled = session->snapshot();
+      EXPECT_EQ(scaled->evaluation.status, EvaluationStatus::Active);
+      EXPECT_EQ(scaled->evaluation.scaling_limit, 4);
+      EXPECT_EQ(scaled->evaluation.starting_balance, m("12500"));
+      ASSERT_TRUE(scaled->evaluation.size_scaling);
+      EXPECT_EQ(scaled->evaluation.size_scaling->history.size(), 1U);
+      EXPECT_TRUE(scaled->evaluation.holding_violations.empty());
+      ASSERT_TRUE(session->reset_account(m("10000"), r, "combined rules", f.time).decision.ok());
+      EXPECT_EQ(session->config().rules, recorded_rules);
+      EXPECT_EQ(*session->snapshot()->attempts.back().rules, recorded_rules);
+      EXPECT_EQ(session->snapshot()->evaluation.scaling_limit, 2);
+      ASSERT_TRUE(session->snapshot()->evaluation.size_scaling);
+      EXPECT_TRUE(session->snapshot()->evaluation.size_scaling->history.empty());
+      EXPECT_TRUE(session->snapshot()->evaluation.event_actions.empty());
+    }
+    EXPECT_EQ(recovered.snapshot_json(), s.snapshot_json());
+    const auto reset = TradingSession::recover(FileJournal::read(file.path));
+    EXPECT_EQ(reset.config().rules, recorded_rules);
+    EXPECT_EQ(reset.snapshot_json(), s.snapshot_json());
+  }
+}
+TEST(EventRules, HoldingFailurePreventsAnOtherwiseEarnedFundedSizeIncrease) {
+  for (const bool overnight : {false, true}) {
+    SCOPED_TRACE(overnight);
+    ScriptedMarket f;
+    f.time = md::new_york_to_utc({2026, 9, 25}, 10, 0);
+    auto r = news(f, "flatten");
+    r.phase = Phase::Funded;
+    r.payouts.qualifying_days = 1;
+    r.scaling = {{Money{}, 2}, {m("100"), 4}};
+    r.size_scaling = SizeScaling{1, 0, 1, 25, m("14000")};
+    r.flat_time = 945;
+    r.no_overnight = overnight;
+    r.hold_restrictions = {"weekend"};
+    EXPECT_TRUE(r.evaluation()); // F59 alone activates failure checks when overnight is off.
+    JournalFile file;
+    TradingSession s(config(r), f.time, FileJournal::create(file.path));
+    f.seed(s);
+    ASSERT_TRUE(s.submit(f.market("profit-open"), f.time).decision.ok());
+    f.next();
+    s.on_quotes({f.quote("6.20", "6.40")}, {f.valuation()}, f.time);
+    ASSERT_TRUE(s.submit(f.market("profit-close", 1, Side::Sell), f.time).decision.ok());
+    ASSERT_TRUE(s.submit(f.market("weekend-hold"), f.time).decision.ok());
+    const auto before = s.snapshot();
+    ASSERT_GT(size_scaling_profit(before->evaluation, plan_inputs(*before).balance), m("100"));
+
+    // No fresh closing liquidity arrives before the boundary. The earned profit
+    // cannot qualify this failed attempt for a capital increase at the review.
+    const auto rollover = md::new_york_to_utc({2026, 9, 25}, 17, 0);
+    ASSERT_TRUE(s.roll_day(rollover).decision.ok());
+    const auto after = s.snapshot();
+    EXPECT_EQ(after->evaluation.status, EvaluationStatus::Failed);
+    EXPECT_EQ(after->evaluation.decision_code, overnight ? Reason::OVERNIGHT_HOLD : Reason::HOLD_RESTRICTED);
+    EXPECT_EQ(after->evaluation.starting_balance, m("10000"));
+    ASSERT_TRUE(after->evaluation.size_scaling);
+    EXPECT_TRUE(after->evaluation.size_scaling->history.empty());
+    EXPECT_EQ(TradingSession::recover(FileJournal::read(file.path)).snapshot_json(), s.snapshot_json());
+    tick(s, f, md::new_york_to_utc({2026, 9, 28}, 10, 0));
+    EXPECT_TRUE(s.snapshot()->positions.empty());
+    EXPECT_EQ(s.snapshot()->evaluation.decided_at, rollover);
+    EXPECT_EQ(TradingSession::recover(FileJournal::read(file.path)).snapshot_json(), s.snapshot_json());
+  }
+}
 TEST(EventRules, EachCorporateKindAndEarningsSessionHasCorrectCutoff) {
   for (const auto& kind : {"earnings", "ex_dividend", "split"}) {
     for (const auto& session : {"before_open", "after_close"}) {
