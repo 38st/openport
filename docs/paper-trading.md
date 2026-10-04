@@ -2179,9 +2179,12 @@ current offering or a claim to reproduce FTMO, The5ers, BluSky or Earn2Trade ter
 Existing preset IDs and trading rules are unchanged.
 
 Creation (`POST /api/accounts`) and replay start accept only unlocked presets.
-Use the passing account's normal reset to enter a locked step. The terminal shows
-locked choices and what passes unlock them; Dashboard offers **Start verification**
-or **Start funded account**, opening the reset confirmation with that plan selected.
+Use the passing account's normal reset to enter a locked step. The terminal always
+offers verification, locked with **Pass ... to unlock** until the challenge passes;
+Dashboard then offers **Start verification**, opening the reset confirmation with
+that plan selected. Funded steps (including `two-step-funded-*`) and **Start funded
+account** stay hidden unless `showFundedAccounts` is on or the account is already
+funded. A funded step still needs its prerequisite pass.
 The reset dialog, Rules and attempt history show the phase and its pacing.
 
 #### Program costs and reset limits (F64)
@@ -2230,6 +2233,8 @@ reports current `fee_charged` and `fee_kind`; each archived attempt exposes its
 starting `fee_charged` and `fee_kind`. Zero charges have a null kind. Dashboard
 shows costs and net; reset confirmation quotes the selected terms and remaining
 resets, and disables an exhausted restart. The custom editor edits all four terms.
+Funded-step cost displays, including their activation fees, follow the same visibility
+as funded plans; verification costs remain visible.
 
 Session start and account reset journal the actual nonzero fee with its kind.
 The current charge, archived charges and archived payout totals are omitted at
@@ -2458,8 +2463,10 @@ date ends and before rollover) and an unlocked peak and floor all move down by t
 amount, so the day's P&L and the drawdown room are unchanged and an end-of-day ratchet
 compares closes net of it; a locked floor stays where it is.
 
-The web terminal offers verification and funded steps with their prerequisite locks,
-and shows the Payouts page. All funding, fees and payouts are simulated. The custom plan editor can explicitly select the funded phase
+The web terminal always offers verification with its prerequisite lock, but hides
+funded plans and the Payouts page (this simulator funds no one) unless the account is
+already funded; `showFundedAccounts` in `web/src/lib/features.ts` offers them again.
+The custom plan editor can explicitly select the funded phase
 and edit qualifying days, shares, caps, consistency percentages and buffer rules.
 The Payouts page shows cycle profit, best day/date/share, the current limit, remaining
 profit and active buffer balance; plan facts and Rules also state these settings.

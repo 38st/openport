@@ -317,8 +317,10 @@ and a payout buffer above the starting balance for all or the first N payouts (F
 Optional scaling plans (F39) start at reduced option size and change the contract
 limit from the next session’s closed-balance step, up or down. Every option leg
 counts, working openings reserve capacity, and the terminal shows and edits the plan.
-The terminal offers these simulated steps with prerequisite locks and shows the
-Payouts page; no real funding or payments occur. [Paper trading](paper-trading.md) documents every rule, the HTTP contract and
+The terminal offers verification with prerequisite locks. This is a simulator that
+funds no one, so it hides funded plans and the Payouts page unless the account is
+already funded; set `showFundedAccounts` in `web/src/lib/features.ts` to offer them.
+[Paper trading](paper-trading.md) documents every rule, the HTTP contract and
 the simulation's limits.
 
 Opt-in inside fills fill limits at a deterministic share of the bid/ask spread
@@ -392,7 +394,7 @@ special opening quotation; live providers keep manual imports.
 - [x] Paper trading against live quotes: risk limits, scenarios, index and American
       equity and ETF options
 - [x] Evaluation simulator: profit targets, trailing drawdowns, resets and a trade
-      journal, with verification, funded phases and simulated payouts in the engine and terminal
+      journal, with verification in the terminal and funded phases and payouts in the engine
 - [x] Plan objectives: daily loss limits by basis that lock the day or fail, best-day
       consistency, minimum trading and profitable days, static and lock-at-start floors,
       closed-balance targets, exit costs and a trading day set per plan
