@@ -13,6 +13,10 @@ namespace {
 using namespace openport;
 using namespace std::chrono_literals;
 
+// Generating a day has taken over five minutes under concurrent builds. These
+// waits guard liveness, not generation or playback throughput.
+constexpr auto demo_timeout = 15min;
+
 class DemoClock final : public providers::ReplayClock {
  public:
   TimePoint now() override { const std::lock_guard lock(mutex_); return now_; }
@@ -35,7 +39,7 @@ class DemoClock final : public providers::ReplayClock {
   TimePoint now_{}, limit_{};
 };
 template<class Predicate> bool eventually(Predicate predicate) {
-  const auto end = std::chrono::steady_clock::now() + 5min;
+  const auto end = std::chrono::steady_clock::now() + demo_timeout;
   while (!predicate()) {
     if (std::chrono::steady_clock::now() > end) return false;
     std::this_thread::sleep_for(2ms);
@@ -320,10 +324,12 @@ TEST(DemoFeed, RotatesWithoutStoppedStatusPreservesIdsAndDeletesFiles) {
 }
 
 server::TradingReply submit(server::Engine& engine, server::TradingCommand command) {
-  std::promise<server::TradingReply> done;
-  auto future = done.get_future();
-  engine.post_trading(std::move(command), [&](auto reply) { done.set_value(std::move(reply)); });
-  if (future.wait_for(5min) != std::future_status::ready) throw std::runtime_error("command timed out");
+  // A timed-out caller must not leave the consumer with a dangling promise.
+  auto done = std::make_shared<std::promise<server::TradingReply>>();
+  auto future = done->get_future();
+  if (!engine.post_trading(std::move(command), [done](auto reply) { done->set_value(std::move(reply)); }))
+    throw std::runtime_error("command was not accepted");
+  if (future.wait_for(demo_timeout) != std::future_status::ready) throw std::runtime_error("command timed out");
   return future.get();
 }
 
