@@ -620,9 +620,14 @@ TEST(DemoFeed, ConsecutiveDaysFillRollAndSettleWithLivePaperAccounts) {
   const auto monday = md::new_york_to_utc({2026, 9, 21}, 9, 30);
   ASSERT_TRUE(eventually([&] { return engine.trading_view()->snapshot->time >= monday; }));
   view = engine.trading_view();
+  EXPECT_EQ(view->snapshot->time, monday) << "The clock released only Monday's opening batch";
   EXPECT_EQ(view->snapshot->evaluation.day, (md::Date{2026, 9, 21}));
   EXPECT_EQ(view->snapshot->positions.size(), 1U);
-  EXPECT_EQ(engine.status().feed_state, md::FeedState::Live);
+  // Seeing this account publication must also mean this batch's health has
+  // published, even if the consumer is descheduled immediately afterwards.
+  const auto status = engine.status();
+  EXPECT_EQ(status.feed_state, md::FeedState::Live) << status.feed_message;
+  EXPECT_EQ(status.underlyings.at("SPX").last_success, monday);
   order.order.client_order_id = "close-carry";
   order.order.side = trading::Side::Sell;
   const auto closed = submit(engine, order);

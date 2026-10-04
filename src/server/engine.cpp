@@ -362,12 +362,6 @@ void Engine::run() {
       if (!synchronized.empty() || (replay_ && replay_->paused() && !replay_->fast_forwarding() && !replay_->stepping()))
         desk_.flush_journals();
       publish_desk();
-      {
-        const std::lock_guard lock(mutex_);
-        status_.events = events_;
-        status_.underlyings = health_;
-        status_.feed_updated = feed_updated_;
-      }
       for (auto& done : synchronized) done.set_value();
       continue;
     }
@@ -450,6 +444,14 @@ void Engine::run() {
 
 void Engine::publish_desk() {
   const std::lock_guard lock(mutex_);
+  if (replay_ || demo_) {
+    // Publish a driven batch's health with its account/analytics views, before
+    // acknowledging it. Otherwise a new day's account can be visible beside the
+    // previous day's health, which status() correctly considers stale.
+    status_.events = events_;
+    status_.underlyings = health_;
+    status_.feed_updated = feed_updated_;
+  }
   metrics_ = desk_.publications();
   trading_views_ = desk_.views();
   status_.trading = desk_.trading_status();
