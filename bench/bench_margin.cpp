@@ -37,18 +37,19 @@ std::vector<trading::MarginLeg> fragmented_book() {
   const auto second = *md::parse_osi("SPY261029P00500000");
   const auto third = *md::parse_osi("SPY261105P00500000");
   for (int i = 0; i < 40; ++i) {
-    auto shorted = i % 3 == 0 ? first : i % 3 == 1 ? second : third;
-    shorted.type = i % 2 == 0 ? pricing::OptionType::Call : pricing::OptionType::Put;
-    shorted.strike = 460.0 + i * 2;
-    auto cover = shorted;
-    cover.strike += shorted.type == pricing::OptionType::Call ? 1 : -1;
-    legs.push_back({shorted, -1, trading::Money::parse("250"), 500.0});
-    legs.push_back({cover, 1, {}, 500.0});
+    auto put = i % 3 == 0 ? first : i % 3 == 1 ? second : third;
+    auto call = i % 3 == 0 ? second : i % 3 == 1 ? third : first;
+    put.strike = 460.0 + i * 2;
+    call.strike = put.strike + 1;
+    call.type = pricing::OptionType::Call;
+    legs.push_back({put, -1, trading::Money::parse("250"), 500.0});
+    legs.push_back({call, -1, trading::Money::parse("250"), 500.0});
   }
   return legs;
 }
-// Many small pairs/pools and distinct strikes force the bounded neighbourhood
-// search to do substantially more work than the ordinary 80-leg book.
+// Forty small straddles across three expiries cannot coalesce into bounded
+// pools. Their many cheap, unsuccessful trials exhaust the work budget through
+// more neighbourhoods than a few large pools with expensive payoff curves.
 void BM_MarginPairingFragmented(benchmark::State& state) {
   const auto legs = fragmented_book();
   for (auto _ : state) benchmark::DoNotOptimize(trading::detail::pairing_margin_requirement(legs));
