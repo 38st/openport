@@ -360,6 +360,8 @@ opening receipt group. Trading while paused is allowed. EOF makes the run read-o
 Relative steps (`until:"+15s"`, `"+1m"`, `"+1h"`) and `until:"next"` make repeatable
 small advances. Abort, pause and stop interrupt a long step after its current batch
 settles. A paused skip is queued visibly as `skip_pending`; `skip:false` cancels it.
+Time spent paused does not consume a receipt gap. After lockstep steps, paced
+playback waits one receipt gap at the selected speed, measured from the resume.
 
 `play_until:"14:30:15"` with optional `speed:60` watches an advance and pauses at
 the same settled target as `until`; state shows `pause_at` while it plays. Manual

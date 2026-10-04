@@ -308,7 +308,7 @@ class ManualClock final : public providers::ReplayClock {
     ++generation;
     waiting = deadline;
     changed.notify_all();
-    changed.wait(lock, [&] { return stop.load() || current >= deadline; });
+    changed.wait(lock, [&] { return !wait_held && (stop.load() || current >= deadline); });
     waiting.reset();
     return !stop.load();
   }
@@ -319,6 +319,12 @@ class ManualClock final : public providers::ReplayClock {
   void advance(TimePoint::duration by) {
     const std::lock_guard lock(mutex);
     current += by;
+    changed.notify_all();
+  }
+  /// Keep the provider inside its current wait while controls change.
+  void hold_wait(bool held) {
+    const std::lock_guard lock(mutex);
+    wait_held = held;
     changed.notify_all();
   }
   std::size_t wait_generation() {
@@ -340,6 +346,7 @@ class ManualClock final : public providers::ReplayClock {
   TimePoint current{};
   std::optional<TimePoint> waiting;
   std::size_t generation = 0;
+  bool wait_held = false;
 };
 
 /// Four events a minute apart, then one eight hours later: an overnight close.
@@ -496,6 +503,42 @@ TEST(Replay, ResumingAfterLockstepStepsWaitsOneGap) {
   ASSERT_TRUE(waiting.has_value());
   EXPECT_EQ(*waiting - resumed, std::chrono::duration_cast<ManualClock::TimePoint::duration>(15s));
   replay.stop();
+}
+
+TEST(Replay, ResumingBeforeThePacingWaitObservesPausePreservesTheGap) {
+  const auto file = quarter_minute_recording(8);
+  const auto open = md::new_york_to_utc({2026, 9, 16}, 10, 0);
+  enum class Resume { Playback, Deterministic, PlayUntil };
+  for (const auto resume : {Resume::Playback, Resume::Deterministic, Resume::PlayUntil}) {
+    SCOPED_TRACE(static_cast<int>(resume));
+    auto clock = std::make_shared<ManualClock>();
+    test::DiscardEvents discard;
+    providers::ReplayProvider replay({file.path, 1, false, clock});
+    if (resume != Resume::Playback) replay.set_driver(immediate_driver());
+    replay.start({{"SPX"}}, discard);
+    ASSERT_EQ(clock->waiting_for(), clock->now() + 15s);
+
+    // Force both controls to arrive before the interrupted wait can return. The
+    // provider must account for the pause even if pace() never sees paused=true.
+    clock->hold_wait(true);
+    replay.set_paused(true);
+    clock->advance(1s);
+    const auto resumed = clock->now();
+    const auto generation = clock->wait_generation();
+    if (resume == Resume::PlayUntil) replay.play_until(open + 30 * md::kNanosPerSecond);
+    else replay.set_paused(false);
+    // Time after the resume does count, even before the provider observes it.
+    clock->advance(1s);
+    clock->hold_wait(false);
+    const auto waiting = clock->waiting_for(generation);
+    ASSERT_TRUE(waiting.has_value());
+    EXPECT_EQ(*waiting - resumed, std::chrono::duration_cast<ManualClock::TimePoint::duration>(15s));
+    clock->advance(13s);
+    EXPECT_EQ(replay.time(), open);
+    clock->advance(1s);
+    ASSERT_TRUE(test::recording_eventually([&] { return replay.time() == open + 15 * md::kNanosPerSecond; }));
+    replay.stop();
+  }
 }
 
 // B05: a target past EOF is an error that leaves the run where it was, paused and

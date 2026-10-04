@@ -84,16 +84,27 @@ void ReplayProvider::set_speed(int speed) {
 }
 
 void ReplayProvider::set_paused(bool paused) {
-  // A pause starts when it is asked for, however soon the replay notices.
-  if (paused && !paused_.load()) paused_at_ = options_.clock->now().time_since_epoch().count();
   {
     const std::lock_guard lock(control_mutex_);
+    // Both ends of a pause belong to the controls, even if the pacing thread
+    // observes neither before the resume (for example, just after an until).
+    if (paused && !paused_.load()) paused_at_ = options_.clock->now().time_since_epoch().count();
     if (!paused || !paused_.load()) pause_settled_ = false;
-    paused_ = paused;
+    if (paused) paused_ = true;
+    else resume_locked();
     pause_at_ = 0;
     if (paused && stepping_.load()) abort_requested_ = true;
   }
   wake();
+}
+
+void ReplayProvider::resume_locked() {
+  if (paused_.load()) {
+    const auto since = ReplayClock::TimePoint(ReplayClock::TimePoint::duration(paused_at_.load()));
+    const auto away = std::max(ReplayClock::TimePoint::duration::zero(), options_.clock->now() - since);
+    paused_duration_ += std::min(away, ReplayClock::TimePoint::duration::max() - paused_duration_);
+  }
+  paused_ = false;
 }
 
 void ReplayProvider::skip(bool pending) {
@@ -129,7 +140,7 @@ void ReplayProvider::play_until(md::Timestamp target, std::optional<int> speed) 
     if (stepping_.load() || preparing_.load()) throw std::invalid_argument("Wait for the current step or start state");
     pause_at_ = target;
     if (speed) speed_ = *speed;
-    paused_ = false;
+    resume_locked();
     pause_settled_ = false;
   }
   wake();
@@ -137,19 +148,22 @@ void ReplayProvider::play_until(md::Timestamp target, std::optional<int> speed) 
 
 bool ReplayProvider::pace(ReplayClock::TimePoint& deadline, int basis) {
   while (!stopping_.load()) {
+    std::unique_lock lock(control_mutex_);
+    // Read controls and clear the interrupt under the same lock.
+    // A later control must interrupt the wait we are about to start.
+    interrupted_ = false;
     if (seeking_.load()) return true;
+    if (deadline < ReplayClock::TimePoint::max() - paused_duration_) deadline += paused_duration_;
+    else deadline = ReplayClock::TimePoint::max();
+    paused_duration_ = {};
     if (paused_.load()) {
+      lock.unlock();
       if (!synchronize()) return false;
-      std::unique_lock lock(control_mutex_);
+      lock.lock();
       pause_settled_ = true;
       control_.notify_all();
       control_.wait(lock, [&] { return !paused_.load() || !pause_settled_ || seeking_.load() || stopping_.load(); });
-      lock.unlock();
       if (stopping_.load()) return false;
-      // Time spent paused does not count against the gap.
-      const auto since = ReplayClock::TimePoint(ReplayClock::TimePoint::duration(paused_at_.load()));
-      const auto away = std::max(ReplayClock::TimePoint::duration::zero(), options_.clock->now() - since);
-      if (deadline < ReplayClock::TimePoint::max() - away) deadline += away;
       continue;
     }
     const int speed = speed_.load();
@@ -164,7 +178,7 @@ bool ReplayProvider::pace(ReplayClock::TimePoint& deadline, int basis) {
     if (speed != basis && basis != 0 && deadline != ReplayClock::TimePoint::max() && deadline > now)
       deadline = now + (deadline - now) / speed * basis;
     basis = speed;
-    interrupted_ = false;
+    lock.unlock();
     if (stopping_.load() || paused_.load()) continue;
     if (options_.clock->wait_until(deadline, interrupted_)) return true;
     if (stopping_.load()) return false;
@@ -236,12 +250,14 @@ void ReplayProvider::run(md::Subscription subscription, md::EventSink& sink) {
             if (!synchronize()) break;
             synchronized_at = *previous;
           }
+          const std::lock_guard lock(control_mutex_);
+          deadline = options_.clock->now();
+          paused_duration_ = {};
           if (*previous >= options_.start_at) {
             seeking_ = false;
             preparing_ = false;
-            if (paused_.load()) paused_at_ = options_.clock->now().time_since_epoch().count();
+            if (paused_.load()) paused_at_ = deadline.time_since_epoch().count();
           }
-          deadline = options_.clock->now();
         }
         const int measured = speed_.load();
         if (previous && !seeking_.load()) {
@@ -387,6 +403,7 @@ void ReplayProvider::run_deterministic(md::Subscription subscription, md::EventS
           seeking_ = false;
           preparing_ = false;
           deadline = options_.clock->now();
+          paused_duration_ = {};
           paused_at_ = deadline.time_since_epoch().count();
         }
         const auto paced_target = pause_at_.load();
@@ -408,6 +425,7 @@ void ReplayProvider::run_deterministic(md::Subscription subscription, md::EventS
           // The step played its batches unpaced: the next gap counts from here, not
           // from a deadline measured before it, or each step would add a stale gap.
           deadline = options_.clock->now();
+          paused_duration_ = {};
           paused_at_ = deadline.time_since_epoch().count();
           seeking_ = false;
           step_pending_ = false;
@@ -442,9 +460,11 @@ void ReplayProvider::run_deterministic(md::Subscription subscription, md::EventS
       next_time_ = next ? next->time : 0;
       if (preparing_.load() && options_.start_through == 0 && receipt >= options_.start_at && (!next || next->received > receipt)) {
         if (paused_.load() && !synchronize()) break;
+        const std::lock_guard lock(control_mutex_);
         seeking_ = false;
         preparing_ = false;
         deadline = options_.clock->now();
+        paused_duration_ = {};
         if (paused_.load()) paused_at_ = deadline.time_since_epoch().count();
       }
 

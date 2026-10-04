@@ -103,6 +103,7 @@ class ReplayProvider final : public md::Provider {
   /// what is left of the wait, including one chosen while paused.
   bool pace(ReplayClock::TimePoint& deadline, int basis);
   bool synchronize();
+  void resume_locked();  // control_mutex_ held; account for the pause at resume time
   void validate_target(md::Timestamp target);  // control_mutex_ held; end checked by caller
   void wake();
   Options options_;
@@ -123,6 +124,7 @@ class ReplayProvider final : public md::Provider {
   std::atomic<bool> seeking_{false};
   std::atomic<bool> preparing_{false};
   std::mutex control_mutex_;
+  ReplayClock::TimePoint::duration paused_duration_{};  // control_mutex_; not yet applied to pacing
   std::condition_variable control_;
   bool started_ = false;
   Driver driver_;
