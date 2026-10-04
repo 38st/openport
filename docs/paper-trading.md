@@ -1696,8 +1696,12 @@ to net by expiry. So a credit spread holds its width, an iron condor its wider w
 (a calendar beside it adds nothing), a long butterfly nothing, a calendar nothing beyond its debit, a diagonal the
 strike difference when its long is further out of the money, a covered call nothing
 beyond its shares, and a short strangle its greater side plus the other side's value.
-A bounded joint allocator then improves these candidates by merging expiry pools and
-moving or exchanging whole contracts between pairs and pools. Each trial is scored
+A bounded joint allocator improves every distinct candidate, sharing one work budget
+across the starts. It tries expiry-pool merges before other merges, then moves or
+exchanges whole contracts between pairs and pools. Two holdings can move together,
+including a short and an offsetting long of another type or quantity. A pair can
+temporarily hold an unused long while forming a pool; earlier-expiring longs stay
+outside on ties so they cannot block that pool. Each trial is scored
 with the pools' actual worst losses, so a butterfly can keep a later long even when
 pairing that long elsewhere would save more in isolation. A pool uses shorts from
 one expiry and longs expiring then or later, valued at intrinsic; its call slope
@@ -1705,12 +1709,21 @@ must be nonnegative. Each option contract is allocated once. Share covers remain
 reserved while options are reallocated. All amounts use exact integer micro-dollars;
 new buy-back-value tranches round up so splitting cannot create fractional savings.
 
-The search has a fixed budget of 32,768 work units per underlying (candidate members
-and strike-payoff evaluations), deterministic traversal and tie rules, and no
+The search has a fixed total budget of 32,768 work units per underlying (candidate
+members and strike-payoff evaluations), split across distinct starts, with unused
+work passed to the next start. It has deterministic traversal and tie rules, and no
 wall-clock cutoff or loop over contract quantity. It keeps the best valid allocation
 found, including the original pairing and separate-expiry candidates, so it cannot
 raise their requirement or use an infeasible discounted bound. The budget can leave
 conservative margin above the global minimum; this is not an exact optimizer.
+In particular, combining mixed-expiry books on one underlying can still require
+more than their separate requirements added together. The fixed-seed regression
+probe (`0xF490123`, 2–7 non-overlapping SPY series per book, three expiries,
+quantities ±1–2, $250 buy-back value per short contract, spot $500, no house uplift)
+measures 10 violations in 20,736 margin pairs (0.048%) and 0 in 5,423 allowed IRA
+pairs. Before this improvement the same probe measured 26 and 1 respectively;
+pairing alone measured 34 and 47. These are measured rates, not guarantees of
+subadditivity. The bounded search always retains the old method as an upper bound.
 A butterfly beside a calendar can hold nothing. Long options and long shares are
 paid in full, so a protective put needs nothing beyond its premium; short shares
 no long call protects hold 150% of their value. A long that expires before its short does not cover it. (European puts can

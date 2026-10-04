@@ -391,10 +391,14 @@ struct MarginPolicy {
 /// pairing across expiries, pairing without straddles (which can preserve a
 /// condor's shared worst loss), and taking each expiry on its own, both with
 /// shares covering nothing and with shares first taking their best covers.
-/// A deterministic, fixed-budget search improves these feasible candidates by
-/// merging expiry pools and transferring or exchanging whole option contracts.
+/// A deterministic search shares a fixed budget across all distinct feasible
+/// candidates, merging expiry pools and transferring or exchanging whole option
+/// contracts, including two holdings moved together.
 /// Pools use same-expiry shorts and same-or-later longs, with no net short calls.
-/// The result never exceeds the incumbent; it can exceed the global minimum.
+/// The result never exceeds the old pairing/separate-expiry method, but can
+/// exceed the global minimum or the sum of separate mixed-expiry books. The
+/// fixed-seed 0xF490123 probe measures 10/20,736 margin subadditivity violations
+/// and 0/5,423 allowed IRA violations; this bounded search is not exact.
 /// Longs need nothing: their premium is paid in full, as long shares are; short
 /// shares hold their value and half again.
 /// A house percentage raises each naked requirement (beyond the buy-back value)
