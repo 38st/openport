@@ -590,6 +590,28 @@ TEST(TradingMargin, PortfolioSharesMoveLinearlyAndUnderlyingsCannotOffsetEachOth
       {{"SPY", {"SPY", 100, {}, {}, {}}}}, {{"SPY", 500}}), m("37.50"));
 }
 
+TEST(TradingMargin, ProtectivePutsReduceThePortfolioScanIncludingPartialShareHedges) {
+  const auto now = md::new_york_to_utc({2026, 9, 22}, 10, 0);
+  const auto put = *md::parse_osi("SPY261022P00500000");
+  const auto symbol = put.osi_symbol();
+  const Valuation v{symbol, now, -0.5, 0.01, 1, -0.1, 500, 500, 1, md::years_between(now, put.expiry_time()), 0.2, true};
+  const std::vector<MarginLeg> legs{{put, 1, {}, 500.0}};
+  std::optional<Money> protected_lot;
+  for (const Quantity shares : {50, 100, 150}) {
+    const std::map<std::string, StockPosition> stocks{{"SPY", {"SPY", shares, {}, {}, {}}}};
+    const auto plain = portfolio_margin_requirement({}, {}, now, md::kNanosPerMinute, stocks, {{"SPY", 500}});
+    const auto protected_shares = portfolio_margin_requirement(legs, {{symbol, v}}, now, md::kNanosPerMinute, stocks, {{"SPY", 500}});
+    ASSERT_TRUE(plain && protected_shares);
+    EXPECT_LT(*protected_shares, *plain);
+    EXPECT_GE(*protected_shares, m("37.50"));
+    if (shares == 100) protected_lot = protected_shares;
+    if (shares == 150) { ASSERT_TRUE(protected_lot); EXPECT_GT(*protected_shares, *protected_lot); }
+    // Strategy accounts pay for long shares in full: there is no additional
+    // share requirement for the put to reduce, and its premium is already paid.
+    EXPECT_EQ(margin_requirement(legs, {{"SPY", shares, m("500") * shares}}), Money{});
+  }
+}
+
 TEST(TradingMultiLeg, PortfolioMarginAllowsAStraddleThatStrategyMarginCannotFund) {
   const auto put = osi("SPXW261022P05000000");
   const auto call = osi("SPXW261022C05000000");
