@@ -1035,7 +1035,7 @@
             "$ref": "#/components/responses/Error"
           },
           "422": {
-            "description": "FLAT_TIME, NEWS_BLACKOUT or HOLD_RESTRICTED: an opening preview blocked by mandatory flat time or a calendar restriction. FLAT_TIME uses NY minute actual/limit and account scope; NEWS_BLACKOUT uses UTC actual/window end; HOLD_RESTRICTED uses null actual, HH:MM limit and kind:scope. Reductions remain available.",
+            "description": "FLAT_TIME, NEWS_BLACKOUT or HOLD_RESTRICTED: an opening preview blocked by mandatory flat time or a calendar restriction. FLAT_TIME and OUTSIDE_PLAN_HOURS use HH:MM New York actual/limit and account scope; NEWS_BLACKOUT uses UTC actual/window end; HOLD_RESTRICTED uses null actual, HH:MM limit and kind:scope. Reductions remain available.",
             "content": {
               "application/json": {
                 "schema": {
@@ -1212,7 +1212,7 @@
             "$ref": "#/components/responses/Error"
           },
           "422": {
-            "description": "FLAT_TIME, NEWS_BLACKOUT or HOLD_RESTRICTED: an opening preview blocked by mandatory flat time or a calendar restriction. FLAT_TIME uses NY minute actual/limit and account scope; NEWS_BLACKOUT uses UTC actual/window end; HOLD_RESTRICTED uses null actual, HH:MM limit and kind:scope. Reductions remain available.",
+            "description": "FLAT_TIME, NEWS_BLACKOUT or HOLD_RESTRICTED: an opening preview blocked by mandatory flat time or a calendar restriction. FLAT_TIME and OUTSIDE_PLAN_HOURS use HH:MM New York actual/limit and account scope; NEWS_BLACKOUT uses UTC actual/window end; HOLD_RESTRICTED uses null actual, HH:MM limit and kind:scope. Reductions remain available.",
             "content": {
               "application/json": {
                 "schema": {
@@ -4422,7 +4422,7 @@
             "$ref": "#/components/responses/Error"
           },
           "422": {
-            "description": "FLAT_TIME, NEWS_BLACKOUT or HOLD_RESTRICTED: an opening preview blocked by mandatory flat time or a calendar restriction. FLAT_TIME uses NY minute actual/limit and account scope; NEWS_BLACKOUT uses UTC actual/window end; HOLD_RESTRICTED uses null actual, HH:MM limit and kind:scope. Reductions remain available.",
+            "description": "FLAT_TIME, NEWS_BLACKOUT or HOLD_RESTRICTED: an opening preview blocked by mandatory flat time or a calendar restriction. FLAT_TIME and OUTSIDE_PLAN_HOURS use HH:MM New York actual/limit and account scope; NEWS_BLACKOUT uses UTC actual/window end; HOLD_RESTRICTED uses null actual, HH:MM limit and kind:scope. Reductions remain available.",
             "content": {
               "application/json": {
                 "schema": {
@@ -9217,7 +9217,7 @@
                 "type": "null"
               }
             ],
-            "description": "Optional HH:MM New York mandatory close time, strictly before day_end (00:00 to 23:59). Null disables. Once per plan trading date, cancels openings and closes tradable options and shares; remaining closes retry on fresh quotes. FLAT_TIME blocks openings until day_end, with actual=current NY minute, limit=flat_time minute, scope=account."
+            "description": "Optional HH:MM New York mandatory close time, strictly before day_end (00:00 to 23:59). Null disables. Once per plan trading date, cancels openings and closes tradable options and shares; remaining closes retry on fresh quotes. FLAT_TIME blocks openings until day_end, with actual=current NY HH:MM, limit=flat_time HH:MM, scope=account."
           },
           "no_overnight": {
             "type": "boolean",
@@ -16674,7 +16674,7 @@
                   "string",
                   "null"
                 ],
-                "description": "Numeric for existing checks. MAX_VOLUME_SHARE: actual is held plus opening contracts; limit is percent * volume / 100 unrounded and may be fractional, null without usable volume. NEWS_BLACKOUT: ISO UTC actual time/window end. HOLD_RESTRICTED: actual null, limit HH:MM ET, scope kind:underlying or kind:account."
+                "description": "FLAT_TIME and OUTSIDE_PLAN_HOURS: HH:MM New York actual/limit strings. Other checks are numeric unless noted. MAX_VOLUME_SHARE: actual is held plus opening contracts; limit is percent * volume / 100 unrounded and may be fractional, null without usable volume. NEWS_BLACKOUT: ISO UTC actual time/window end. HOLD_RESTRICTED: actual null, limit HH:MM ET, scope kind:underlying or kind:account."
               },
               "limit": {
                 "type": [
@@ -16682,7 +16682,7 @@
                   "string",
                   "null"
                 ],
-                "description": "Numeric for existing checks. MAX_VOLUME_SHARE: actual is held plus opening contracts; limit is percent * volume / 100 unrounded and may be fractional, null without usable volume. NEWS_BLACKOUT: ISO UTC actual time/window end. HOLD_RESTRICTED: actual null, limit HH:MM ET, scope kind:underlying or kind:account."
+                "description": "FLAT_TIME and OUTSIDE_PLAN_HOURS: HH:MM New York actual/limit strings. Other checks are numeric unless noted. MAX_VOLUME_SHARE: actual is held plus opening contracts; limit is percent * volume / 100 unrounded and may be fractional, null without usable volume. NEWS_BLACKOUT: ISO UTC actual time/window end. HOLD_RESTRICTED: actual null, limit HH:MM ET, scope kind:underlying or kind:account."
               },
               "scope": {
                 "anyOf": [
@@ -18514,7 +18514,7 @@
                             "type": "null"
                           }
                         ],
-                        "description": "Optional HH:MM New York mandatory close time, strictly before day_end_minutes (00:00 to 23:59). Null disables. Once per plan trading date, cancels openings and closes tradable options and shares; remaining closes retry on fresh quotes. FLAT_TIME blocks openings until day_end_minutes, with actual=current NY minute, limit=flat_time minute, scope=account."
+                        "description": "Optional HH:MM New York mandatory close time, strictly before day_end_minutes (00:00 to 23:59). Null disables. Once per plan trading date, cancels openings and closes tradable options and shares; remaining closes retry on fresh quotes. FLAT_TIME blocks openings until day_end_minutes, with actual=current NY HH:MM, limit=flat_time HH:MM, scope=account."
                       },
                       "no_overnight": {
                         "type": "boolean",
@@ -20476,7 +20476,7 @@
               "string",
               "null"
             ],
-            "description": "Numeric for existing checks. MAX_VOLUME_SHARE: actual is held plus opening contracts; limit is percent * volume / 100 unrounded and may be fractional, null without usable volume. NEWS_BLACKOUT: ISO UTC actual time/window end. HOLD_RESTRICTED: actual null, limit HH:MM ET, scope kind:underlying or kind:account."
+            "description": "FLAT_TIME and OUTSIDE_PLAN_HOURS: HH:MM New York actual/limit strings. Other checks are numeric unless noted. MAX_VOLUME_SHARE: actual is held plus opening contracts; limit is percent * volume / 100 unrounded and may be fractional, null without usable volume. NEWS_BLACKOUT: ISO UTC actual time/window end. HOLD_RESTRICTED: actual null, limit HH:MM ET, scope kind:underlying or kind:account."
           },
           "limit": {
             "type": [
@@ -20484,7 +20484,7 @@
               "string",
               "null"
             ],
-            "description": "Numeric for existing checks. MAX_VOLUME_SHARE: actual is held plus opening contracts; limit is percent * volume / 100 unrounded and may be fractional, null without usable volume. NEWS_BLACKOUT: ISO UTC actual time/window end. HOLD_RESTRICTED: actual null, limit HH:MM ET, scope kind:underlying or kind:account."
+            "description": "FLAT_TIME and OUTSIDE_PLAN_HOURS: HH:MM New York actual/limit strings. Other checks are numeric unless noted. MAX_VOLUME_SHARE: actual is held plus opening contracts; limit is percent * volume / 100 unrounded and may be fractional, null without usable volume. NEWS_BLACKOUT: ISO UTC actual time/window end. HOLD_RESTRICTED: actual null, limit HH:MM ET, scope kind:underlying or kind:account."
           },
           "scope": {
             "anyOf": [
@@ -21268,7 +21268,7 @@
                 "type": "null"
               }
             ],
-            "description": "Optional HH:MM New York mandatory close time, strictly before day_end (00:00 to 23:59). Null disables. Once per plan trading date, cancels openings and closes tradable options and shares; remaining closes retry on fresh quotes. FLAT_TIME blocks openings until day_end, with actual=current NY minute, limit=flat_time minute, scope=account."
+            "description": "Optional HH:MM New York mandatory close time, strictly before day_end (00:00 to 23:59). Null disables. Once per plan trading date, cancels openings and closes tradable options and shares; remaining closes retry on fresh quotes. FLAT_TIME blocks openings until day_end, with actual=current NY HH:MM, limit=flat_time HH:MM, scope=account."
           },
           "no_overnight": {
             "type": "boolean",
@@ -23315,7 +23315,8 @@
             ]
           },
           "time": {
-            "type": "string"
+            "type": "string",
+            "description": "News: ISO UTC timestamp ending in Z, with trailing fractional zeros omitted in responses and significant nanoseconds preserved. Corporate events: YYYY-MM-DD. Older nine-digit timestamps remain accepted."
           },
           "symbol": {
             "type": "string",

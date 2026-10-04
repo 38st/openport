@@ -4774,7 +4774,7 @@ TEST_F(PaperEngine, TimeAndTradeRulesSurviveCreateResetAndPresetMatching) {
   auto rules = read(*engine, "/api/account")["rules"];
   rules.update({{"plan", "Combined rules"}, {"plan_id", nullptr}, {"phase", "verification"},
                 {"evaluation_fee", "100.000001"}, {"reset_fee", "25.000002"}, {"activation_fee", "50.000003"}, {"max_resets", 2},
-                {"events", {{{"kind", "news"}, {"time", "2026-09-23T14:00:00.000000000Z"}},
+                {"events", {{{"kind", "news"}, {"time", "2026-09-23T14:00:00Z"}},
                             {{"kind", "split"}, {"time", "2026-09-24"}, {"symbol", "SPX"}}}},
                 {"news_before_minutes", 5}, {"news_after_minutes", 10}, {"news_action", "flatten"},
                 {"hold_restrictions", {"earnings", "ex_dividend", "split", "weekend"}}, {"hold_cutoff", "15:40"}, {"flat_time", "15:45"}, {"no_overnight", true}, {"time_limit_days", 30}, {"inactivity_days", 14},
@@ -4870,7 +4870,7 @@ TEST_F(PaperEngine, TimeRulesRoundTripProgressRefusalsAndValidation) {
   ASSERT_EQ(response.status, 422) << response.body;
   error = json::parse(response.body)["error"];
   EXPECT_EQ(error["code"], "OUTSIDE_PLAN_HOURS");
-  EXPECT_EQ(error["actual"], 600); EXPECT_EQ(error["limit"], 630); EXPECT_EQ(error["scope"], "SPX");
+  EXPECT_EQ(error["actual"], "10:00"); EXPECT_EQ(error["limit"], "10:30"); EXPECT_EQ(error["scope"], "SPX");
   for (const auto& patch : std::vector<json>{{{"time_limit_days", 367}}, {{"time_limit_days", nullptr}}, {{"inactivity_days", -1}},
       {{"underlyings", {"SPX", "SPX"}}}, {{"underlyings", {"spx"}}}, {{"trading_end", nullptr}},
       {{"trading_start", "11:00"}}, {{"trading_start", "09:60"}}, {{"trading_start", 570}},
@@ -4945,12 +4945,12 @@ TEST_F(PaperEngine, FlatRulesRoundTripValidationAndAccountProgress) {
   response = write(*engine, "POST", "/api/orders", order(market, "flat-time-refused"));
   expect_error(response, 422, "FLAT_TIME");
   const auto error = json::parse(response.body)["error"];
-  EXPECT_EQ(error["actual"], 600); EXPECT_EQ(error["limit"], 600); EXPECT_EQ(error["scope"], "account");
+  EXPECT_EQ(error["actual"], "10:00"); EXPECT_EQ(error["limit"], "10:00"); EXPECT_EQ(error["scope"], "account");
   test::capture_contract("flat-rules", "POST", "/api/orders", response);
   response = write(*engine, "POST", "/api/orders/preview", order(market, "flat-preview"));
   expect_error(response, 422, "FLAT_TIME");
-  EXPECT_EQ(json::parse(response.body)["error"]["actual"], 600);
-  EXPECT_EQ(json::parse(response.body)["error"]["limit"], 600);
+  EXPECT_EQ(json::parse(response.body)["error"]["actual"], "10:00");
+  EXPECT_EQ(json::parse(response.body)["error"]["limit"], "10:00");
   EXPECT_EQ(json::parse(response.body)["error"]["scope"], "account");
   test::capture_contract("flat-rules", "POST", "/api/orders/preview", response);
   rules["flat_time"] = nullptr; rules["no_overnight"] = false;
@@ -4974,8 +4974,8 @@ TEST(PaperStocks, FlatTimeRejectsOpeningPreviewsWith422) {
     const auto response = write(engine, "POST", path, {{"symbol", "SPY"}, {"side", "buy"}, {"shares", 1}});
     ASSERT_EQ(response.status, 422) << response.body;
     const auto error = json::parse(response.body)["error"];
-    EXPECT_EQ(error["code"], "FLAT_TIME"); EXPECT_EQ(error["actual"], 600);
-    EXPECT_EQ(error["limit"], 600); EXPECT_EQ(error["scope"], "account");
+    EXPECT_EQ(error["code"], "FLAT_TIME"); EXPECT_EQ(error["actual"], "10:00");
+    EXPECT_EQ(error["limit"], "10:00"); EXPECT_EQ(error["scope"], "account");
     test::capture_contract("flat-rules", "POST", path, response);
   }
   engine.stop();
@@ -4995,6 +4995,7 @@ TEST_F(PaperEngine, EventCalendarRulesRoundTripAndValidation) {
   const auto account = json::parse(response.body);
   EXPECT_EQ(account["rules"]["hold_restrictions"], json({"split", "weekend"}));
   EXPECT_EQ(account["rules"]["events"][0]["kind"], "news");
+  EXPECT_EQ(account["rules"]["events"][0]["time"], "2026-09-22T14:00:00Z");
   EXPECT_EQ(account["rules"]["events"][1]["session"], "before_open");
   EXPECT_EQ(account["evaluation"]["next_event"]["kind"], "news");
   EXPECT_TRUE(account["evaluation"]["next_event"]["active"]);
@@ -5131,4 +5132,20 @@ TEST(PaperAccounts, CreationAcceptsTradeAndHoldingObjectives) {
     engine.stop();
   }
   std::filesystem::remove_all(directory);
+}
+
+TEST(PaperPlans, EventTimesTrimOnlyInsignificantZerosAndPreserveJournalTerms) {
+  for (const auto& fraction : {std::string(""), std::string(".1"), std::string(".123456789")}) {
+    const auto text = "2026-09-23T14:00:00" + fraction + "Z";
+    const auto parsed = server::parse_calendar_events(json::array({{{"kind", "news"}, {"time", text}}}));
+    ASSERT_EQ(parsed.size(), 1U);
+    // The same nine-digit canonical form is retained in old and new journals.
+    EXPECT_EQ(parsed.front().time.size(), 30U);
+    EXPECT_EQ(server::calendar_event_json(parsed.front())["time"], text);
+    EXPECT_EQ(server::parse_calendar_events(server::calendar_events_json(parsed)), parsed);
+  }
+  const trading::PlanEvent old{"news", "2026-09-23T14:00:00.120000000Z", {}, {}, {}};
+  EXPECT_EQ(server::calendar_event_json(old)["time"], "2026-09-23T14:00:00.12Z");
+  const trading::PlanEvent date{"earnings", "2026-09-23", "SPY", "before_open", {}};
+  EXPECT_EQ(server::calendar_event_json(date)["time"], "2026-09-23");
 }

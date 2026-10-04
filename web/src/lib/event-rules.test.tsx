@@ -30,9 +30,13 @@ describe("F17/F59 calendar rules", () => {
     expect(timeRuleFacts(rules).join(" ")).toContain("5 minutes before / 10 after")
     expect(reasonEvidence({ code: "HOLD_RESTRICTED", message: "cutoff", limit: "15:45", scope: "earnings:SPY" })).toBe("Limit 15:45 · earnings:SPY")
   })
+  it.each(["FLAT_TIME", "OUTSIDE_PLAN_HOURS", "HOLD_RESTRICTED"])("renders %s clock evidence without numeric conversion", (code) => {
+    expect(reasonEvidence({ code, message: "cutoff", actual: "10:00", limit: "15:45", scope: "account" }))
+      .toBe("10:00 against a limit of 15:45 · account")
+  })
   it("formats saved event facts and active calendar notices in New York time", () => {
     expect(timeRuleFacts({ ...rules, events: [
-      { kind: "news", time: "2026-10-07T18:00:00.000000000Z", label: "FOMC" },
+      { kind: "news", time: "2026-10-07T18:00:00Z", label: "FOMC" },
       { kind: "earnings", time: "2026-10-08", symbol: "SPY", session: "after_close" },
     ] }).join(" ")).toContain("2 saved events: FOMC all underlyings Wed, Oct 7, 14:00 ET; earnings SPY 2026-10-08 after close")
     const news: EventWindow = { kind: "news", symbol: null, label: "FOMC", start: "2026-10-02T19:40:00.000Z", end: "2026-10-02T22:00:00.000Z", active: true }

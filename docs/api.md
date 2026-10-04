@@ -46,14 +46,14 @@ refused in funded plans. Account `evaluation` reports `time_limit_days`, `deadli
 `days_left`, `last_activity`, `inactive_days`, `inactivity_deadline` (null when off).
 `TIME_LIMIT` and `INACTIVITY` fail overdue attempts; `INSTRUMENT_NOT_ALLOWED` and
 `OUTSIDE_PLAN_HOURS` refuse openings while permitting reductions. Hours refusals
-include `actual`/`limit` in New York minutes and the underlying `scope`.
+include `actual`/`limit` as `HH:MM` New York time strings and the underlying `scope`.
 Invalid values for these custom rule fields return HTTP 422 `INVALID_RULES`,
 with a message naming the field and its allowed values, on both create and reset.
 Custom plans also accept `flat_time` (`HH:MM` New York, `00:00`–`23:59`, strictly
 before `day_end`, or null) and `no_overnight` (boolean, default false). Invalid
 values return 422 `INVALID_RULES`. Account `evaluation.flat_time` reports the time
 or null and `flat_now` reports the opening block until day end. `FLAT_TIME` refuses
-openings with HTTP 422, `actual` = current NY minute, `limit` = flat minute,
+openings with HTTP 422, `actual` = current NY `HH:MM`, `limit` = flat `HH:MM`,
 `scope` = `account`; opening previews also return HTTP 422 with that error.
 Reductions remain allowed. Mandatory closes use `system:flat_time:N`; held
 positions at rollover fail with `OVERNIGHT_HOLD` and close as `system:overnight:N`.

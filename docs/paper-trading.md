@@ -1872,7 +1872,7 @@ Set both, with start before end, or leave both null/omitted. Start is inclusive,
 end exclusive; `00:00` is valid and `24:00` is valid for the end. The window applies
 every day, including overnight and curb sessions; product-session checks still
 apply. Outside it, openings receive `OUTSIDE_PLAN_HOURS`, with the current New York
-minute in `actual`, the nearest window boundary in `limit`, and the underlying in
+`HH:MM` time in `actual`, the nearest window boundary as `HH:MM` in `limit`, and the underlying in
 `scope`. At the first transaction outside the window, working opening orders cancel
 with that reason before matching. A gap into the next day’s window still cancels
 orders that crossed the previous window’s end. Reducing orders and bracket exits
@@ -1909,8 +1909,8 @@ The trigger date (`evaluation.flat_time_day`) and unfinished-close flag
 once-per-date trigger. These internal fields are omitted until used.
 
 Until that plan day ends, option and share openings and their previews are refused
-with `FLAT_TIME`: `actual` is the current New York minute, `limit` is the configured
-flat minute, and `scope` is `account`. Order submission and opening preview
+with `FLAT_TIME`: `actual` is the current New York `HH:MM`, `limit` is the configured
+flat `HH:MM`, and `scope` is `account`. Order submission and opening preview
 endpoints return HTTP 422 with the usual `error` envelope for `FLAT_TIME`.
 Reducing orders remain allowed. After `day_end`, the next plan date has not reached
 its flat time yet; its overnight session is not incorrectly locked.
@@ -1947,7 +1947,9 @@ other events use a valid `YYYY-MM-DD` date. Earnings alone accepts `session`:
 `before_open` (default) or `after_close`. Input is sorted by time, kind, symbol,
 session and label and identical entries are deduplicated. Unknown fields, kinds,
 invalid dates, symbols, sessions or limits receive 422 `INVALID_RULES` with an
-explanation. The event list is journaled at create/reset, including nanoseconds.
+explanation. The event list is journaled at create/reset, including nanoseconds. HTTP news
+times omit trailing fractional zeros (whole seconds have no fraction); significant
+nanoseconds are preserved. Older nine-digit journal times remain readable.
 
 `news_before_minutes` and `news_after_minutes` are integers 0–240. Both zero
 turn the rule off. Each enabled news window is **[time − before, time + after)**.

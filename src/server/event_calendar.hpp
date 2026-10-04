@@ -8,7 +8,15 @@
 
 namespace openport::server {
 inline nlohmann::json calendar_event_json(const trading::PlanEvent& e) {
-  nlohmann::json j{{"kind", e.kind}, {"time", e.time}};
+  // Keep journal normalization unchanged; HTTP removes only insignificant zeros.
+  auto time = e.time;
+  if (e.kind == "news" && time.find('.') != std::string::npos && time.ends_with('Z')) {
+    time.pop_back();
+    while (time.ends_with('0')) time.pop_back();
+    if (time.ends_with('.')) time.pop_back();
+    time += 'Z';
+  }
+  nlohmann::json j{{"kind", e.kind}, {"time", time}};
   if (!e.symbol.empty()) j["symbol"] = e.symbol;
   if (!e.session.empty()) j["session"] = e.session;
   if (!e.label.empty()) j["label"] = e.label;

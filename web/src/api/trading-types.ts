@@ -71,6 +71,7 @@ export interface SizeScalingStatus {
 export interface ScalingStep { profit: Money; contracts: number }
 export interface ScalingStatus { limit: number; held: number; profit: Money; next: ScalingStep | null }
 export type HoldRestriction = "weekend" | "earnings" | "ex_dividend" | "split"
+/** News times are UTC with trailing fractional zeros omitted; significant nanoseconds are retained. */
 export interface PlanEvent { kind: "news" | "earnings" | "ex_dividend" | "split"; time: string; symbol?: string; session?: "before_open" | "after_close"; label?: string }
 export interface EventWindow { kind: PlanEvent["kind"] | "weekend"; symbol: string | null; label: string | null; start: string; end: string; active: boolean }
 export interface AccountRules {
@@ -174,6 +175,7 @@ export type RuleEvidence = { underlying: string; order_dollar_delta: number; hel
  * against limit, with the underlying or aggregate scope; absent on older servers
  * and null when a check has none. Structured evidence is omitted when inapplicable.
  */
+/** Clock rule evidence uses HH:MM New York strings; news uses UTC timestamps. */
 export interface Decision { evidence?: RuleEvidence; code: string; message: string; actual?: number | string | null; limit?: number | string | null; scope?: string | null }
 /** `requirement` is `short_requirement` under a name that fits portfolio margin too; absent on older servers. */
 export interface BuyingPower { available: Money; reserved: Money; short_requirement: Money; requirement?: Money }

@@ -1467,7 +1467,9 @@ opening hours without changing the replay driver or scenario revision. Rules at
 their defaults and zero `last_activity` are omitted from reducer journals; existing
 plans keep identical journal bytes. Configured plans record their rules, own-execution
 activity timestamps and non-default `TIME_LIMIT`/`INACTIVITY` decision codes.
-Hours cancellations record `OUTSIDE_PLAN_HOURS` with numeric clock evidence.
+Hours cancellations record `OUTSIDE_PLAN_HOURS` with numeric New York minutes in
+the journal. HTTP formats clock evidence for `OUTSIDE_PLAN_HOURS`, `FLAT_TIME` and
+`HOLD_RESTRICTED` consistently as `HH:MM` New York time strings (or null).
 Recovery and `--verify-run` use the recorded market clock and rules.
 
 F6 adds optional `flat_time` and `no_overnight` custom rules, omitted from journals
