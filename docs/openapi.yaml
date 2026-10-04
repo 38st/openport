@@ -2331,6 +2331,9 @@
         }
       }
     },
+    "/api/replay/underlyings/{symbol}/probability": {
+      "$ref": "#/paths/~1api~1underlyings~1{symbol}~1probability"
+    },
     "/api/replay/account": {
       "$ref": "#/paths/~1api~1account"
     },
@@ -2618,6 +2621,114 @@
               "application/json": {
                 "schema": {
                   "$ref": "#/components/schemas/Risk"
+                }
+              }
+            }
+          },
+          "default": {
+            "$ref": "#/components/responses/Error"
+          }
+        }
+      }
+    },
+    "/api/replay/history/{run_id}/risk/profile": {
+      "parameters": [
+        {
+          "name": "run_id",
+          "in": "path",
+          "required": true,
+          "schema": {
+            "type": "string"
+          }
+        },
+        {
+          "$ref": "#/components/parameters/account"
+        },
+        {
+          "name": "underlying",
+          "in": "query",
+          "required": false,
+          "description": "Profile one underlying's contracts and shares against its own moves; omitted, the whole book beta-weighted to the benchmark.",
+          "schema": {
+            "type": "string"
+          }
+        },
+        {
+          "name": "benchmark",
+          "in": "query",
+          "required": false,
+          "description": "The benchmark the whole book is weighted to (default SPY).",
+          "schema": {
+            "type": "string",
+            "enum": [
+              "SPY",
+              "SPX"
+            ]
+          }
+        },
+        {
+          "name": "days",
+          "in": "query",
+          "required": false,
+          "description": "Up to eight comma-separated curve dates in calendar days from now (0 to 366, fractions allowed), or expiry for the first held expiry; default 0,1.",
+          "schema": {
+            "type": "string"
+          }
+        },
+        {
+          "name": "iv",
+          "in": "query",
+          "required": false,
+          "description": "Vol points added to every contract's smile IV (default 0).",
+          "schema": {
+            "type": "number",
+            "minimum": -100,
+            "maximum": 100
+          }
+        },
+        {
+          "name": "range",
+          "in": "query",
+          "required": false,
+          "description": "The moves span plus and minus this percent (default 10).",
+          "schema": {
+            "type": "number",
+            "exclusiveMinimum": 0,
+            "maximum": 99
+          }
+        },
+        {
+          "name": "steps",
+          "in": "query",
+          "required": false,
+          "description": "An odd number of moves, evenly spaced across the range (default 41).",
+          "schema": {
+            "type": "integer",
+            "minimum": 3,
+            "maximum": 201
+          }
+        },
+        {
+          "name": "betas",
+          "in": "query",
+          "required": false,
+          "description": "Comma-separated SYMBOL:BETA overrides, each beta within 10 of zero.",
+          "schema": {
+            "type": "string"
+          }
+        }
+      ],
+      "get": {
+        "summary": "GET /api/risk/profile",
+        "description": "Archived replay mirror of the held book's P&L across moves of a reference price on several dates. Analytical; nothing is recorded.",
+        "x-scope": "read",
+        "responses": {
+          "200": {
+            "description": "Success",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/RiskProfile"
                 }
               }
             }

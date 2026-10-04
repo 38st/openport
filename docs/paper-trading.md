@@ -2800,7 +2800,9 @@ on several dates: where the book, and the room to the floor, will be later today
 tomorrow or at the first expiry. With `underlying=SYMBOL` it covers that underlying's
 contracts and shares against its own moves. Without one it covers the whole book
 against a benchmark, `benchmark=SPY` (the default) or `SPX`, each underlying moving
-its beta times the benchmark's percent move.
+its beta times the benchmark's percent move. The same read is available for the
+running replay at `/api/replay/risk/profile` and for saved replay runs at
+`/api/replay/history/{run_id}/risk/profile`.
 
 | Parameter | Meaning |
 | --- | --- |
@@ -2853,7 +2855,8 @@ that many calendar days after the analytics' market time. Before today's close t
 variance is today's share of the front expiry's in regular-session time (as the
 breach estimate's); past it, each expiry's at-the-money total variance (IV² times
 its years) is interpolated linearly in calendar time, with flat volatility before
-the first expiry and after the last, and never less than today's.
+the first expiry and after the last, and never less than today's. The running replay
+mirror is `/api/replay/underlyings/{symbol}/probability`.
 
 ```text
 v = sigma^2
