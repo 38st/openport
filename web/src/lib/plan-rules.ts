@@ -83,6 +83,7 @@ export const decisionLabels: Record<string, string> = {
   DRAWDOWN_FLOOR: "drawdown floor",
   DAILY_LOSS_LIMIT: "daily loss limit",
   FLAT_TIME: "mandatory flat time", OVERNIGHT_HOLD: "overnight hold",
+  NEWS_BLACKOUT: "news blackout", HOLD_RESTRICTED: "holding restriction",
   TIME_LIMIT: "evaluation time limit", INACTIVITY: "inactivity limit",
   INSTRUMENT_NOT_ALLOWED: "underlying not allowed", OUTSIDE_PLAN_HOURS: "outside plan trading hours",
 }
@@ -144,8 +145,6 @@ export function planEntryNotice(r: AccountRules | undefined, underlying: string,
   const flat = account?.evaluation.flat_now != null && Date.parse(account.time) === Date.parse(time ?? "")
     ? account.evaluation.flat_now : flatNow(r, time)
   if (flat) return "FLAT_TIME: Flat time passed; openings blocked until the day ends. Closing orders still work."
-  if (r.underlyings?.length && !r.underlyings.includes(underlying))
-    return `INSTRUMENT_NOT_ALLOWED: ${underlying} is outside this plan's allowed underlyings (${r.underlyings.join(", ")}); closing orders still work.`
   const timestamp = Date.parse(time ?? "")
   for (const e of r.events ?? []) {
     if (e.kind !== "news" || (e.symbol && e.symbol !== underlying) || !(r.news_before_minutes || r.news_after_minutes)) continue
@@ -153,10 +152,13 @@ export function planEntryNotice(r: AccountRules | undefined, underlying: string,
     if (timestamp >= at - (r.news_before_minutes ?? 0) * 60_000 && timestamp < end)
       return `NEWS_BLACKOUT: ${e.label || "news"} blocks openings until ${new Date(end).toISOString()}; closing orders still work.`
   }
+  const evaluation = account?.evaluation
   for (const e of [...(evaluation?.active_events ?? []), ...(evaluation?.next_event ? [evaluation.next_event] : [])]) {
     if (e.kind !== "news" && (!e.symbol || e.symbol === underlying) && timestamp >= Date.parse(e.start) && timestamp < Date.parse(e.end))
       return `HOLD_RESTRICTED: ${e.kind} holding cutoff reached for ${e.symbol || "the account"}; closing orders still work.`
   }
+  if (r.underlyings?.length && !r.underlyings.includes(underlying))
+    return `INSTRUMENT_NOT_ALLOWED: ${underlying} is outside this plan's allowed underlyings (${r.underlyings.join(", ")}); closing orders still work.`
   if (r.trading_start && r.trading_end && Number.isFinite(timestamp)) {
     const clock = planClock.format(timestamp)
     if (clock < r.trading_start || clock >= r.trading_end)

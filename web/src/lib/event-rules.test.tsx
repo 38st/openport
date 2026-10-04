@@ -22,10 +22,10 @@ describe("F17/F59 calendar rules", () => {
   })
   it("uses server calendar windows to block holdings and explain the next restriction", () => {
     const evaluation = { ...account.evaluation, next_event: cutoff, active_events: [cutoff] }
-    expect(planEntryNotice(rules, "SPY", cutoff.start, false, evaluation)).toContain("HOLD_RESTRICTED")
-    expect(planEntryNotice(rules, "SPY", cutoff.start, true, evaluation)).toBeNull()
-    expect(planEntryNotice(rules, "SPX", cutoff.start, false, evaluation)).toBeNull()
-    expect(planEntryNotice(rules, "SPY", cutoff.end, false, evaluation)).toBeNull()
+    expect(planEntryNotice(rules, "SPY", cutoff.start, false, { ...account, evaluation })).toContain("HOLD_RESTRICTED")
+    expect(planEntryNotice(rules, "SPY", cutoff.start, true, { ...account, evaluation })).toBeNull()
+    expect(planEntryNotice(rules, "SPX", cutoff.start, false, { ...account, evaluation })).toBeNull()
+    expect(planEntryNotice(rules, "SPY", cutoff.end, false, { ...account, evaluation })).toBeNull()
     expect(timeRuleNotices(evaluation, rules).join(" ")).toContain("Active earnings holding cutoff")
     expect(timeRuleFacts(rules).join(" ")).toContain("5 minutes before / 10 after")
     expect(reasonEvidence({ code: "HOLD_RESTRICTED", message: "cutoff", limit: "15:45", scope: "earnings:SPY" })).toBe("Limit 15:45 · earnings:SPY")
@@ -38,6 +38,25 @@ describe("F17/F59 calendar rules", () => {
       { events: [{ kind: "split" as const, time: "2026-09-22" }] },
       { events: [{ kind: "earnings" as const, time: "2026-02-30", symbol: "SPY" }] }])
       expect(customPlan({ ...form, ...patch }, rules)).toHaveProperty("error")
+  })
+  it("preserves all combined rules and gives flat time priority in tickets", () => {
+    const combined: AccountRules = { ...rules, flat_time: "15:45", no_overnight: true,
+      time_limit_days: 30, inactivity_days: 14, underlyings: ["SPY"], trading_start: "09:30", trading_end: "16:00",
+      max_contracts_held: 5, require_stop_loss: true, max_trade_risk: "123.456789", max_trade_risk_percent: 25 }
+    const result = customPlan(planForm({ initial_cash: "100000", rules: combined }), combined)
+    expect(result).toMatchObject({ rules: { ...combined, plan: "Custom plan", plan_id: null } })
+    const evaluation = { ...account.evaluation, flat_now: true, next_event: cutoff, active_events: [cutoff] }
+    const current = { ...account, time: cutoff.start, evaluation }
+    expect(planEntryNotice(combined, "SPY", current.time, false, current)).toContain("FLAT_TIME")
+    expect(planEntryNotice(combined, "SPY", current.time, true, current)).toBeNull()
+    const facts = timeRuleFacts(combined).join(" ")
+    expect(facts).toContain("Flat by 15:45")
+    expect(facts).toContain("OVERNIGHT_HOLD")
+    expect(facts).toContain("News:")
+    expect(facts).toContain("holding")
+    const notices = timeRuleNotices(evaluation, combined, current.time).join(" ")
+    expect(notices).toContain("Flat time passed")
+    expect(notices).toContain("earnings holding cutoff")
   })
   it("adds/removes rows and imports the daemon and known dividend calendars", async () => {
     vi.spyOn(api, "calendarEvents").mockResolvedValue({ events: [{ kind: "news", time: "2026-10-01T14:00:00Z", label: "FOMC" }] })
