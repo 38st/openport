@@ -1982,6 +1982,15 @@ Calendar actions remain once-only; mandatory flat time retries remaining holding
 and failed attempts retry liquidation with the decision's label. A new retry is
 labelled by the rule submitting it; existing orders are never relabelled.
 
+These rules also compose with F39 contract and funded account-size scaling.
+System closes bypass contract caps; calendar cancellation releases working opening
+reservations. Realised profit from a flat-time, news or holding close enters the
+next session's contract-cap calculation and the funded size review at day rollover.
+A holding or overnight failure prevents capital growth even if that review's
+profit, payout and finished-day requirements are met. Reset starts both scaling
+progress and calendar action tracking afresh, retaining both rule sets in the
+archived attempt; recovery restores them from the journal.
+
 HTTP evidence: `NEWS_BLACKOUT.actual` is the current UTC timestamp and `limit`
 is the window end, with `scope` the underlying or `account`. For `HOLD_RESTRICTED`,
 `actual` is null, `limit` is the cutoff `HH:MM` ET, and `scope` combines the kind
