@@ -3395,7 +3395,7 @@ trade_consistency_percent, min_trades, min_hold_seconds, microscalp_seconds, mic
 min_profitable_days, profitable_day_profit, day_end, max_contracts_held, require_stop_loss,
 max_trade_risk, max_trade_risk_percent, time_limit_days, inactivity_days, flat_time, no_overnight,
 underlyings, trading_start, trading_end, scaling, size_scaling, events, news_before_minutes, news_after_minutes,
-news_action, hold_restrictions, hold_cutoff}`.
+news_action, hold_restrictions, hold_cutoff, no_hedging, no_counter_positions, max_volume_percent}`.
 `fees` is the optional [fee schedule](#fees). `scaling` defaults to `[]` and uses decimal-string profit thresholds; see [Scaling plan](#funded-accounts-and-payouts).
 `defined_risk`, `slippage_ticks`, `fill_latency_ms`, `impact_ticks`, `inside_fill_percent`, `margin`, `account_type`,
 `house_margin_percent`, `pm_vol_shock` and every field from `lock_at_start` on are optional when creating or

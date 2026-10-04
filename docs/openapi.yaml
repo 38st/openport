@@ -20188,7 +20188,9 @@
               "MICROSCALPING",
               "HEDGING",
               "COUNTER_POSITION",
-              "MAX_VOLUME_SHARE"
+              "MAX_VOLUME_SHARE",
+              "NEWS_BLACKOUT",
+              "HOLD_RESTRICTED"
             ]
           },
           "message": {

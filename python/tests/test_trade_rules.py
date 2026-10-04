@@ -30,7 +30,7 @@ def test_trade_rule_wire_types_and_optional_defaults():
 
 def test_new_reason_codes_and_microscalp_pair():
     expected = {"TIME_LIMIT", "INACTIVITY", "INSTRUMENT_NOT_ALLOWED", "OUTSIDE_PLAN_HOURS", "FLAT_TIME", "OVERNIGHT_HOLD", "SCALING_LIMIT",
-                "TRADE_CONSISTENCY", "MIN_TRADES", "MIN_HOLD", "MICROSCALPING", "HEDGING", "COUNTER_POSITION", "MAX_VOLUME_SHARE"}
+                "TRADE_CONSISTENCY", "MIN_TRADES", "MIN_HOLD", "MICROSCALPING", "HEDGING", "COUNTER_POSITION", "MAX_VOLUME_SHARE", "NEWS_BLACKOUT", "HOLD_RESTRICTED"}
     assert set(get_args(PlanRuleReason)) == expected
     typescript = (ROOT / "web/src/api/trading-types.ts").read_text().split("export type PlanRuleReason =", 1)[1].split("export type RuleEvidence", 1)[0]
     assert set(re.findall(r'"([A-Z_]+)"', typescript)) == expected

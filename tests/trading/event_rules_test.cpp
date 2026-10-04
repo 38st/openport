@@ -93,6 +93,7 @@ TEST(EventRules, FundedScalingWithFlatNewsAndHoldingRulesSurvivesResetAndRecover
     r.scaling = {{Money{}, 2}, {m("100"), 4}};
     r.size_scaling = SizeScaling{1, 0, 1, 25, m("14000")};
     r.max_contracts_held = 4;
+    r.min_hold_seconds = 3600; // Calendar and flat-time system closes bypass the user hold minimum.
     r.flat_time = trigger == "flat_time" ? 601 : 602;
     r.no_overnight = true;
     r.news_after_minutes = 5;
