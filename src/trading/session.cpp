@@ -4517,7 +4517,8 @@ Json state_change(const State& before, const State& after) {
   Json node{{"o", std::move(changes)}};
   if (had && !has) node["d"] = Json::array({"do_not_exercise"});
   if (after.fee_charged.amount != Money{}) {
-    if (before.fee_charged != after.fee_charged) node["o"]["fee_charged"] = Json{{"v", after.fee_charged}};
+    if (before.fee_charged.amount == Money{}) node["o"]["fee_charged"] = Json{{"v", after.fee_charged}};
+    else if (auto change = field_change(before.fee_charged, after.fee_charged)) node["o"]["fee_charged"] = std::move(*change);
   } else if (before.fee_charged.amount != Money{}) {
     if (!node.contains("d")) node["d"] = Json::array();
     node["d"].push_back("fee_charged");

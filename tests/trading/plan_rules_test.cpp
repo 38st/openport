@@ -272,6 +272,11 @@ TEST(ProgramCosts, ExactFeesLimitsPurchasesAndRecoveryLeaveTheLedgerAlone) {
   EXPECT_EQ(TradingSession::recover(FileJournal::read(file.path)).snapshot_json(), s.snapshot_json());
   for (int i = 0; i < 3; ++i) { ASSERT_TRUE(s.reset_account(m("10000"), rules, "unlimited", f.time).decision.ok()); }
   EXPECT_EQ(program_costs(*s.snapshot(), rules).resets_used, 3);
+  // Re-encoding uses the reference JSON delta writer and must retain every byte.
+  const auto recovery = FileJournal::read(file.path);
+  const auto compacted = (file.directory / "compacted.jsonl").string();
+  EXPECT_EQ(TradingSession::compact(recovery, *FileJournal::create(compacted)), s.snapshot_json());
+  EXPECT_EQ(FileJournal::read(compacted).head, recovery.head);
 }
 
 TEST(ProgramCosts, DefaultsKeepBytesAndNegativeOrFractionalSettingsAreRejected) {
