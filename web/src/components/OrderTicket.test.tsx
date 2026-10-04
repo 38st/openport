@@ -8,6 +8,7 @@ import { liveState, useLive } from "../api/live"
 import { tradingQueries } from "../api/trading"
 import type { HeldStrategy, TradingStatus } from "../api/trading-types"
 import { account, order, portfolio, quote, selection, status, trading } from "../test/trading-fixtures"
+import { renderTimeout, waitForRender } from "../test/render"
 import { OrderTicket } from "./OrderTicket"
 import { EditOrderDialog, FlattenDialog } from "./OrderActions"
 import { StrategyTicket } from "./StrategyTicket"
@@ -76,7 +77,7 @@ function radio(group: string, option: string) {
 async function choose(group: string, option: string) { await act(async () => radio(group, option).click()) }
 const checked = (group: string, option: string) => radio(group, option).getAttribute("aria-checked") === "true"
 
-describe.each(["single", "strategy"] as const)("%s ticket joining a whole trade", (ticket) => {
+describe.each(["single", "strategy"] as const)("%s ticket joining a whole trade", { timeout: renderTimeout }, (ticket) => {
   const trade: HeldStrategy = {
     id: "7", underlying: "SPX", opened: "2026-09-22T14:00:00Z",
     legs: [{ symbol: "SPXW  261016P06900000", quantity: -1, trade: "7" }, { symbol: "SPXW  261016P06890000", quantity: 1, trade: "8" }],
@@ -99,7 +100,7 @@ describe.each(["single", "strategy"] as const)("%s ticket joining a whole trade"
     </QueryClientProvider>))
   }
   async function previewAndSubmit() {
-    await act(async () => { await new Promise((resolve) => setTimeout(resolve, 350)) })
+    await waitForRender(() => expect(host.textContent).toContain("Preview failed"))
     expect(api.previewOrder).toHaveBeenCalled()
     await click(ticket === "single" ? "Submit order" : "Submit strategy order")
     expect(api.submitOrder).toHaveBeenCalledTimes(1)
@@ -142,9 +143,8 @@ describe.each(["single", "strategy"] as const)("%s ticket joining a whole trade"
     vi.mocked(api.portfolio).mockResolvedValue(held)
     await act(async () => {
       client.setQueryData(tradingQueries(0, "17", true).portfolio.queryKey, held)
-      await new Promise((resolve) => setTimeout(resolve, 0))
     })
-    expect(host.textContent).not.toContain("Join trade")
+    await waitForRender(() => expect(host.textContent).not.toContain("Join trade"))
     for (const body of await previewAndSubmit()) expect(body).not.toHaveProperty("group")
   })
 })
@@ -593,7 +593,7 @@ it.each([3, -3])("keeps a close within the %s held contracts without opening-siz
   await act(async () => root.render(<QueryClientProvider client={client}>
     <OrderTicket selection={{ ...selection, closing: true, cell: held > 0 ? "bid" : "ask", quantity: Math.abs(held) }} quote={quote} trading={trading} onClose={() => {}} />
   </QueryClientProvider>))
-  await act(async () => { await new Promise((resolve) => setTimeout(resolve, 20)) })
+  await waitForRender(() => expect(host.textContent).toContain(`You hold 3 ${held > 0 ? "long" : "short"}`))
   expect(field("Quantity").value).toBe("3")
   expect(host.textContent).not.toContain("Size to")
   expect(host.querySelector('[aria-label="Quantity 5"]')).toBeNull()
@@ -601,7 +601,7 @@ it.each([3, -3])("keeps a close within the %s held contracts without opening-siz
   expect(field("Quantity").value).toBe("3")
   await click("Submit order")
   expect(api.submitOrder).toHaveBeenCalledWith(expect.objectContaining({ quantity: 3, side: held > 0 ? "sell" : "buy" }), trading.write)
-})
+}, renderTimeout)
 
 
 it.each(["passed", "failed"] as const)("allows a close after the attempt %s and blocks increasing or reversing it", async (status) => {
@@ -613,7 +613,6 @@ it.each(["passed", "failed"] as const)("allows a close after the attempt %s and 
   client.setQueryData(queries.account.queryKey, decided)
   client.setQueryData(queries.portfolio.queryKey, held)
   await render()
-  await act(async () => { await new Promise((resolve) => setTimeout(resolve, 20)) })
   await choose("Side", "Buy")
   expect(button("Submit order").disabled).toBe(true)
   await choose("Side", "Sell")
@@ -660,11 +659,11 @@ it("includes a strategy's required stop in preview and blocks an unprotected ent
   await act(async () => field("Spread exits").click())
   await setField("Stop level", "-1.00")
   expect(button("Submit strategy order").disabled).toBe(false)
-  await act(async () => { await new Promise((resolve) => setTimeout(resolve, 350)) })
-  expect(vi.mocked(api.previewOrder).mock.calls.at(-1)?.[0]).toHaveProperty("bracket.stop_loss.trigger.level", "-1.00")
+  await waitForRender(() => expect(vi.mocked(api.previewOrder).mock.calls.at(-1)?.[0])
+    .toHaveProperty("bracket.stop_loss.trigger.level", "-1.00"))
   await click("Submit strategy order")
   expect(api.submitOrder).toHaveBeenCalledWith(expect.objectContaining({ bracket: expect.objectContaining({ stop_loss: expect.any(Object) }) }), "open")
-})
+}, renderTimeout)
 
 it("keeps an unprotected reducing single order available under a stop-required plan", async () => {
   vi.mocked(api.account).mockResolvedValue({ ...account, rules: { ...account.rules, buy_only: false, require_stop_loss: true } })

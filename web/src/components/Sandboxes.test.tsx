@@ -10,6 +10,7 @@ import { activeAccount, useActiveAccount } from "../lib/active-account"
 import { dataSource } from "../lib/data-source"
 import { createTokenStore, useWriteToken, writeToken } from "../lib/write-token"
 import { account, portfolio, quote, selection, status, trading, risk } from "../test/trading-fixtures"
+import { renderTimeout, waitForRender } from "../test/render"
 import { AccountSwitcher } from "./AccountSwitcher"
 import { OrderTicket } from "./OrderTicket"
 import { WatchOnlyNotice, WriteAccess } from "./TradingControls"
@@ -198,11 +199,10 @@ it("restores the sandbox account after a reload even when another tab last selec
     return <output>{live.account} {live.trading?.enabled ? "ticket available" : "waiting"}</output>
   }
   await render(<actual.LiveProvider><Probe /></actual.LiveProvider>)
-  await act(async () => { await new Promise((resolve) => setTimeout(resolve, 20)) })
-  expect(host.textContent).toBe(`${sandboxId} ticket available`)
+  await waitForRender(() => expect(host.textContent).toBe(`${sandboxId} ticket available`))
   expect(dataSource.get()).toBe("live")
   expect(api.replay).not.toHaveBeenCalled()
-})
+}, renderTimeout)
 it("recovers the live terminal from a restarted server with a public status request and a new offer", async () => {
   const actual = await vi.importActual<typeof import("../api/live")>("../api/live")
   vi.spyOn(connection, "connectLive").mockImplementation((_url, _client, _tick, onConnection) => {
@@ -224,9 +224,9 @@ it("recovers the live terminal from a restarted server with a public status requ
     return <WatchOnlyNotice trading={live.trading} sandboxes={live.status?.sandboxes} />
   }
   await render(<actual.LiveProvider><Probe /></actual.LiveProvider>)
-  await act(async () => { await new Promise((resolve) => setTimeout(resolve, 30)) })
+  await waitForRender(() => expect(button("Try trading with a sandbox account")).toBeTruthy())
   expect(writeToken.get()).toBe("")
   expect(activeAccount.get()).toBe("main")
   expect(button("Try trading with a sandbox account")).toBeTruthy()
   expect(refused).toBe(1)
-})
+}, renderTimeout)

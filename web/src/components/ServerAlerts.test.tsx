@@ -25,7 +25,9 @@ function live(version = "1") {
 }
 async function render(node: React.ReactNode) {
   await act(async () => root.render(<QueryClientProvider client={client}>{node}</QueryClientProvider>))
-  await act(async () => { await new Promise((resolve) => setTimeout(resolve, 20)) })
+  // Deliver query notifications and the watcher's effects before either positive
+  // or negative assertions. Elapsed wall time does not prove they have run.
+  await act(async () => { await vi.runOnlyPendingTimersAsync() })
 }
 function field(label: string) { return host.querySelector<HTMLInputElement | HTMLSelectElement>(`[aria-label="${label}"]`)! }
 async function set(label: string, value: string) {
@@ -37,6 +39,7 @@ async function set(label: string, value: string) {
   })
 }
 beforeEach(() => {
+  vi.useFakeTimers()
   vi.stubGlobal("IS_REACT_ACT_ENVIRONMENT", true)
   host = document.createElement("div"); document.body.append(host); root = createRoot(host)
   client = new QueryClient({ defaultOptions: { queries: { retry: false } } })
@@ -46,7 +49,7 @@ beforeEach(() => {
   vi.spyOn(api, "deleteAlert").mockResolvedValue({ account_version: "3", deleted: "1" })
   live()
 })
-afterEach(async () => { await act(async () => root.unmount()); host.remove(); client.clear(); vi.restoreAllMocks(); vi.unstubAllGlobals() })
+afterEach(async () => { await act(async () => root.unmount()); host.remove(); client.clear(); vi.useRealTimers(); vi.restoreAllMocks(); vi.unstubAllGlobals() })
 
 describe("account alerts", () => {
   it("lists the server's alerts and sets a new one with its measure and level", async () => {
