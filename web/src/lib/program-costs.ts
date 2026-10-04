@@ -34,8 +34,9 @@ export function sameProgram(plan: Pick<Plan, "initial_cash" | "rules">, account:
     lock_balance: compareMoney(account.rules.lock_balance, "0") === 1
       ? subtractMoney(account.rules.lock_balance, subtractMoney(account.evaluation.starting_balance, growth.original)) : account.rules.lock_balance,
   } : account.rules
+  const requested = JSON.stringify(identity(plan.rules))
   return compareMoney(plan.initial_cash, growth?.original ?? account.evaluation.starting_balance) === 0 &&
-    JSON.stringify(identity(plan.rules)) === JSON.stringify(identity(rules))
+    (requested === JSON.stringify(identity(rules)) || (!!growth && requested === JSON.stringify(identity(account.rules))))
 }
 export function resetQuote(plan: Pick<Plan, "initial_cash" | "rules">, account: Account, id?: string) {
   const same = sameProgram(plan, account)

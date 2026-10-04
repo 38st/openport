@@ -58,6 +58,9 @@ it("keeps grown funded accounts on their purchased plan and compares scaling mon
   expect(sameProgram(plan, current)).toBe(true)
   expect(lockReason(plan, [plan], current)).toBeNull()
   expect(resetQuote(plan, current, plan.id)).toEqual({ kind: "reset", fee: "25.000002", blocked: true, left: 0 })
+  const displayed = { initial_cash: "100000", rules: current.rules }
+  expect(sameProgram(displayed, current)).toBe(true)
+  expect(resetQuote(displayed, current)).toEqual({ kind: "reset", fee: "25.000002", blocked: true, left: 0 })
   for (const patch of [{ scaling: [{ profit: "0", contracts: 3 }] },
     { size_scaling: { ...size_scaling, max_balance: "200000.000002" } },
     { max_drawdown: "1000.03" }]) {
