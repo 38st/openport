@@ -391,8 +391,10 @@ struct MarginPolicy {
 /// pairing across expiries, pairing without straddles (which can preserve a
 /// condor's shared worst loss), and taking each expiry on its own, both with
 /// shares covering nothing and with shares first taking their best covers.
-/// Worst-loss netting is not optimized jointly with pairing: a mixed-expiry
-/// underlying with a worst-loss-netted constituent can exceed the separate sum.
+/// A deterministic, fixed-budget search improves these feasible candidates by
+/// merging expiry pools and transferring or exchanging whole option contracts.
+/// Pools use same-expiry shorts and same-or-later longs, with no net short calls.
+/// The result never exceeds the incumbent; it can exceed the global minimum.
 /// Longs need nothing: their premium is paid in full, as long shares are; short
 /// shares hold their value and half again.
 /// A house percentage raises each naked requirement (beyond the buy-back value)
@@ -409,7 +411,7 @@ enum class MarginPartKind {
   Straddle,         ///< A short put with a short call: the greater naked requirement plus the other's buy-back value.
   ShortShares,      ///< Short shares: their value and half again.
   ProtectedShares,  ///< 100 short shares with a long call: at most its strike.
-  WorstLoss,        ///< Positions that expire together, held at their worst loss at expiry.
+  WorstLoss,        ///< Same-expiry shorts with same-or-later longs, held at their worst loss at the shorts' expiry.
   Long,             ///< A long option or long shares that nothing else needs: paid in full.
   CashSecured,      ///< A cash account's or IRA's short put alone: its strike, in cash.
 };

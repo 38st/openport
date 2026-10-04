@@ -294,15 +294,13 @@ TEST(TradingMargin, RandomBooksCombineAndTheirBreakdownsAddUp) {
       const auto [lc, sc] = build(combined);
       if (account == AccountType::Ira && (disallowed_shorts(la, sa, account) || disallowed_shorts(lb, sb, account) ||
                                          disallowed_shorts(lc, sc, account))) continue;
-      std::set<std::string> netted;
-      const auto verify = [&](const auto& legs, const auto& stocks, bool constituent) {
+      const auto verify = [&](const auto& legs, const auto& stocks) {
         const auto requirement = margin_requirement(legs, stocks, policy);
         EXPECT_GE(requirement, Money{});
         Money total;
         for (const auto& underlying : margin_breakdown(legs, stocks, policy)) {
           Money parts;
           for (const auto& part : underlying.parts) {
-            if (constituent && part.kind == MarginPartKind::WorstLoss) netted.insert(underlying.underlying);
             EXPECT_GE(part.requirement, Money{});
             parts = parts + part.requirement;
           }
@@ -312,19 +310,8 @@ TEST(TradingMargin, RandomBooksCombineAndTheirBreakdownsAddUp) {
         EXPECT_EQ(total, requirement);
         return requirement;
       };
-      const auto ra = verify(la, sa, true), rb = verify(lb, sb, true), rc = verify(lc, sc, false);
-      // Worst-loss netting is not optimized jointly with cross-expiry covers.
-      // Exclude only mixed-expiry underlyings where A or B used that netting;
-      // nonnegativity and breakdown totals above still apply to every book.
-      std::map<std::string, Timestamp> expiries;
-      bool mixed_worst = false;
-      for (const auto& item : lc) {
-        if (!netted.contains(item.contract.underlying)) continue;
-        const auto expiry = item.contract.expiry_time();
-        const auto [it, inserted] = expiries.emplace(item.contract.underlying, expiry);
-        if (!inserted && it->second != expiry) mixed_worst = true;
-      }
-      if (!overlap && !mixed_worst) {
+      const auto ra = verify(la, sa), rb = verify(lb, sb), rc = verify(lc, sc);
+      if (!overlap) {
         EXPECT_LE(rc, ra + rb) << "requirements " << ra.str() << " + " << rb.str() << " < " << rc.str()
                                << " A=" << ::testing::PrintToString(a.quantities) << " shares=" << ::testing::PrintToString(a.shares)
                                << " B=" << ::testing::PrintToString(b.quantities) << " shares=" << ::testing::PrintToString(b.shares);

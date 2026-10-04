@@ -6,6 +6,8 @@
 #include <map>
 #include <vector>
 
+#include "margin_detail.hpp"
+
 #include "openport/trading/evaluation.hpp"
 #include "openport/trading/risk.hpp"
 
@@ -406,19 +408,256 @@ Money shares_first(const Book& book, const MarginStock* stock, const MarginPolic
   const auto held = across(pairing, stock, policy.house_percent, parts);
   return held + separate(options, nullptr, policy, parts);
 }
+/// Improve a feasible partition of whole contracts, scoring expiry pools and
+/// pairs together. Share parts stay in the incumbent; their options cannot be
+/// spent again. Every trial is itself a valid allocation, never a relaxation.
+class JointAllocation {
+  struct Holding { std::size_t unit; Quantity n; };
+  using Group = std::vector<Holding>;
+  struct Score {
+    Money requirement;
+    MarginPartKind kind = MarginPartKind::Naked;
+  };
+ public:
+  JointAllocation(const Book& book, const Parts& seed, bool straddles) : straddles_(straddles) {
+    std::map<std::string, const Unit*> sorted;
+    for (const auto* side : {&book.short_puts, &book.short_calls, &book.long_puts, &book.long_calls})
+      for (const auto& u : *side)
+        if (u.leg) sorted.emplace(u.leg->contract.osi_symbol(), &u);
+    std::map<std::string, std::size_t> index;
+    for (const auto& [symbol, u] : sorted) {
+      index.emplace(symbol, units_.size());
+      units_.push_back(u);
+      expiries_.push_back(u->leg->contract.expiry_time());
+    }
+    std::vector<std::int64_t> spots{0};
+    for (std::size_t i = 0; i < units_.size(); ++i) {
+      spots.push_back(milli(units_[i]->leg->contract.strike));
+    }
+    std::sort(spots.begin(), spots.end());
+    spots.erase(std::unique(spots.begin(), spots.end()), spots.end());
+    for (const auto* u : units_) {
+      std::vector<Money> curve;
+      for (const auto spot : spots) curve.push_back(intrinsic(u->leg->contract, spot) * (u->leg->quantity < 0 ? -1 : 1));
+      payoff_.push_back(std::move(curve));
+    }
+    for (const auto& part : seed) {
+      if (std::any_of(part.legs.begin(), part.legs.end(), [&](const auto& leg) { return !index.contains(leg.first); })) {
+        fixed_.push_back(part);
+        continue;
+      }
+      Group group;
+      for (const auto& [symbol, n] : part.legs) change(group, index.at(symbol), magnitude(n));
+      groups_.push_back(std::move(group));
+      scores_.push_back({part.requirement, part.kind});
+    }
+  }
+  Parts improve() {
+    // Count both trial setup and payoff work, not elapsed time or contracts.
+    // Thus huge quantities and ties have the same deterministic stopping rule.
+    while (work_ > 0) {
+      bool improved = false;
+      for (std::size_t a = 0; a < groups_.size() && work_ > 0; ++a) {
+        if (groups_[a].empty()) continue;
+        for (std::size_t b = a + 1; b < groups_.size() && work_ > 0; ++b) {
+          if (groups_[b].empty()) continue;
+          auto merged = groups_[a];
+          for (const auto& h : groups_[b]) change(merged, h.unit, h.n);
+          // Equal-cost merges expose a pool's free offsetting payoff to later
+          // transfers, and terminate because one fewer group remains occupied.
+          if (accept(a, b, std::move(merged), {}, true)) { improved = true; continue; }
+          // Transfers and exchanges use the full tranche and one contract.
+          // No loop depends on the number of contracts in a position.
+          const auto left = groups_[a], right = groups_[b];
+          for (const auto& h : left) {
+            if (transfer(a, b, h.unit, h.n) || (h.n > 1 && transfer(a, b, h.unit, 1))) { improved = true; break; }
+            if (improved || work_ == 0) break;
+          }
+          if (improved) break;
+          for (const auto& h : right) {
+            if (transfer(b, a, h.unit, h.n) || (h.n > 1 && transfer(b, a, h.unit, 1))) { improved = true; break; }
+            if (work_ == 0) break;
+          }
+          if (improved) break;
+          for (const auto& h : left) {
+            for (const auto& k : right) {
+              if (h.unit == k.unit) continue;
+              const auto n = std::min(h.n, k.n);
+              if (exchange(a, b, h.unit, k.unit, n) || (n > 1 && exchange(a, b, h.unit, k.unit, 1))) {
+                improved = true;
+                break;
+              }
+              if (work_ == 0) break;
+            }
+            if (improved || work_ == 0) break;
+          }
+          if (improved) break;
+        }
+        if (improved) break;
+      }
+      if (!improved) break;
+    }
+    Parts result = fixed_;
+    for (std::size_t i = 0; i < groups_.size(); ++i) explain(groups_[i], scores_[i], result);
+    return result;
+  }
+ private:
+  static void change(Group& group, std::size_t unit, Quantity n) {
+    const auto it = std::lower_bound(group.begin(), group.end(), unit, [](const Holding& h, std::size_t id) { return h.unit < id; });
+    if (it == group.end() || it->unit != unit) { group.insert(it, {unit, n}); return; }
+    it->n += n;
+    if (it->n == 0) group.erase(it);
+  }
+  bool spend(std::size_t amount) {
+    if (amount > work_) { work_ = 0; return false; }
+    work_ -= amount;
+    return true;
+  }
+  std::optional<Pair> pair(const Group& group) const {
+    if (group.size() != 2) return std::nullopt;
+    auto a = group[0].unit, b = group[1].unit;
+    if (units_[a]->leg->quantity > 0) std::swap(a, b);
+    if (units_[a]->leg->quantity > 0) return std::nullopt;
+    const auto n = std::min(group[0].n, group[1].n);
+    if (units_[b]->leg->quantity < 0) {
+      if (!straddles_ || units_[a]->leg->contract.type == units_[b]->leg->contract.type) return std::nullopt;
+      if (units_[a]->leg->contract.type == OptionType::Call) std::swap(a, b);
+      return Pair{units_[a], units_[b], n, true};
+    }
+    if (units_[a]->leg->contract.type != units_[b]->leg->contract.type || expiries_[b] < expiries_[a]) return std::nullopt;
+    return Pair{units_[a], units_[b], n, false};
+  }
+  // A reallocation can split a position's buy-back value into thirds, etc.
+  // Round each new tranche up so splitting cannot manufacture micro-dollar
+  // savings. Unchanged incumbent parts remain available as the outer fallback.
+  static Money buyback(const Unit& u, Quantity n) {
+    __extension__ using Wide = __int128;
+    auto result = value(u, n);
+    if (static_cast<Wide>(result.micros()) * -u.leg->quantity < static_cast<Wide>(u.leg->value.micros()) * n)
+      result = result + Money::from_micros(1);
+    return result;
+  }
+  static Money naked_cost(const Unit& u, Quantity n) {
+    return u.secured_one > Money{} ? u.secured_one * n : buyback(u, n) + u.requirement_one * n;
+  }
+  static Money pair_cost(const Pair& p) {
+    const auto a = naked_cost(*p.short_unit, p.n);
+    if (!p.straddle) return std::min(covered(*p.short_unit, *p.cover, p.n), a);
+    const auto b = naked_cost(*p.cover, p.n);
+    const auto av = buyback(*p.short_unit, p.n), bv = buyback(*p.cover, p.n);
+    return a > b ? a + bv : b > a ? b + av : a + std::max(av, bv);
+  }
+  std::optional<Score> score(const Group& group) {
+    if (!spend(1 + group.size())) return std::nullopt;
+    Score best;
+    std::optional<Timestamp> expiry;
+    bool pool = true;
+    Quantity calls = 0;
+    for (const auto& h : group) {
+      const auto& u = *units_[h.unit];
+      if (u.leg->quantity < 0) {
+        best.requirement = best.requirement + naked_cost(u, h.n);
+        const auto time = expiries_[h.unit];
+        if (expiry && *expiry != time) pool = false;
+        expiry = time;
+      }
+      if (u.leg->contract.type == OptionType::Call) calls += u.leg->quantity < 0 ? -h.n : h.n;
+    }
+    if (const auto p = pair(group)) {
+      auto requirement = pair_cost(*p);
+      for (const auto& h : group) {
+        const auto& u = *units_[h.unit];
+        if (u.leg->quantity < 0) requirement = requirement + naked_cost(u, h.n - p->n);
+      }
+      if (requirement <= best.requirement) best = {requirement, p->straddle ? MarginPartKind::Straddle : MarginPartKind::Vertical};
+    }
+    if (!pool || !expiry || calls < 0) return best;
+    for (const auto& h : group)
+      if (units_[h.unit]->leg->quantity > 0 && expiries_[h.unit] < *expiry) return best;
+    if (!spend(group.size() * payoff_.front().size())) return std::nullopt;
+    Money loss;
+    for (std::size_t s = 0; s < payoff_.front().size(); ++s) {
+      Money value;
+      for (const auto& h : group) value = value + payoff_[h.unit][s] * h.n;
+      loss = std::max(loss, -value);
+    }
+    if (loss < best.requirement) best = {loss, MarginPartKind::WorstLoss};
+    return best;
+  }
+  bool accept(std::size_t a, std::size_t b, Group left, Group right, bool merge = false) {
+    try {
+      const auto l = score(left), r = score(right);
+      if (!l || !r) return false;
+      const auto before = scores_[a].requirement + scores_[b].requirement;
+      const auto after = l->requirement + r->requirement;
+      if (after > before || (after == before && (!merge || l->kind == MarginPartKind::Naked))) return false;
+      groups_[a] = std::move(left);
+      groups_[b] = std::move(right);
+      scores_[a] = *l;
+      scores_[b] = *r;
+      return true;
+    } catch (const TradingError& error) {
+      // An unneeded naked or intrinsic intermediate can overflow even when the
+      // incumbent's spread widths fit. Such a trial cannot replace it.
+      if (error.code() != Reason::ARITHMETIC_OVERFLOW) throw;
+      return false;
+    }
+  }
+  bool transfer(std::size_t a, std::size_t b, std::size_t unit, Quantity n) {
+    if (work_ == 0) return false;
+    auto left = groups_[a], right = groups_[b];
+    change(left, unit, -n);
+    change(right, unit, n);
+    return accept(a, b, std::move(left), std::move(right));
+  }
+  bool exchange(std::size_t a, std::size_t b, std::size_t first, std::size_t second, Quantity n) {
+    if (work_ == 0) return false;
+    auto left = groups_[a], right = groups_[b];
+    change(left, first, -n); change(right, first, n);
+    change(right, second, -n); change(left, second, n);
+    return accept(a, b, std::move(left), std::move(right));
+  }
+  void explain(const Group& group, const Score& score, Parts& parts) const {
+    if (group.empty()) return;
+    if (score.kind == MarginPartKind::WorstLoss) {
+      std::vector<std::pair<std::string, Quantity>> legs;
+      for (const auto& h : group) legs.push_back(leg_of(*units_[h.unit], h.n));
+      add(&parts, score.kind, std::move(legs), score.requirement);
+      return;
+    }
+    const auto p = score.kind == MarginPartKind::Vertical || score.kind == MarginPartKind::Straddle ? pair(group) : std::nullopt;
+    if (p) add(&parts, score.kind, {leg_of(*p->short_unit, p->n), leg_of(*p->cover, p->n)}, pair_cost(*p));
+    for (const auto& h : group) {
+      const auto n = h.n - (p ? p->n : 0);
+      if (n == 0) continue;
+      const auto& u = *units_[h.unit];
+      const bool shorted = u.leg->quantity < 0;
+      add(&parts, shorted ? unpaired_kind(u) : MarginPartKind::Long, {leg_of(u, n)}, shorted ? naked_cost(u, n) : Money{});
+    }
+  }
+  bool straddles_;
+  std::size_t work_ = 32768;
+  std::vector<const Unit*> units_;
+  std::vector<Timestamp> expiries_;
+  std::vector<std::vector<Money>> payoff_;
+  std::vector<Group> groups_;
+  std::vector<Score> scores_;
+  Parts fixed_;
+};
 /// One underlying's requirement: the least of joint pairing across expiries,
 /// verticals and share covers alone (a condor's shared worst loss may hold less
 /// without straddles), and each expiry on its own, both before and after shares
 /// cover. A cash account pairs only with shares; neither it nor an IRA pairs
-/// straddles. Worst-loss savings are evaluated after pairing, so mixed-expiry
-/// books containing a worst-loss group need not be subadditive.
+/// straddles. Bounded local improvement then allocates options jointly between
+/// those strategy parts and expiry loss pools.
 Money underlying_requirement(const std::vector<const MarginLeg*>& all, const MarginStock* stock, const MarginPolicy& policy,
-                             Parts* parts) {
+                             Parts* parts, bool improve) {
   const bool spreads = policy.account != AccountType::Cash;
+  const bool search = improve && spreads && all.size() > 2;
   const auto book = book_of(all, stock, policy);
   const auto pairing = pair_units(book, spreads);
   Parts best_parts, candidate;
-  Parts* explain = parts ? &candidate : nullptr;
+  Parts* explain = parts || search ? &candidate : nullptr;
   auto best = across(pairing, stock, policy.house_percent, explain);
   best_parts.swap(candidate);
   const auto consider = [&](Money requirement) {
@@ -433,12 +672,22 @@ Money underlying_requirement(const std::vector<const MarginLeg*>& all, const Mar
     consider(separate(all, stock, policy, explain));
     if (stock && magnitude(stock->shares) >= kLot) consider(shares_first(book, stock, policy, explain));
   }
+  if (search && best > Money{}) {
+    try {
+      candidate = JointAllocation(book, best_parts, policy.account == AccountType::Margin).improve();
+      Money requirement;
+      for (const auto& part : candidate) requirement = requirement + part.requirement;
+      consider(requirement);
+    } catch (const TradingError& error) {
+      if (error.code() != Reason::ARITHMETIC_OVERFLOW) throw;
+    }
+  }
   if (parts) *parts = std::move(best_parts);
   return best;
 }
 /// Strategy margin by underlying, shares joining their own.
 std::vector<MarginUnderlying> strategy(const std::vector<MarginLeg>& legs, const std::vector<MarginStock>& stocks,
-                                       const MarginPolicy& policy, bool explain) {
+                                       const MarginPolicy& policy, bool explain, bool improve = true) {
   std::map<std::string, std::pair<std::vector<const MarginLeg*>, const MarginStock*>> underlyings;
   for (const auto& leg : legs)
     if (leg.quantity != 0) underlyings[leg.contract.underlying].first.push_back(&leg);
@@ -448,7 +697,7 @@ std::vector<MarginUnderlying> strategy(const std::vector<MarginLeg>& legs, const
   for (const auto& [underlying, group] : underlyings) {
     MarginUnderlying item;
     item.underlying = underlying;
-    item.requirement = underlying_requirement(group.first, group.second, policy, explain ? &item.parts : nullptr);
+    item.requirement = underlying_requirement(group.first, group.second, policy, explain ? &item.parts : nullptr, improve);
     result.push_back(std::move(item));
   }
   return result;
@@ -503,6 +752,13 @@ Quantity disallowed_shorts(const std::vector<MarginLeg>& legs, const std::vector
   for (const auto& [underlying, held] : shares)
     if (held < 0) count += (-held + kLot - 1) / kLot;
   return count;
+}
+
+Money detail::pairing_margin_requirement(const std::vector<MarginLeg>& legs, const std::vector<MarginStock>& stocks,
+                                          const MarginPolicy& policy) {
+  Money total;
+  for (const auto& item : strategy(legs, stocks, policy, false, false)) total = total + item.requirement;
+  return total;
 }
 
 Money margin_requirement(const std::vector<MarginLeg>& legs, const std::vector<MarginStock>& stocks, const MarginPolicy& policy) {

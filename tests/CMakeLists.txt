@@ -99,6 +99,7 @@ target_sources(openport_tests PRIVATE
   trading/trade_rules_test.cpp
   trading/time_rules_test.cpp
   trading/event_rules_test.cpp
+  trading/margin_allocation_test.cpp
   trading/multileg_test.cpp
   trading/orders_test.cpp
 )
