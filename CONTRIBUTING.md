@@ -55,9 +55,10 @@ replay), run `python3 tools/demo_soak.py http://127.0.0.1:9240 300 practice --se
 --json soak.json`. `--json` or `--json -` writes only JSON to stdout and progress
 to stderr; omitting it keeps the text report. The sorted object includes every
 summary counter, refusals by code, URL, speed, plan, actual server seed as a decimal
-string, scenario, expiry, condor leg symbols, start/end market times and exit status
-(1 if a probe filled, otherwise 0). Seeds repeat the market; probe timing still
-depends on playback and HTTP scheduling. Offline tests: `python3 tools/demo_soak_test.py`.
+string, replay run id, scenario, expiry, condor leg symbols, start/end market times
+and exit status (1 if a probe filled, otherwise 0). Seeds repeat the market; the
+run id ties the summary to the saved replay; probe timing still depends on playback
+and HTTP scheduling. Offline tests: `python3 tools/demo_soak_test.py`.
 
 ## Pull requests
 

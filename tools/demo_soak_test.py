@@ -28,6 +28,7 @@ class FakeReplay:
         self.finish_before_probe = finish_before_probe
         self.paused, self.polls, self.finished = False, 0, False
         self.started, self.orders, self.cancelled = None, [], []
+        self.run_id = "run-123"
 
     def chain(self):
         bid, ask = self.quote
@@ -40,7 +41,7 @@ class FakeReplay:
             return 200, {"replay": None}
         if path == "/api/replay" and method == "POST":
             self.started = body
-            return 201, {"replay": {"scenario": body["demo"], "seed": body.get("seed", "123")}}
+            return 201, {"replay": {"id": self.run_id, "scenario": body["demo"], "seed": body.get("seed", "123")}}
         if path == "/api/replay" and method == "PUT":
             if "paused" in body:
                 self.paused = body["paused"]
@@ -98,8 +99,8 @@ class DemoSoakTest(unittest.TestCase):
         self.assertEqual(json.loads(text), result)
         self.assertEqual(text, json.dumps(result, sort_keys=True, indent=2) + "\n")
         self.assertEqual(result["seed"], "123")
-        self.assertEqual((result["url"], result["speed"], result["plan"], result["scenario"]),
-                         ("http://fake-replay", 300, "practice", "reversal"))
+        self.assertEqual((result["url"], result["speed"], result["plan"], result["run_id"], result["scenario"]),
+                         ("http://fake-replay", 300, "practice", "run-123", "reversal"))
         self.assertEqual(result["expiry"], "2026-09-18PM")
         self.assertEqual(len(result["legs"]), 4)
         self.assertEqual(result["legs"]["short put"], SHORT_PUT)
@@ -115,7 +116,7 @@ class DemoSoakTest(unittest.TestCase):
             summary = json.loads(stdout.getvalue())
             self.assertEqual(summary["seed"], "18446744073709551615")
             self.assertEqual((summary["exit_status"], status, summary["probe_fills"]), (1, 1, 1))
-            self.assertIn("demo day reversal seed 18446744073709551615", stderr.getvalue())
+            self.assertIn("demo day reversal run run-123 seed 18446744073709551615", stderr.getvalue())
             self.assertIn("probes 1", stderr.getvalue())
 
     def test_text_output_and_json_file_keep_progress_on_stdout(self):

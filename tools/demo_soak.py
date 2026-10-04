@@ -8,11 +8,12 @@ URL is an openportd to test, such as one started for it with
 `openportd --port 8094 --no-history --paper-journal /tmp/soak/paper.jsonl`. The soak
 replaces any replay running there and trades only the replay's own in-memory account.
 SPEED is the replay's speed (default 120), PLAN its plan (default practice) and SEED
-the demo day's seed (default: one the server picks). The report prints the seed, so
-a run can be repeated. --json writes a sorted JSON summary to PATH; omit PATH or
-use - for stdout, with human progress on stderr. Without --json, text output is
-unchanged. The JSON includes run identity, market times, leg symbols, all counters
-and exit_status. Probe timing still depends on playback and HTTP scheduling.
+the demo day's seed (default: one the server picks). The report prints the replay
+run id and seed, so a saved run can be found and the market can be repeated.
+--json writes a sorted JSON summary to PATH; omit PATH or use - for stdout, with
+human progress on stderr. Without --json, text output is unchanged. The JSON
+includes `run_id`, market times, leg symbols, all counters and exit_status. Probe
+timing still depends on playback and HTTP scheduling.
 
 Each probe pauses the replay, places a limit buy of the short put inside the price
 band and under the ask, cancels it and resumes, so it asks whether the account can
@@ -109,7 +110,7 @@ def soak(client, speed=120, plan="practice", seed=None, out=print, pause=1.0):
     status, body = client.call("POST", "/api/replay", start)
     assert status in (200, 201), (status, body)
     identity = body["replay"]
-    out("demo day", body["replay"].get("scenario"), "seed", body["replay"].get("seed"), "plan", plan, "speed", speed)
+    out("demo day", identity.get("scenario"), "run", identity.get("id"), "seed", identity.get("seed"), "plan", plan, "speed", speed)
     while True:
         _, st = client.call("GET", "/api/replay/status")
         spx = next((u for u in st["underlyings"] if u["symbol"] == "SPX"), None)
@@ -206,7 +207,7 @@ def soak(client, speed=120, plan="practice", seed=None, out=print, pause=1.0):
         f"filled {result['probe_fills']} (sold back {result['restored']}), skipped {result['skipped']}")
     out(f"portfolio samples {result['samples']}, with incomplete marks {result['incomplete']}, "
         f"oldest mark {result['worst_age']:.0f} s")
-    result.update(url=client.base, speed=speed, plan=plan, seed=identity.get("seed"),
+    result.update(url=client.base, speed=speed, plan=plan, run_id=identity.get("id"), seed=identity.get("seed"),
                   scenario=identity.get("scenario"), expiry=expiry,
                   legs={name: leg["symbol"] for name, leg in legs.items()},
                   start_market_time=initial_portfolio.get("time"), end_market_time=portfolio.get("time"),
