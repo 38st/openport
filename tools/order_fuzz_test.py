@@ -268,7 +268,8 @@ class FlowTest(unittest.TestCase):
     def test_cli_exit_status_and_missing_path(self):
         completed = subprocess.CompletedProcess([], 1, "", "mismatch")
         with patch.object(fuzz.subprocess, "run", return_value=completed) as run:
-            result, _ = scripted_run(ScriptAPI(), binary="build/openportd", directory="/tmp/replays")
+            result, _ = scripted_run(ScriptAPI(), binary="openportd", directory="/tmp/replays")
+        self.assertEqual(run.call_args.args[0][0], "openportd")
         self.assertEqual(run.call_args.args[0][-2:], ["--verify-run", str(Path("/tmp/replays/run-1.jsonl").resolve())])
         self.assertEqual(result["exit_status"], 1)
         result, _ = scripted_run(ScriptAPI(), binary="build/openportd")

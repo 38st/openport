@@ -524,7 +524,7 @@ def run_once(client, start, ops, fuzz_seed, tape=None, binary=None, directory=No
             if binary:
                 path = journal_path(entry, directory)
                 out("verifying", run_id, "via --verify-run", path)
-                process = subprocess.run([str(Path(binary).resolve()), "--verify-run", str(path.resolve())],
+                process = subprocess.run([str(binary), "--verify-run", str(path.resolve())],
                                          capture_output=True, text=True, timeout=3600, check=False)
                 result["cli_verification"] = dict(status="passed" if process.returncode == 0 else "failed",
                                                   returncode=process.returncode, journal=str(path),
