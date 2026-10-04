@@ -13,6 +13,7 @@ cmake -S . -B build -DCMAKE_BUILD_TYPE=Release -DOPENPORT_WERROR=ON
 cmake --build build -j
 (cd build && ctest -j 8)                 # C++ tests
 ./build/bench/openport_bench             # pricing benchmarks
+./build/bench/openport_bench_trading --benchmark_filter=BM_Margin  # pairing / joint allocation, 14 and 80 legs
 cd web && npm ci && npx tsc -p tsconfig.json && npx vitest run && npm run build
 ```
 

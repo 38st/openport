@@ -13,6 +13,6 @@ else()
 endif()
 
 if(OPENPORT_BUILD_PROVIDERS)
-  add_executable(openport_bench_trading bench_trading.cpp bench_shared.cpp)
+  add_executable(openport_bench_trading bench_trading.cpp bench_shared.cpp bench_margin.cpp)
   target_link_libraries(openport_bench_trading PRIVATE openport::server openport::options benchmark::benchmark_main)
 endif()

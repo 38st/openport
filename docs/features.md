@@ -579,7 +579,7 @@ Status of the audit’s F1–F73 features. Links describe the rules and limits.
 | F46 | [Inside fills and walking limits](paper-trading.md#walking-limits) | Done |
 | F47 | [Journal and review improvements](paper-trading.md#trade-review) | Done |
 | F48 | [Run and attempt identity in exports](paper-trading.md#csv-downloads) | Done |
-| F49 | [Margin realism and account types](paper-trading.md#account-rules-and-evaluations) | Done (limitation: mixed-expiry worst-loss pools are evaluated after pairing, not optimized jointly; see paper-trading.md) |
+| F49 | [Margin realism and account types](paper-trading.md#account-rules-and-evaluations) | Done |
 | F50 | [In-app run verification](runtime.md#verifying-a-run) | Done |
 | F51 | [Live forward testing and playbook ergonomics](playbooks.md#forward-tests-on-live-paper) | Done |
 | F52 | [Backtest breadth](playbooks.md#batch-backtests) | Done (combined backtests add independent daily P&L; joint multi-playbook backtests sharing buying power remain open) |

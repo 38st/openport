@@ -977,7 +977,7 @@ export interface Portfolio {
 }
 /** An OSI symbol, or the underlying for shares, with the signed contracts or shares a part takes. */
 export interface MarginLeg { symbol: string; quantity: number }
-/** Positions that hold part of an underlying's strategy-margin requirement together. */
+/** Positions allocated together; worst_loss uses same-expiry shorts and same-or-later longs. */
 export interface MarginPart {
   kind: "naked" | "vertical" | "covered" | "straddle" | "short_shares" | "protected_shares" | "worst_loss" | "long" | "cash_secured"
   legs: MarginLeg[]

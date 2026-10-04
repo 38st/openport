@@ -9580,7 +9580,7 @@
                 "type": "string"
               }
             ],
-            "description": "naked: a short option alone; vertical: a short with the long that covers it; covered: a short call against 100 long shares or a short put against 100 short shares; straddle: a short put with a short call; short_shares: shares no long call protects; protected_shares: 100 short shares with a long call; worst_loss: positions expiring together at their worst loss at expiry; long: paid in full; cash_secured: a cash account's or IRA's short put, holding its strike."
+            "description": "naked: a short option alone; vertical: a short with the long that covers it; covered: a short call against 100 long shares or a short put against 100 short shares; straddle: a short put with a short call; short_shares: shares no long call protects; protected_shares: 100 short shares with a long call; worst_loss: shorts expiring together with longs expiring then or later, held at their worst loss at the shorts' expiry; long: paid in full; cash_secured: a cash account's or IRA's short put, holding its strike."
           },
           "legs": {
             "type": "array",
@@ -9626,7 +9626,7 @@
       },
       "MarginUnderlying": {
         "type": "object",
-        "description": "One underlying's margin requirement and what makes it up. Under strategy margin the parts add up to it; under portfolio margin the scan sets it (parts empty), and while a scan is incomplete it is strategy margin's parts plus the option minimum, with scan null.",
+        "description": "One underlying's margin requirement and what makes it up. Strategy margin uses bounded deterministic improvement of pairs and expiry loss pools, retaining the original candidates as an upper bound; it need not reach the global minimum. Under strategy margin the parts add up to it; under portfolio margin the scan sets it (parts empty), and while a scan is incomplete it is strategy margin's parts plus the option minimum, with scan null.",
         "properties": {
           "underlying": {
             "type": "string"

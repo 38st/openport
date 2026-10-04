@@ -69,6 +69,22 @@ describe("margin breakdown", () => {
     expect(rows()).toEqual([["SPY", "Cash-secured put", "−1 SPY Oct 22 490P", "$49,000.00"]])
   })
 
+  it("shows a joint expiry pool with a later long", async () => {
+    await act(async () => root.render(<MarginBreakdown margin={[
+      { underlying: "SPY", requirement: "43000.00", scan: null, parts: [
+        { kind: "worst_loss", legs: [
+          { symbol: "SPY   261022P00490000", quantity: -2 },
+          { symbol: "SPY   261022P00480000", quantity: -2 },
+          { symbol: "SPY   261022P00510000", quantity: 2 },
+          { symbol: "SPY   261029P00490000", quantity: 1 },
+        ], requirement: "43000.00" },
+      ] },
+    ]} />))
+    expect(rows()).toEqual([["SPY", "Worst loss at expiry",
+      "−2 SPY Oct 22 490P · −2 SPY Oct 22 480P · +2 SPY Oct 22 510P · +1 SPY Oct 29 490P", "$43,000.00"]])
+    expect(host.querySelector("td[title]")?.getAttribute("title")).toContain("longs expiring then or later")
+  })
+
   it("labels shares and contracts", () => {
     expect(marginLegLabel({ symbol: "SPY", quantity: -200 }, "SPY")).toBe("−200 SPY shares")
     expect(marginLegLabel({ symbol: "SPXW  261022P04900000", quantity: 2 }, "SPX")).toBe("+2 SPX Oct 22 4900P")

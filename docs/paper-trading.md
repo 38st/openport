@@ -1696,14 +1696,24 @@ to net by expiry. So a credit spread holds its width, an iron condor its wider w
 (a calendar beside it adds nothing), a long butterfly nothing, a calendar nothing beyond its debit, a diagonal the
 strike difference when its long is further out of the money, a covered call nothing
 beyond its shares, and a short strangle its greater side plus the other side's value.
-Structures whose requirements come entirely from pairs and unpaired positions combine
-without holding more than each would alone, provided no opposite positions net away.
-Worst-loss netting is evaluated after pairing, not optimized jointly with it: books on
-the same underlying with multiple expiries, where either constituent uses worst-loss
-netting, can still hold more than their separate sum because covers may be allocated
-away from that group. A butterfly beside a calendar can hold nothing. Long options
-and long shares are paid in full, so a protective put needs nothing beyond its premium; short shares no long call protects hold 150% of
-their value. A long that expires before its short does not cover it. (European puts can
+A bounded joint allocator then improves these candidates by merging expiry pools and
+moving or exchanging whole contracts between pairs and pools. Each trial is scored
+with the pools' actual worst losses, so a butterfly can keep a later long even when
+pairing that long elsewhere would save more in isolation. A pool uses shorts from
+one expiry and longs expiring then or later, valued at intrinsic; its call slope
+must be nonnegative. Each option contract is allocated once. Share covers remain
+reserved while options are reallocated. All amounts use exact integer micro-dollars;
+new buy-back-value tranches round up so splitting cannot create fractional savings.
+
+The search has a fixed budget of 32,768 work units per underlying (candidate members
+and strike-payoff evaluations), deterministic traversal and tie rules, and no
+wall-clock cutoff or loop over contract quantity. It keeps the best valid allocation
+found, including the original pairing and separate-expiry candidates, so it cannot
+raise their requirement or use an infeasible discounted bound. The budget can leave
+conservative margin above the global minimum; this is not an exact optimizer.
+A butterfly beside a calendar can hold nothing. Long options and long shares are
+paid in full, so a protective put needs nothing beyond its premium; short shares
+no long call protects hold 150% of their value. A long that expires before its short does not cover it. (European puts can
 trade below intrinsic value before expiry; the pairing ignores that.)
 
 With `margin: "portfolio"`, `portfolio_margin_requirement` sums a separate scan for

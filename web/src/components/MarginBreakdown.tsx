@@ -21,7 +21,7 @@ const partHints: Record<MarginPart["kind"], string> = {
   straddle: "The greater naked requirement plus the other side's buy-back value",
   short_shares: "Their value and half again, with any house percentage added to the half",
   protected_shares: "100 short shares with a long call: at most its strike",
-  worst_loss: "Positions that expire together, held at their worst loss at expiry",
+  worst_loss: "Shorts expiring together with longs expiring then or later, held at their worst loss at the shorts' expiry",
   long: "Premium and shares are paid in full",
   cash_secured: "A cash account's or IRA's short put holds its strike in cash",
 }
