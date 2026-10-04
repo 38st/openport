@@ -34,6 +34,7 @@ export function ruleText(account: Account, fee?: string, dailyLoss?: string) {
   const lockAt = r.lock_at_start ? e.starting_balance : r.lock_balance
   const end = dayEnd(r)
   return [
+    { title: "Account type and margin", body: `${r.account_type === "cash" ? "Cash account" : r.account_type === "ira" ? "IRA (limited margin)" : "Margin account"}. ${r.margin === "portfolio" ? "Portfolio margin" : "Strategy margin (Reg T)"}. House margin: ${r.house_margin_percent ?? 0}%. Portfolio IV shock: ±${r.pm_vol_shock ?? 0} points${r.margin === "portfolio" ? "." : " (inactive under strategy margin)."}` },
     funded ? { title: "Funded account", body: <>There is no profit target: trade the account and withdraw from its profits under the payout rules below.
         The account stays open while its drawdown and any inactivity limit are respected.</> }
     : { title: "Profit target", body: r.profit_target

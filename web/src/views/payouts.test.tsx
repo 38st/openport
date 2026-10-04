@@ -95,8 +95,8 @@ describe("funded accounts and payouts", () => {
   })
   it("states the funded rules and locks funded plans until their evaluation passes", () => {
     const texts = ruleText(fundedAccount, "0.65", "5000.00")
-    expect(texts.map((t) => t.title).slice(0, 3)).toEqual(["Funded account", "Trailing drawdown", "Payouts"])
-    const [, drawdown, payout] = texts.map((rule) => renderToStaticMarkup(<>{rule.body}</>))
+    expect(texts.map((t) => t.title).slice(0, 4)).toEqual(["Account type and margin", "Funded account", "Trailing drawdown", "Payouts"])
+    const [, drawdown, payout] = texts.slice(1).map((rule) => renderToStaticMarkup(<>{rule.body}</>))
     expect(drawdown).toContain("It has locked at $100,000.00 and no longer trails.")
     expect(drawdown).toContain("closes the funded account")
     for (const text of ["8 qualifying days", "$200.00", "up to 50%", "$2,000 for payout 1", "$6,000 for payout 4 and later", "you keep 80%",

@@ -1,7 +1,7 @@
 import type { MarginLeg, MarginPart, MarginUnderlying } from "../api/trading-types"
 import { osiLabel } from "../lib/journal"
 import { fixed } from "../lib/format"
-import { formatMoney } from "../lib/trading"
+import { compareMoney, formatMoney, sumMoney } from "../lib/trading"
 
 export const partLabels: Record<MarginPart["kind"], string> = {
   naked: "Naked short",
@@ -27,8 +27,6 @@ const partHints: Record<MarginPart["kind"], string> = {
   cash_secured: "A cash account's or IRA's short put holds its strike in cash",
   netted: "Covers, straddles and expiry losses allocated together, using each position once",
 }
-
-const cents = (money: string) => Math.round(Number(money) * 100)
 
 /** "−1 SPX Oct 22 4900P" or "+100 SPY shares". */
 export function marginLegLabel(leg: MarginLeg, underlying: string): string {
@@ -63,7 +61,7 @@ export function MarginBreakdown({ margin }: { margin: MarginUnderlying[] }) {
                 <td className="text-right tabular">{formatMoney(part.requirement)}</td>
               </tr>)
           const summed = !item.scan && item.parts.length > 1
-          const fallback = !item.scan && item.parts.reduce((sum, p) => sum + cents(p.requirement), 0) !== cents(item.requirement)
+          const fallback = !item.scan && compareMoney(sumMoney(item.parts.map((part) => part.requirement)), item.requirement) !== 0
           return [...rows,
             ...(summed || fallback || !rows.length ? [<tr key="total" className={rows.length ? "" : "border-t border-border/40"}>
               <td className="font-medium">{rows.length ? "" : item.underlying}</td>

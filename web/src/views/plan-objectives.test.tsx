@@ -128,8 +128,8 @@ describe("plan objectives in the terminal", () => {
   it("explains the plan's rules and offers its presets' objectives", () => {
     const texts = ruleText(planned, "0.65", "5000.00")
     const titles = texts.map((t) => t.title)
-    expect(titles.slice(0, 4)).toEqual(["Profit target", "Static drawdown", "Plan daily loss limit", "Objectives to pass"])
-    const bodies = texts.map((t) => renderToStaticMarkup(<>{t.body}</>))
+    expect(titles.slice(0, 5)).toEqual(["Account type and margin", "Profit target", "Static drawdown", "Plan daily loss limit", "Objectives to pass"])
+    const bodies = texts.slice(1).map((t) => renderToStaticMarkup(<>{t.body}</>))
     expect(bodies[0]).toContain("on the closed balance")
     expect(bodies[0]).toContain("The pass also waits for: at least 3 trading days; best day at most 40% of the total profit")
     expect(bodies[1]).toContain("It is static")

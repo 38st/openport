@@ -49,6 +49,17 @@ describe("margin breakdown", () => {
     expect(total).toEqual(["", "Total, with the portfolio-margin minimum until the scan is complete", "$137.50"])
   })
 
+  it("checks totals before rounding individual parts to cents", async () => {
+    await act(async () => root.render(<MarginBreakdown margin={[
+      { underlying: "SPY", requirement: "300.008", scan: null, parts: [
+        { kind: "naked", legs: [], requirement: "100.004" },
+        { kind: "naked", legs: [], requirement: "200.004" },
+      ] },
+    ]} />))
+    expect(rows().at(-1)).toEqual(["", "Total", "$300.01"])
+    expect(host.textContent).not.toContain("until the scan is complete")
+  })
+
   it("names a cash-secured put", async () => {
     await act(async () => root.render(<MarginBreakdown margin={[
       { underlying: "SPY", requirement: "49000.00", scan: null, parts: [
