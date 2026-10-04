@@ -60,28 +60,53 @@ jobs:
   cpp-sanitize:
     name: C++ (GCC 13, ASan + UBSan, shard ${{ matrix.shard }}/4)
     runs-on: ubuntu-24.04
-    timeout-minutes: 30
+    # Cold runs take about 23 minutes; warm runs are expected well under 20.
+    timeout-minutes: 35
     strategy:
       # Complete every shard even when another finds a sanitizer failure.
       fail-fast: false
       matrix:
         shard: [1, 2, 3, 4]
+    env:
+      CCACHE_DIR: ${{ github.workspace }}/.ccache
+      CCACHE_COMPRESS: 'true' # ccache uses zstd compression.
+      CCACHE_MAXSIZE: 1.5G
+      CCACHE_BASEDIR: ${{ github.workspace }}
+      CCACHE_NOHASHDIR: 'true'
     steps:
       - uses: actions/checkout@v7
       - name: Install system dependencies
         run: |
           sudo apt-get update
           sudo apt-get install -y --no-install-recommends \
-            build-essential cmake ninja-build libboost-dev libssl-dev zlib1g-dev libzstd-dev
+            build-essential cmake ninja-build ccache libboost-dev libssl-dev zlib1g-dev libzstd-dev
+      - name: Restore compiler cache
+        # Cache's current major is v6; it uses Node 24 like checkout v7.
+        uses: actions/cache/restore@v6
+        with:
+          path: ${{ env.CCACHE_DIR }}
+          key: ccache-sanitize-${{ runner.os }}-${{ github.sha }}
+          restore-keys: ccache-sanitize-${{ runner.os }}-
       - name: Configure
         # -O1 avoids expensive optimization of instrumented code; -g1 keeps
         # function names and line numbers in sanitizer backtraces.
         run: >
           cmake -S . -B build -G Ninja -DCMAKE_BUILD_TYPE=RelWithDebInfo
+          -DCMAKE_C_COMPILER_LAUNCHER=ccache -DCMAKE_CXX_COMPILER_LAUNCHER=ccache
           -DCMAKE_CXX_FLAGS_RELWITHDEBINFO="-O1 -g1 -DNDEBUG"
           -DOPENPORT_SANITIZE=ON -DOPENPORT_WERROR=ON -DOPENPORT_BUILD_BENCHMARKS=OFF
       - name: Build
         run: cmake --build build -j 4
+      - name: Compiler cache statistics
+        if: always()
+        run: ccache -s
+      - name: Save compiler cache
+        # Every shard builds the same code; only one saves the shared key.
+        if: always() && matrix.shard == 1
+        uses: actions/cache/save@v6
+        with:
+          path: ${{ env.CCACHE_DIR }}
+          key: ccache-sanitize-${{ runner.os }}-${{ github.sha }}
       - name: Test
         env:
           TMPDIR: ${{ runner.temp }}

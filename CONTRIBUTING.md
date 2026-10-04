@@ -29,6 +29,9 @@ to reduce compile time while retaining function names and source lines in saniti
 backtraces. To reproduce a shard after configuring with the workflow's flags, run
 `ctest --test-dir build -j 4 --output-on-failure --no-tests=error -I 1,,4`
 (replace `1` with `2`, `3` or `4`); omit `-I` to run the whole suite.
+All four sanitizer runners restore a shared, zstd-compressed ccache capped at 1.5 GB;
+only shard 1 saves it for later runs, avoiding competing uploads. Warm runs are
+expected well under 20 minutes, with a 35-minute timeout for cold-cache headroom.
 The macOS build is the release archive's: `-DOPENPORT_STATIC_DEPS=ON`
 links OpenSSL and zstd statically, and CI checks it needs only macOS's own libraries.
 Changes only to `site/`, `docs/` (other than `docs/openapi.yaml`, which the tests
