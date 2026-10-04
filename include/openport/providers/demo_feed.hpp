@@ -69,5 +69,7 @@ class DemoProvider final : public md::Provider {
 /// no longer running left in the temporary directory, as a SIGKILL does; a running
 /// process's directories and other users' are never touched. Returns how many went.
 std::size_t remove_orphaned_demo_directories();
+/// The same sweep confined to a supplied temporary directory.
+std::size_t remove_orphaned_demo_directories(const std::filesystem::path& temporary);
 
 }  // namespace openport::providers

@@ -1,6 +1,9 @@
 #include "support/recording.hpp"
 
+#include <barrier>
+#include <cerrno>
 #include <condition_variable>
+#include <csignal>
 #include <fstream>
 #include <set>
 #include <sys/wait.h>
@@ -54,15 +57,27 @@ providers::DemoProvider::Options settings(std::shared_ptr<DemoClock> clock = {})
   return options;
 }
 
+pid_t stopped_process() {
+  const auto child = ::fork();
+  if (child == 0) ::_exit(0);
+  if (child < 0) return child;
+  int status = 0;
+  pid_t reaped;
+  do { reaped = ::waitpid(child, &status, 0); } while (reaped < 0 && errno == EINTR);
+  return reaped == child ? child : -1;
+}
+bool process_is_gone(pid_t pid) { return ::kill(pid, 0) != 0 && errno == ESRCH; }
+
 // U5: a SIGKILLed server's generated days are removed at the next start, but only
 // once the process that made them is gone.
 TEST(DemoFeed, OrphanedTemporaryDirectoriesOfStoppedProcessesAreRemoved) {
-  const pid_t child = ::fork();
-  ASSERT_GE(child, 0);
-  if (child == 0) ::_exit(0);
-  int status = 0;
-  ASSERT_EQ(::waitpid(child, &status, 0), child);  // reaped: that id names no process now
-  const auto temporary = std::filesystem::temp_directory_path();
+  const auto child = stopped_process();
+  ASSERT_GT(child, 0);
+  if (!process_is_gone(child)) GTEST_SKIP() << "Reaped PID " << child << " has already been reused";
+  // Other demo processes sweep TMPDIR concurrently. Keep this fixture below a
+  // private root without changing the process-wide environment.
+  test::RecordingFile fixture;
+  const auto& temporary = fixture.directory;
   const auto dead = std::to_string(child), alive = std::to_string(::getpid());
   const std::vector<std::filesystem::path> orphans = {temporary / ("openport-feed-" + dead + "-a1B2c3"),
                                                       temporary / ("openport-demo-" + dead + "-4")};
@@ -75,11 +90,48 @@ TEST(DemoFeed, OrphanedTemporaryDirectoriesOfStoppedProcessesAreRemoved) {
     std::ofstream(directory / "2026-09-16.oprec") << "day";
   }
   for (const auto& directory : kept) std::filesystem::create_directories(directory);
-  EXPECT_GE(providers::remove_orphaned_demo_directories(), orphans.size());
+  const auto removed = providers::remove_orphaned_demo_directories(temporary);
+  if (!process_is_gone(child)) GTEST_SKIP() << "Reaped PID " << child << " was reused during the sweep";
+  EXPECT_EQ(removed, orphans.size());
   for (const auto& directory : orphans) EXPECT_FALSE(std::filesystem::exists(directory)) << directory;
   for (const auto& directory : kept) {
     EXPECT_TRUE(std::filesystem::exists(directory)) << directory;
-    std::filesystem::remove_all(directory);
+  }
+}
+
+TEST(DemoFeed, ConcurrentOrphanSweepsFinishWithoutTouchingLiveDirectories) {
+  const auto child = stopped_process();
+  ASSERT_GT(child, 0);
+  test::RecordingFile fixture;
+  const auto live = fixture.directory / ("openport-feed-" + std::to_string(::getpid()) + "-live");
+  std::filesystem::create_directory(live);
+  for (int round = 0; round < 4; ++round) {
+    SCOPED_TRACE(round);
+    if (!process_is_gone(child)) GTEST_SKIP() << "Reaped PID " << child << " has already been reused";
+    std::vector<std::filesystem::path> orphans;
+    for (int i = 0; i < 128; ++i) {
+      const auto path = fixture.directory / ("openport-demo-" + std::to_string(child) + "-" + std::to_string(i));
+      std::filesystem::create_directory(path);
+      std::ofstream(path / "day.oprec") << "day";
+      orphans.push_back(path);
+    }
+    std::barrier ready(2);
+    std::size_t other_removed = 0;
+    std::jthread other([&] {
+      ready.arrive_and_wait();
+      other_removed = providers::remove_orphaned_demo_directories(fixture.directory);
+    });
+    ready.arrive_and_wait();
+    const auto removed = providers::remove_orphaned_demo_directories(fixture.directory);
+    other.join();
+    if (!process_is_gone(child)) GTEST_SKIP() << "Reaped PID " << child << " was reused during the sweeps";
+    // Concurrent rmdir calls can both report success on APFS. Each sweep's
+    // count is bounded, but their sum need not count uniquely removed roots.
+    EXPECT_LE(removed, orphans.size());
+    EXPECT_LE(other_removed, orphans.size());
+    EXPECT_GE(removed + other_removed, orphans.size());
+    for (const auto& path : orphans) EXPECT_FALSE(std::filesystem::exists(path)) << path;
+    EXPECT_TRUE(std::filesystem::exists(live));
   }
 }
 

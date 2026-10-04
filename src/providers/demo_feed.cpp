@@ -349,31 +349,46 @@ void DemoProvider::run(md::Subscription subscription, md::EventSink& sink) {
   }
 }
 
-std::size_t remove_orphaned_demo_directories() {
+std::size_t remove_orphaned_demo_directories(const std::filesystem::path& temporary) {
   std::size_t removed = 0;
-  try {
-    for (const auto& entry : std::filesystem::directory_iterator(std::filesystem::temp_directory_path())) {
-      const auto name = entry.path().filename().string();
-      std::string_view rest;
-      for (const std::string_view prefix : {"openport-feed-", "openport-demo-"})
-        if (std::string_view(name).starts_with(prefix)) rest = std::string_view(name).substr(prefix.size());
-      const auto dash = rest.find('-');
-      if (dash == 0 || dash == std::string_view::npos) continue;
-      pid_t pid = 0;
-      const auto [end, error] = std::from_chars(rest.data(), rest.data() + dash, pid);
-      if (error != std::errc{} || end != rest.data() + dash || pid <= 0 || pid == ::getpid()) continue;
-      struct stat info {};
-      if (::lstat(entry.path().c_str(), &info) != 0 || !S_ISDIR(info.st_mode) || info.st_uid != ::getuid()) continue;
-      // Only a process that no longer exists gives its directories up.
-      if (::kill(pid, 0) == 0 || errno != ESRCH) continue;
-      std::error_code ec;
-      std::filesystem::remove_all(entry.path(), ec);
-      if (!ec) ++removed;
+  std::error_code iteration_error;
+  std::filesystem::directory_iterator entry(temporary, iteration_error), end;
+  // A disappearing entry is local to that entry. An unreadable directory ends
+  // the iteration without throwing out of a server's startup cleanup.
+  for (; entry != end; entry.increment(iteration_error)) {
+    const auto name = entry->path().filename().string();
+    std::string_view rest;
+    for (const std::string_view prefix : {"openport-feed-", "openport-demo-"})
+      if (std::string_view(name).starts_with(prefix)) rest = std::string_view(name).substr(prefix.size());
+    const auto dash = rest.find('-');
+    if (dash == 0 || dash == std::string_view::npos) continue;
+    pid_t pid = 0;
+    const auto [parsed_end, error] = std::from_chars(rest.data(), rest.data() + dash, pid);
+    if (error != std::errc{} || parsed_end != rest.data() + dash || pid <= 0 || pid == ::getpid()) continue;
+    struct stat info {};
+    if (::lstat(entry->path().c_str(), &info) != 0 || !S_ISDIR(info.st_mode) || info.st_uid != ::getuid()) continue;
+    // Only a process that no longer exists gives its directories up.
+    if (::kill(pid, 0) == 0 || errno != ESRCH) continue;
+    // Sweep children independently: another server can remove any of them while
+    // we walk. A vanished child must not prevent removing the now-empty root.
+    std::error_code contents_error;
+    std::filesystem::directory_iterator child(entry->path(), contents_error), child_end;
+    for (; child != child_end; child.increment(contents_error)) {
+      std::error_code ignored;
+      std::filesystem::remove_all(child->path(), ignored);
     }
-  } catch (const std::filesystem::filesystem_error&) {
-    // An unreadable temporary directory leaves nothing to clean.
+    // Count successful root removals. A missing root or one whose children could
+    // not be removed does not stop the rest of the sweep.
+    std::error_code ec;
+    if (std::filesystem::remove(entry->path(), ec)) ++removed;
   }
   return removed;
+}
+
+std::size_t remove_orphaned_demo_directories() {
+  std::error_code error;
+  const auto temporary = std::filesystem::temp_directory_path(error);
+  return error ? 0 : remove_orphaned_demo_directories(temporary);
 }
 
 }  // namespace openport::providers
