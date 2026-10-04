@@ -20,10 +20,12 @@ class RuleEvidence(TypedDict, total=False):
 
 
 class Decision(TypedDict, total=False):
+    """Numeric checks, HH:MM New York clock rules, or UTC news timestamps."""
+
     code: str
     message: str
-    actual: float | None
-    limit: float | None
+    actual: float | str | None
+    limit: float | str | None
     scope: str | None
     evidence: RuleEvidence
 
