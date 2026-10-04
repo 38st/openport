@@ -5969,7 +5969,8 @@ CommandResult TradingSession::reset_account(Money initial_cash, AccountRules rul
     s.attempts.push_back({e.attempt, s.config.rules.plan, e.started, s.time, e.starting_balance, snapshot.equity,
                           e.status, e.decision, e.first_order, e.first_fill, e.decision_code, s.config.rules, e.decided_at,
                           e.status == EvaluationStatus::Active ? std::nullopt : std::optional(e.decided_equity), e.peak,
-                          s.config.rules.max_drawdown > Money{} ? std::optional(e.floor) : std::nullopt, s.fee_charged, {}, e.size_scaling});
+                          s.config.rules.max_drawdown > Money{} ? std::optional(e.floor) : std::nullopt, s.fee_charged, {},
+                          archive_payouts ? e.size_scaling : std::nullopt});
     if (archive_payouts)
       for (const auto& payout : e.payouts) s.attempts.back().payouts_received = s.attempts.back().payouts_received + payout.trader_share;
     s.fee_charged = {fee, fee == Money{} ? "" : same ? "reset" : activated ? "activation" : "evaluation"};

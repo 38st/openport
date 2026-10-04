@@ -1521,3 +1521,11 @@ runs. This command-level compatibility choice avoids changing replay driver 6.
 The optional `program_cost_overrides` bit mask records which reset cost settings
 were explicit; an absent/zero mask is omitted, and a new same-plan reset retains
 current settings for omitted fields.
+
+Program-aware resets also archive enabled size-scaling progress. Reset identity
+uses its original balance and loss limits, restoring a shifted lock balance before
+comparing plan rules; contract and size-scaling settings remain part of the plan.
+The current size and live rules stay in the attempt summary for historical reporting.
+Legacy resets without `program_costs` omit this new archive field, preserving their
+recorded state when replayed. Old summaries without original scaling provenance
+cannot extend a reset streak across a size change.

@@ -771,8 +771,13 @@ TEST(TradingFunded, SizeScalingJournalRoundTripsAndContinuesTheSameReview) {
     }
   }
   EXPECT_EQ(events, 1U);
+  // Older replay inputs predate program bookkeeping and must not acquire new archive fields.
+  ASSERT_TRUE(scaled.reset_account(m("10000"), funded(), "legacy reset", f.time, false, false).decision.ok());
+  EXPECT_FALSE(scaled.snapshot()->attempts.back().size_scaling);
+  EXPECT_FALSE(nlohmann::json::parse(scaled.snapshot_json())["attempts"].back().contains("size_scaling"));
   ASSERT_TRUE(s.reset_account(m("10000"), funded(), "new attempt", f.time).decision.ok());
   EXPECT_TRUE(s.snapshot()->attempts.back().rules->size_scaling);
+  EXPECT_TRUE(s.snapshot()->attempts.back().size_scaling);
   EXPECT_FALSE(s.snapshot()->evaluation.size_scaling);
   std::filesystem::remove_all(directory);
 }
