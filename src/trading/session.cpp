@@ -6096,13 +6096,15 @@ std::optional<double> TradingSession::held_dollar_delta(const std::string& under
 
 std::vector<CounterExposure> TradingSession::counter_exposures(const std::string& account, Timestamp time,
     const std::vector<Valuation>& valuations, const std::vector<StockPrice>& stocks) const {
-  // Overlay current integration marks without running account actions or matching.
+  // Overlay current marks, then age orders on a private copy. Expired or
+  // clock-cancelled entries do not reserve direction; holdings never execute.
   auto state = impl_->state;
-  state.time = time;
   for (const auto& v : valuations)
     if (v.time > 0 && v.time <= time && state.contracts.contains(v.symbol)) state.valuations[v.symbol] = v;
   for (const auto& p : stocks)
     if (p.time > 0 && p.time <= time && p.price > Money{}) state.stock_marks[p.symbol] = {p.price, p.time};
+  Events ignored;
+  advance(state, time, ignored);
   std::set<std::string> underlyings;
   for (const auto& [symbol, p] : state.ledger.positions()) underlyings.insert(p.contract.underlying);
   for (const auto& [symbol, p] : state.ledger.stocks()) underlyings.insert(symbol);

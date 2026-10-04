@@ -503,7 +503,7 @@ TEST(Desk, CounterPositionsIncludeShareEntriesAndAllowShareReductions) {
   stock.account.clear(); stock.quantity = -11;
   const auto refused = command(desk, stock, market.time, market.time);
   EXPECT_EQ(refused.decision.code, trading::Reason::COUNTER_POSITION);
-  EXPECT_EQ(refused.decision.message, "Opening SPY dollar delta -$5,501 opposes account other held dollar delta +$5,001");
+  EXPECT_EQ(refused.decision.message, "Opening SPY dollar delta -$5,501 opposes account other held or working dollar delta +$5,001");
   ASSERT_TRUE(refused.decision.actual);
   ASSERT_TRUE(refused.decision.limit);
   EXPECT_DOUBLE_EQ(*refused.decision.actual, -5501.358016);

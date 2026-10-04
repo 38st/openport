@@ -872,6 +872,18 @@ TEST(TradeRules, ComboFillChecksEveryRatioAndKeepsRuleCancellationCode) {
   EXPECT_EQ(snapshot->recent_orders.back().reason.actual, 2);
 }
 
+TEST(TradeRules, CounterExposureQueryDropsExpiredWorkingOrdersWithoutChangingTheAccount) {
+  ScriptedMarket f;
+  TradingSession s(config(), f.time);
+  f.seed(s);
+  ASSERT_TRUE(s.submit(f.limit("working", 1, "4.00"), f.time).decision.ok());
+  const auto before = s.snapshot_json();
+  EXPECT_EQ(s.counter_exposures("other", f.time).size(), 1U);
+  f.time = s.snapshot()->open_orders.front().day_end;
+  EXPECT_TRUE(s.counter_exposures("other", f.time, {f.valuation()}).empty());
+  EXPECT_EQ(s.snapshot_json(), before);
+}
+
 TEST(TradeRules, ChainedOpeningFillsUseTheCurrentExternalDirection) {
   ScriptedMarket f;
   AccountRules rules; rules.no_counter_positions = true;
