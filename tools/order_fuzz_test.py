@@ -350,6 +350,32 @@ class FlowTest(unittest.TestCase):
                     if warns:
                         self.assertEqual(report[0]["refusals"], {attempts[0]["reason"]["code"]: 1})
 
+    def test_playbook_buy_only_preview_refusal_warns_without_journaled_orders(self):
+        message = "This plan is buy-only; multi-leg orders may only close held positions"
+        class PreviewRefusedPlaybook(ScriptAPI):
+            def call(self, method, path, body=None):
+                status, response = super().call(method, path, body)
+                if path.endswith("/mode"):
+                    self.current = state()
+                    self.current["account"]["rules"]["buy_only"] = buy_only
+                    response["reasons"] = reasons
+                return status, response
+        cases = [(True, {"order-fuzz-1:SPX": message}, True),
+                 (False, {"order-fuzz-1:SPX": message}, False),
+                 (True, {"other:SPX": message}, False),
+                 (True, {"order-fuzz-1:SPX": "Outside entry window"}, False),
+                 (True, {}, False)]
+        for buy_only, reasons, warns in cases:
+            with self.subTest(buy_only=buy_only, reasons=reasons):
+                result, _ = scripted_run(PreviewRefusedPlaybook(), repeat=True, playbook=True)
+                self.assertEqual(result["exit_status"], 0 if warns else 1)
+                for run in result["runs"]:
+                    self.assertEqual(run["actors"]["playbook"]["orders"], 0)
+                    self.assertEqual(bool(run["warnings"]), warns)
+                    if warns:
+                        refusal = run["warnings"][0]["preview_refusals"]["SPX"]
+                        self.assertEqual(refusal, dict(code="BUY_ONLY", message=message))
+
     def test_restart_prefix_repeat_and_both_verifiers(self):
         with tempfile.TemporaryDirectory() as directory:
             api = RestartAPI(directory)

@@ -295,6 +295,18 @@ def actor_counts(state, definition=None):
     return result
 
 
+def playbook_preview_refusals(publication, definition, rules):
+    # Auto evaluates immediately when enabled. A buy-only spread fails preview
+    # before submission, so it leaves no tagged order. The publication exposes
+    # messages, not codes: require the exact reducer refusal and the active rule.
+    message = "This plan is buy-only; multi-leg orders may only close held positions"
+    identifier = definition["id"]
+    if not rules.get("buy_only") or publication["modes"].get(identifier) != "auto":
+        return {}
+    return {symbol: dict(code="BUY_ONLY", message=message) for symbol in definition["underlyings"]
+            if publication.get("reasons", {}).get(f"{identifier}:{symbol}") == message}
+
+
 def operation(kind, method, suffix, body=None, preview=False):
     return dict(kind=kind, method=method, path=PREFIX + suffix, body=body, preview=preview)
 
@@ -677,6 +689,8 @@ def run_once(client, start, ops, fuzz_seed, tape=None, binary=None, directory=No
             if actual != playbook or result["playbook"]["mode"] != "auto":
                 raise FuzzError("replay playbook definition/version or auto mode differs from setup")
         state = snapshot(client)
+        if playbook:
+            result["playbook"]["preview_refusals"] = playbook_preview_refusals(enabled, playbook, state["account"]["rules"])
         result["start_market_time"] = state["portfolio"]["time"]
         generator = Generator(client, random.Random(fuzz_seed), replay, ops)
         abandoned = Counter()
@@ -720,9 +734,10 @@ def run_once(client, start, ops, fuzz_seed, tape=None, binary=None, directory=No
             coverage = result["actors"]["playbook"]
             attempts = coverage["orders_by_actor"].get("system", 0)
             refused = sum(n for code, n in coverage["automatic_refusals"].items() if code in PLAN_REFUSALS)
-            if attempts and refused == attempts:
-                warning = dict(check="playbook_coverage", message="all automatic playbook orders refused by plan rules",
-                               refusals=coverage["automatic_refusals"])
+            preview_refusals = result["playbook"]["preview_refusals"]
+            if (attempts or preview_refusals) and refused == attempts:
+                warning = dict(check="playbook_coverage", message="automatic playbook attempts refused by plan rules",
+                               refusals=coverage["automatic_refusals"], preview_refusals=preview_refusals)
                 result["warnings"].append(warning)
                 out("WARN", dumps(warning).strip())
             else:
