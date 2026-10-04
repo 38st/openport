@@ -4056,7 +4056,18 @@
           "default": {
             "$ref": "#/components/responses/Error"
           }
-        }
+        },
+        "parameters": [
+          {
+            "name": "playbook",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "string"
+            },
+            "description": "Filter saved reports by playbook ID or ID@VERSION; matches any member of a joint report."
+          }
+        ]
       },
       "delete": {
         "summary": "DELETE /api/backtests",
@@ -4405,7 +4416,7 @@
       ],
       "post": {
         "summary": "POST /api/stocks/trade/preview",
-        "description": "Buy or sell 1\u201310,000,000 shares at a fresh underlying price during the stock regular session (09:30\u201316:00 ET, early closes). Opens, adds, reduces or reverses. Index underlyings are refused; opening takes account, guardrail, valuation, exposure, daily loss and buying-power checks. Buy-only and defined-risk plans refuse short shares. No fee. Dry run only: accepted/rejected decision, signed cash cost, price, and account before/after; a rejected trade leaves holdings unchanged. Nothing is journaled. Requires trade:ACCOUNT (or trade:*) live, replay scope in replay. Calendar-restricted openings return HTTP 422 NEWS_BLACKOUT or HOLD_RESTRICTED with timestamp/cutoff evidence; reductions remain available.",
+        "description": "Buy or sell 1–10,000,000 shares at a fresh underlying price during the stock regular session (09:30–16:00 ET, early closes). Opens, adds, reduces or reverses. Index underlyings are refused; opening takes account, guardrail, valuation, exposure, daily loss and buying-power checks. Buy-only and defined-risk plans refuse short shares. No fee. Dry run only: accepted/rejected decision, signed cash cost, price, and account before/after; a rejected trade leaves holdings unchanged. Nothing is journaled. Requires trade:ACCOUNT (or trade:*) live, replay scope in replay. Calendar-restricted openings return HTTP 422 NEWS_BLACKOUT or HOLD_RESTRICTED with timestamp/cutoff evidence; reductions remain available.",
         "x-scope": "trade",
         "responses": {
           "200": {
@@ -15180,7 +15191,7 @@
           },
           "soft_floor_percent": {
             "type": "number",
-            "description": "Whole percent of drawdown above the plan floor. New requests accept 0\u201399; 100 can put the floor at the peak, where it latches at once (INVALID_LIMITS). Stored 100 remains readable. Has no effect without a plan drawdown floor (SOFT_FLOOR_UNUSED)."
+            "description": "Whole percent of drawdown above the plan floor. New requests accept 0–99; 100 can put the floor at the peak, where it latches at once (INVALID_LIMITS). Stored 100 remains readable. Has no effect without a plan drawdown floor (SOFT_FLOOR_UNUSED)."
           },
           "max_opening_trades": {
             "type": "number",
@@ -18166,7 +18177,8 @@
         "type": "object",
         "properties": {
           "playbook": {
-            "type": "string"
+            "type": "string",
+            "description": "ID or ID@VERSION; latest is pinned at start. Exactly one of playbook and playbooks."
           },
           "plan": {
             "oneOf": [
@@ -18846,48 +18858,85 @@
             "minimum": 1,
             "maximum": 16,
             "default": 4
+          },
+          "playbooks": {
+            "type": "array",
+            "minItems": 2,
+            "maxItems": 8,
+            "uniqueItems": true,
+            "items": {
+              "type": "string"
+            },
+            "description": "Joint account: 2–8 distinct playbook IDs, each ID or ID@VERSION. Different versions of one ID are duplicates. Pinned and evaluated in ascending lexical ID order, independent of request order."
           }
         },
         "required": [
-          "playbook",
           "plan"
         ],
         "additionalProperties": false,
-        "oneOf": [
+        "allOf": [
           {
-            "required": [
-              "days"
-            ],
-            "not": {
-              "anyOf": [
-                {
-                  "required": [
-                    "scenarios"
-                  ]
-                },
-                {
-                  "required": [
-                    "seed"
-                  ]
-                },
-                {
-                  "required": [
-                    "scenario"
+            "oneOf": [
+              {
+                "required": [
+                  "days"
+                ],
+                "not": {
+                  "anyOf": [
+                    {
+                      "required": [
+                        "scenarios"
+                      ]
+                    },
+                    {
+                      "required": [
+                        "seed"
+                      ]
+                    },
+                    {
+                      "required": [
+                        "scenario"
+                      ]
+                    }
                   ]
                 }
-              ]
-            }
+              },
+              {
+                "required": [
+                  "scenarios",
+                  "seed"
+                ],
+                "not": {
+                  "required": [
+                    "days"
+                  ]
+                }
+              }
+            ]
           },
           {
-            "required": [
-              "scenarios",
-              "seed"
-            ],
-            "not": {
-              "required": [
-                "days"
-              ]
-            }
+            "oneOf": [
+              {
+                "required": [
+                  "playbook"
+                ],
+                "not": {
+                  "required": [
+                    "playbooks"
+                  ]
+                }
+              },
+              {
+                "required": [
+                  "playbooks"
+                ],
+                "not": {
+                  "required": [
+                    "playbook"
+                  ]
+                }
+              }
+            ]
           }
         ]
       },
@@ -19075,6 +19124,10 @@
                 },
                 "detail": {
                   "type": "object"
+                },
+                "playbook": {
+                  "type": "string",
+                  "description": "Joint reports only: attributed playbook ID when the event identifies a tagged order. Account-wide trips remain untagged."
                 }
               },
               "required": [
@@ -19200,6 +19253,13 @@
           },
           "ended": {
             "type": "string"
+          },
+          "per_playbook": {
+            "type": "object",
+            "additionalProperties": {
+              "$ref": "#/components/schemas/BacktestPlaybookBreakdown"
+            },
+            "description": "Joint reports only; keyed by playbook ID."
           }
         },
         "required": [
@@ -19396,6 +19456,13 @@
               }
             ],
             "description": "The mean return on buying power of the closed trades. Absent from older servers."
+          },
+          "per_playbook": {
+            "type": "object",
+            "additionalProperties": {
+              "$ref": "#/components/schemas/BacktestPlaybookBreakdown"
+            },
+            "description": "Joint reports only; keyed by playbook ID."
           }
         },
         "required": [
@@ -19421,7 +19488,8 @@
           "schema": {
             "enum": [
               1,
-              2
+              2,
+              3
             ]
           },
           "simulated": {
@@ -19512,6 +19580,18 @@
             "items": {
               "$ref": "#/components/schemas/BacktestInputIdentity"
             }
+          },
+          "mode": {
+            "const": "joint"
+          },
+          "playbooks": {
+            "type": "array",
+            "minItems": 2,
+            "maxItems": 8,
+            "items": {
+              "$ref": "#/components/schemas/PlaybookDefinition"
+            },
+            "description": "Pinned definitions in ascending lexical ID evaluation order. Joint reports omit playbook."
           }
         },
         "required": [
@@ -19519,7 +19599,6 @@
           "simulated",
           "label",
           "status",
-          "playbook",
           "config",
           "analytics",
           "dividends",
@@ -19528,6 +19607,51 @@
           "errors",
           "journals",
           "summary"
+        ],
+        "oneOf": [
+          {
+            "required": [
+              "playbook"
+            ],
+            "properties": {
+              "schema": {
+                "enum": [
+                  1,
+                  2
+                ]
+              }
+            },
+            "not": {
+              "anyOf": [
+                {
+                  "required": [
+                    "playbooks"
+                  ]
+                },
+                {
+                  "required": [
+                    "mode"
+                  ]
+                }
+              ]
+            }
+          },
+          {
+            "required": [
+              "mode",
+              "playbooks"
+            ],
+            "properties": {
+              "schema": {
+                "const": 3
+              }
+            },
+            "not": {
+              "required": [
+                "playbook"
+              ]
+            }
+          }
         ]
       },
       "BacktestState": {
@@ -19608,6 +19732,33 @@
             "type": "integer",
             "minimum": 0,
             "description": "Logical file bytes in the run directory, without following symlinks."
+          },
+          "mode": {
+            "const": "joint"
+          },
+          "playbooks": {
+            "type": "array",
+            "minItems": 2,
+            "maxItems": 8,
+            "items": {
+              "type": "object",
+              "properties": {
+                "id": {
+                  "type": "string"
+                },
+                "version": {
+                  "type": "integer"
+                },
+                "name": {
+                  "type": "string"
+                }
+              },
+              "required": [
+                "id",
+                "version",
+                "name"
+              ]
+            }
           }
         },
         "required": [
@@ -23147,15 +23298,64 @@
                 },
                 "summary": {
                   "$ref": "#/components/schemas/BacktestSummary"
+                },
+                "mode": {
+                  "const": "joint"
+                },
+                "playbooks": {
+                  "type": "array",
+                  "minItems": 2,
+                  "maxItems": 8,
+                  "items": {
+                    "type": "object",
+                    "properties": {
+                      "id": {
+                        "type": "string"
+                      },
+                      "version": {
+                        "type": "integer"
+                      },
+                      "name": {
+                        "type": "string"
+                      }
+                    },
+                    "required": [
+                      "id",
+                      "version",
+                      "name"
+                    ]
+                  }
                 }
               },
               "required": [
                 "id",
                 "status",
-                "playbook",
                 "plan",
                 "input_set",
                 "summary"
+              ],
+              "oneOf": [
+                {
+                  "required": [
+                    "playbook"
+                  ],
+                  "not": {
+                    "required": [
+                      "playbooks"
+                    ]
+                  }
+                },
+                {
+                  "required": [
+                    "mode",
+                    "playbooks"
+                  ],
+                  "not": {
+                    "required": [
+                      "playbook"
+                    ]
+                  }
+                }
               ]
             }
           },
@@ -23227,6 +23427,10 @@
                 ],
                 "minimum": 0,
                 "maximum": 1
+              },
+              "includes_joint": {
+                "const": true,
+                "description": "Present only when at least one selected report is already a joint account simulation. The combined curve still sums separate runs; no sharing across runs."
               }
             },
             "required": [
@@ -23273,7 +23477,7 @@
           },
           "soft_floor_percent": {
             "type": "integer",
-            "description": "Whole percent of drawdown above the plan floor. New requests accept 0\u201399; 100 can put the floor at the peak, where it latches at once (INVALID_LIMITS). Stored 100 remains readable. Has no effect without a plan drawdown floor (SOFT_FLOOR_UNUSED).",
+            "description": "Whole percent of drawdown above the plan floor. New requests accept 0–99; 100 can put the floor at the peak, where it latches at once (INVALID_LIMITS). Stored 100 remains readable. Has no effect without a plan drawdown floor (SOFT_FLOOR_UNUSED).",
             "minimum": 0,
             "maximum": 99
           },
@@ -23798,6 +24002,106 @@
           "fee_kind"
         ],
         "description": "Exact costs across attempts, independent of paper balances. payouts_received sums trader_share; net is payouts_received minus total. fee_charged is the current attempt starting fee. Historical missing fees are zero; payout events also recover trader payouts before older resets."
+      },
+      "BacktestPlaybookBreakdown": {
+        "type": "object",
+        "properties": {
+          "trades": {
+            "type": "integer",
+            "minimum": 0
+          },
+          "open_trades": {
+            "type": "integer",
+            "minimum": 0
+          },
+          "expectancy": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/Money"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "win_rate": {
+            "type": [
+              "number",
+              "null"
+            ]
+          },
+          "adherence": {
+            "type": [
+              "number",
+              "null"
+            ]
+          },
+          "average_return_on_buying_power": {
+            "type": [
+              "number",
+              "null"
+            ]
+          },
+          "realised_pnl": {
+            "$ref": "#/components/schemas/Money"
+          },
+          "marked_pnl": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/Money"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "entry_reasons": {
+            "type": "object",
+            "additionalProperties": {
+              "type": "string"
+            }
+          },
+          "rule_trips": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "properties": {
+                "time": {
+                  "type": "string"
+                },
+                "type": {
+                  "type": "string",
+                  "description": "evaluation_failed, day_locked, kill_trip or order_rejected."
+                },
+                "detail": {
+                  "type": "object"
+                },
+                "playbook": {
+                  "type": "string",
+                  "description": "Joint reports only: attributed playbook ID when the event identifies a tagged order. Account-wide trips remain untagged."
+                }
+              },
+              "required": [
+                "time",
+                "type",
+                "detail"
+              ]
+            }
+          }
+        },
+        "description": "Option-trade attribution from the existing playbook report; realised net includes fees and partial closes. Marked P&L adds current unrealised option P&L, null for incomplete marks. Excludes shares/dividends. Trade count and expectancy use closed strategies; win rate excludes breakevens. Summary aggregates independent days only, with date-prefixed entry reason keys.",
+        "required": [
+          "trades",
+          "open_trades",
+          "expectancy",
+          "win_rate",
+          "adherence",
+          "average_return_on_buying_power",
+          "realised_pnl",
+          "marked_pnl",
+          "entry_reasons",
+          "rule_trips"
+        ]
       }
     }
   }

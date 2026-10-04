@@ -340,8 +340,10 @@ class Client:
     def list_backtests(self) -> JSON:
         return self._request("GET", "/backtests", control=True)
 
-    def start_backtest(self, playbook: str, plan: str | JSON, **settings) -> JSON:
-        return self._request("POST", "/backtests", {"playbook": playbook, "plan": plan, **settings}, control=True)
+    def start_backtest(self, playbook: str | list[str], plan: str | JSON, **settings) -> JSON:
+        """Pin one selector, or 2–8 distinct IDs for a joint account (ID order)."""
+        selection = {"playbooks" if isinstance(playbook, list) else "playbook": playbook}
+        return self._request("POST", "/backtests", {**selection, "plan": plan, **settings}, control=True)
 
     def get_backtest(self, run_id: str) -> JSON:
         return self._request("GET", "/backtests/" + quote(run_id, safe=""), control=True)

@@ -98,7 +98,7 @@ def test_real_cpp_handler_responses_without_network(tmp_path):
     binary = ROOT / "build/tests/openport_tests"
     if not binary.exists():
         pytest.skip("Build the C++ test executable to check its real handler responses")
-    result = subprocess.run([str(binary), "--gtest_filter=Api.ContractFixture:PaperEngine.ContractFixture:PaperEngine.SizeScalingAccountViewReportsTheCapitalCreditAndNewReview:PaperEngine.TwoStepProgressionAndProgramCosts:PaperEngine.ProgramCostOverridesAndCustomVerification:PaperEngine.DirectionRulesRoundTripAndHedgingPreviewEvidence:PaperEngine.VolumeRuleRoundTripsAndExplainsUnknownVolumeInPreview:PaperEngine.VolumeFillCancellationReportsRuleEvidenceAndPreservesEarlierFills:ReplayRun.ContractFixture:BacktestApi.ContractFixture:Backtest.AttemptsCarryBalancesDecidePassAndFailureAndLeaveOpenTail:PlaybookApi.LiveForwardPublicationIncludesWindowsAndJournalStats:BacktestApi.ListingSummarizesSavedReportIdentityWithoutCopyingTrades:BacktestApi.ComparisonAcceptsLegacyReportsAndRejectsInvalidSelection"],
+    result = subprocess.run([str(binary), "--gtest_filter=Api.ContractFixture:PaperEngine.ContractFixture:PaperEngine.SizeScalingAccountViewReportsTheCapitalCreditAndNewReview:PaperEngine.TwoStepProgressionAndProgramCosts:PaperEngine.ProgramCostOverridesAndCustomVerification:PaperEngine.DirectionRulesRoundTripAndHedgingPreviewEvidence:PaperEngine.VolumeRuleRoundTripsAndExplainsUnknownVolumeInPreview:PaperEngine.VolumeFillCancellationReportsRuleEvidenceAndPreservesEarlierFills:ReplayRun.ContractFixture:BacktestApi.ContractFixture:Backtest.AttemptsCarryBalancesDecidePassAndFailureAndLeaveOpenTail:PlaybookApi.LiveForwardPublicationIncludesWindowsAndJournalStats:BacktestApi.ListingSummarizesSavedReportIdentityWithoutCopyingTrades:BacktestApi.ComparisonAcceptsLegacyReportsAndRejectsInvalidSelection:Backtest.JointOpenTradeAttributionUsesOptionMarksAndFees:BacktestApi.JointPostRunsPinnedDefinitionsAndListsEveryMember"],
                             env={**os.environ, "OPENPORT_CONTRACT_OUTPUT": str(tmp_path)},
                             capture_output=True, text=True, timeout=120)
     assert result.returncode == 0, result.stdout + result.stderr
@@ -166,3 +166,16 @@ def test_real_share_trade_and_preview_responses(tmp_path):
     for file in files:
         for line in file.read_text().splitlines():
             contract.validate(**json.loads(line))
+
+
+def test_joint_backtest_request_contract():
+    contract = Contract("", None, SPEC)
+    validator = jsonschema.Draft202012Validator(
+        {"$ref": "urn:openport#/components/schemas/BacktestRequest"}, registry=contract.registry)
+    body = {"playbooks": ["alpha@2", "beta"], "plan": "eod-50k", "scenarios": 2, "seed": "1"}
+    validator.validate(body)
+    for invalid in ({**body, "playbook": "alpha"}, {**body, "playbooks": ["alpha"]},
+                    {**body, "playbooks": ["alpha", "alpha"]}, {**body, "playbooks": list("abcdefghi")},
+                    {key: value for key, value in body.items() if key != "playbooks"}):
+        with pytest.raises(jsonschema.ValidationError):
+            validator.validate(invalid)

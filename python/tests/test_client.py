@@ -476,3 +476,10 @@ def test_backtest_compare_keep_delete_use_global_routes(stub):
         assert stub.requests[-1][3] == {"keep": True}
         client.delete_backtest("000001")
         assert stub.requests[-1][0:2] == ("DELETE", "/api/backtests/000001?purge=true")
+
+
+def test_joint_backtests_use_global_routes_and_array_selectors(stub):
+    for client in (Client(stub.url), Client(stub.url).for_replay(), Client(stub.url, history="old-run")):
+        client.start_backtest(["beta@2", "alpha"], "eod-50k", scenarios=2, seed="1")
+        assert stub.requests[-1][0:2] == ("POST", "/api/backtests")
+        assert stub.requests[-1][3] == {"playbooks": ["beta@2", "alpha"], "plan": "eod-50k", "scenarios": 2, "seed": "1"}

@@ -151,6 +151,8 @@ trading on recorded or generated days, not predictions or investment advice:
 
 ```python
 run = client.start_backtest("morning-put@2", "eod-50k", scenarios=20, seed="81723")
+# Or pass 2–8 distinct IDs to trade one shared account, in lexical ID order:
+# run = client.start_backtest(["morning-put@2", "afternoon-call"], "eod-50k", scenarios=20, seed="81723")
 progress = client.get_backtest(run["id"])
 reports = client.list_backtests()
 client.cancel_backtest(run["id"])  # only while running
