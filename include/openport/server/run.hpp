@@ -1,8 +1,8 @@
 #pragma once
 
 #include <filesystem>
+#include <functional>
 #include <string>
-#include <stop_token>
 #include <nlohmann/json.hpp>
 
 #include "openport/providers/scenario.hpp"
@@ -41,7 +41,8 @@ struct RunVerification {
 /// including one a crash cut off part way through an operation.
 /// Uses a thread-local recorded calendar; opens no provider connection.
 /// Missing/changed input is reported separately from a transaction mismatch.
-[[nodiscard]] RunVerification verify_run(const std::filesystem::path& journal, std::stop_token stop = {},
+[[nodiscard]] RunVerification verify_run(const std::filesystem::path& journal,
+    const std::function<bool()>& cancelled = {},
     const std::function<void(std::uint64_t, std::uint64_t)>& progress = {});
 
 }  // namespace openport::server

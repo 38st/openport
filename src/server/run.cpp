@@ -241,13 +241,15 @@ nlohmann::json verification_cost(std::uint64_t bytes, std::uint64_t records) {
   return {{"estimated_seconds", seconds}, {"warning", seconds >= 30 ? nlohmann::json(
       "Long verification: roughly " + std::to_string(seconds) + " seconds or more; recording generation and hardware can take longer") : nlohmann::json(nullptr)}};
 }
-RunVerification verify_run(const std::filesystem::path& journal, std::stop_token stop,
+RunVerification verify_run(const std::filesystem::path& journal,
+    const std::function<bool()>& cancelled,
     const std::function<void(std::uint64_t, std::uint64_t)>& progress) {
   RunVerification result;
   result.run = {{"id", journal.stem().string()}, {"file", journal.filename().string()},
                 {"inputs", json::array()}, {"plan", "unknown"}};
   std::string label = run_label(result.run);
   std::vector<std::filesystem::path> private_paths{journal};
+  const auto cancelled_now = [&] { return cancelled && cancelled(); };
   try {
     result.run = describe_run(journal);
     label = run_label(result.run);
@@ -323,10 +325,10 @@ RunVerification verify_run(const std::filesystem::path& journal, std::stop_token
     };
     const auto restored = trading::TradingSession::recover(expected);
     result.time = restored.snapshot()->time;
-    if (stop.stop_requested()) throw std::runtime_error("Verification cancelled");
+    if (cancelled_now()) throw std::runtime_error("Verification cancelled");
     if (progress) progress(0, expected.records.size());
     auto reader = open_input(input);
-    if (stop.stop_requested()) throw std::runtime_error("Verification cancelled");
+    if (cancelled_now()) throw std::runtime_error("Verification cancelled");
     const md::Subscription subscription{start.at("symbols").get<std::vector<std::string>>(), 0, 0};
     // Driver 2 batches each market instant whole, driver 3 also rolls the day over on the
     // closing marks before a new date's quotes, and driver 4 also records each command's
@@ -359,7 +361,7 @@ RunVerification verify_run(const std::filesystem::path& journal, std::stop_token
     Desk desk("replay (" + reader->header().provider + ")", reader->header().capabilities, subscription, options);
     desk.start_trading();
     for (std::size_t index = 1; index < inputs.size() && comparison->error.empty() && !comparison->cut; ++index) {
-      if (stop.stop_requested()) throw std::runtime_error("Verification cancelled");
+      if (cancelled_now()) throw std::runtime_error("Verification cancelled");
       if (progress && index % 64 == 0) progress(comparison->sequence(), expected.records.size());
       const auto& operation = inputs[index];
       if (operation.at("kind") == "boundary") {

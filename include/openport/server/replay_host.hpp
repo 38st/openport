@@ -1,5 +1,6 @@
 #pragma once
 
+#include <atomic>
 #include <condition_variable>
 #include <cstdint>
 #include <deque>
@@ -78,6 +79,7 @@ class ReplayHost {
   /// Queues a change for the control thread, which runs each under control_mutex_.
   void enqueue(const ApiRequest& request, const ApiCompletion& complete);
   void work();
+  void stop_verifier();  // control_mutex_ held
   [[nodiscard]] std::shared_ptr<Session> current() const;
 
   Options options_;
@@ -100,7 +102,8 @@ class ReplayHost {
   std::deque<Job> jobs_;  // jobs_mutex_
   bool closing_ = false;  // jobs_mutex_
   std::thread worker_;
-  std::jthread verifier_;  // launches under control_mutex_; never uses the live engine
+  std::atomic_bool verifier_stop_{false};
+  std::thread verifier_;  // launches under control_mutex_; never uses the live engine
 };
 
 }  // namespace openport::server

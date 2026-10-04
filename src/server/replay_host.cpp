@@ -873,9 +873,14 @@ void ReplayHost::stop() {
   for (auto& job : refused) job.complete(api_error(503, "ENGINE_STOPPING", "The replay host is stopping"));
   if (const auto session = current()) session->provider->abort();
   const std::lock_guard control_lock(control_mutex_);
-  verifier_.request_stop();
-  if (verifier_.joinable()) verifier_.join();
+  stop_verifier();
   stop_session();
+}
+
+void ReplayHost::stop_verifier() {
+  verifier_stop_ = true;
+  if (verifier_.joinable()) verifier_.join();
+  verifier_stop_ = false;
 }
 
 void ReplayHost::stop_session() {
@@ -1037,13 +1042,14 @@ void ReplayHost::history(const ApiRequest& request, const ApiCompletion& complet
         return;
       }
       (void)parse_body(request, {});
-      if (verifier_.joinable()) verifier_.join();
+      stop_verifier();
       const auto fingerprint = history_->stamp(id);
       const auto file = history_->journal(id);
       history_->begin_verification(id, fingerprint);
       const auto accepted = history_->verification(id);
-      verifier_ = std::jthread([this, id, file, fingerprint](std::stop_token stop) {
-        const auto verified = verify_run(file, stop, [this](std::uint64_t done, std::uint64_t total) {
+      verifier_ = std::thread([this, id, file, fingerprint] {
+        const auto verified = verify_run(file, [this] { return verifier_stop_.load(); },
+            [this](std::uint64_t done, std::uint64_t total) {
           if (options_.verification_progress) options_.verification_progress(done, total);
           const std::lock_guard lock(handoff_mutex_);
           history_->verification_progress(done, total);
