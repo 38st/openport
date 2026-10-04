@@ -571,7 +571,7 @@ BacktestRequest parse_backtest(const json& body, const json& catalogue,
       }
     } else {
       if (result.config.rules.max_volume_percent != 0)
-        throw std::invalid_argument("max_volume_percent is unavailable for scenario backtests: generated data has no option volume");
+        throw std::invalid_argument("max_volume_percent is unavailable for scenario backtests; select a recording with option volume");
       keys(entry, {"scenario", "date", "seed"});
       const auto& id = required(entry, "scenario", "day scenario");
       for (const auto& scenario : scenarios) if (id == scenario.id) day.scenario = scenario;

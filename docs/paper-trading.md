@@ -3952,5 +3952,8 @@ Backtests apply this same gate when recordings carry current-date option volume.
 Every requested recording must contain at least one usable current-date volume
 observation; individual contracts without one still refuse at entry. Backtest
 requests without volume return a clear HTTP 400. Scenario backtests currently
-produce no volume and also return 400 when the rule is enabled. Replay of recorded
-volume needs no driver or scenario revision change.
+do not support this rule and return 400; select a recording with volume instead.
+Demo and scenario replays carry deterministic intraday volume, with simulated
+opening activity at revision 6. Near-money contracts can trade under a volume cap
+from the opening snapshot; thin contracts can still have zero volume. Revisions
+1–5 retain their original volume events, including a zero-volume opening.

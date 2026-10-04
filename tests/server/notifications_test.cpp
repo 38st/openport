@@ -668,7 +668,9 @@ TEST(Notifications, SandboxServerStaysSilentWithSimulatedOptIn) {
   server::Engine::Options options;
   options.notifications = h.notifications;
   options.paper_journal = file.directory / "paper.jsonl";
-  options.sandboxes = std::make_shared<server::Sandboxes>(server::Sandboxes::Options{});
+  server::Sandboxes::Options sandboxes;
+  sandboxes.capacity = 1;
+  options.sandboxes = std::make_shared<server::Sandboxes>(sandboxes);
   server::Engine engine(provider, {{"SPX"}}, options);
   engine.start();
   EXPECT_EQ(engine.notifications(), nullptr);
