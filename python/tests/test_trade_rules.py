@@ -29,7 +29,7 @@ def test_trade_rule_wire_types_and_optional_defaults():
 
 
 def test_new_reason_codes_and_microscalp_pair():
-    expected = {"TIME_LIMIT", "INACTIVITY", "INSTRUMENT_NOT_ALLOWED", "OUTSIDE_PLAN_HOURS", "FLAT_TIME", "OVERNIGHT_HOLD",
+    expected = {"TIME_LIMIT", "INACTIVITY", "INSTRUMENT_NOT_ALLOWED", "OUTSIDE_PLAN_HOURS", "FLAT_TIME", "OVERNIGHT_HOLD", "SCALING_LIMIT",
                 "TRADE_CONSISTENCY", "MIN_TRADES", "MIN_HOLD", "MICROSCALPING", "HEDGING", "COUNTER_POSITION", "MAX_VOLUME_SHARE"}
     assert set(get_args(PlanRuleReason)) == expected
     typescript = (ROOT / "web/src/api/trading-types.ts").read_text().split("export type PlanRuleReason =", 1)[1].split("export type RuleEvidence", 1)[0]
@@ -60,7 +60,9 @@ def test_backtest_schema_accepts_combined_plan_rules():
              "trading_start": "09:30", "trading_end": "16:00", "flat_time": "15:45", "no_overnight": True,
              "trade_consistency_percent": 40, "min_trades": 12, "min_hold_seconds": 60,
              "microscalp_seconds": 30, "microscalp_percent": 25, "no_hedging": True,
-             "no_counter_positions": True, "max_volume_percent": 25}
+             "no_counter_positions": True, "max_volume_percent": 25, "max_contracts_held": 5,
+             "scaling": [{"profit": "0.00", "contracts": 2}, {"profit": "1500.00", "contracts": 3}],
+             "size_scaling": None}
     schemas = SPEC["components"]["schemas"]
     validator = jsonschema.Draft202012Validator(
         {"$ref": "urn:openport#/components/schemas/BacktestRequest/properties/plan/oneOf/1/properties/rules"},

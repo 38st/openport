@@ -20006,6 +20006,7 @@
               "OUTSIDE_PLAN_HOURS",
               "FLAT_TIME",
               "OVERNIGHT_HOLD",
+              "SCALING_LIMIT",
               "TRADE_CONSISTENCY",
               "MIN_TRADES",
               "MIN_HOLD",
