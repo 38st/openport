@@ -4,6 +4,7 @@ from contextlib import redirect_stderr, redirect_stdout
 from decimal import Decimal
 import io
 import json
+import os
 from pathlib import Path
 import subprocess
 import sys
@@ -282,7 +283,10 @@ class FlowTest(unittest.TestCase):
             for i in (1, 2):
                 Path(d, f"run-{i}.jsonl").write_bytes(b'{"same":true}\n')
             self.assertEqual(fuzz.compare_runs(runs, d)["status"], "passed")
-            Path(d, "run-2.jsonl").write_bytes(b'{"same":false}\n')
+            changed = Path(d, "run-2.jsonl")
+            original = changed.stat()
+            changed.write_bytes(b'{"same":null}\n')  # Same size and timestamps, different bytes.
+            os.utime(changed, ns=(original.st_atime_ns, original.st_mtime_ns))
             self.assertEqual(fuzz.compare_runs(runs, d)["files"], "different")
         runs[1]["history"]["journal"]["head"] = "other"
         self.assertEqual(fuzz.compare_runs(runs)["status"], "failed")

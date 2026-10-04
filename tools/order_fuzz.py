@@ -31,7 +31,6 @@ from collections import Counter
 import copy
 from datetime import datetime
 from decimal import Decimal, InvalidOperation, ROUND_HALF_UP
-import filecmp
 import http.client
 import json
 from pathlib import Path
@@ -414,6 +413,17 @@ def verify(client, run_id, timeout=3600, pause=.2):
         time.sleep(pause)
 
 
+def identical_journals(first, second):
+    """Read every byte; stat-based caches must not hide a changed journal."""
+    with open(first, "rb") as a, open(second, "rb") as b:
+        while True:
+            chunk = a.read(1024 * 1024)
+            if chunk != b.read(1024 * 1024):
+                return False
+            if not chunk:
+                return True
+
+
 def compare_runs(runs, directory=None):
     result = {"status": "passed", "normalized_fields": [], "files": "not_requested"}
     a, b = [r["history"] for r in runs]
@@ -421,7 +431,7 @@ def compare_runs(runs, directory=None):
     if a["journal"] != b["journal"]:
         result["status"] = "failed"
     if directory:
-        equal = filecmp.cmp(journal_path(a, directory), journal_path(b, directory), shallow=False)
+        equal = identical_journals(journal_path(a, directory), journal_path(b, directory))
         result["files"] = "identical" if equal else "different"
         if not equal:
             result["status"] = "failed"
