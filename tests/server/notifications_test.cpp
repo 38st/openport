@@ -645,7 +645,6 @@ TEST(Notifications, SimulatedOptInEnablesDemoAndReplayEngines) {
     NotificationProvider provider; provider.provider_name = name;
     server::Engine::Options options;
     options.notifications = h.notifications;
-    options.replay = name == "replay";
     server::Engine engine(provider, {{"SPX"}}, options);
     engine.start();
     ASSERT_EQ(engine.notifications(), h.notifications.get());

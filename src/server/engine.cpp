@@ -75,7 +75,7 @@ Engine::Engine(md::Provider& provider, md::Subscription subscription, Options op
 }
 
 std::string Engine::notification_account(std::string_view account) const {
-  if (options_.replay)
+  if (options_.replay || provider_.name().starts_with("replay"))
     return "replay/" + (options_.run_id.empty() ? std::string("main") : options_.run_id) + "/" + std::string(account);
   if (providers::simulated_provider(provider_.name())) return "demo/" + std::string(account);
   return std::string(account);
