@@ -99,10 +99,9 @@ if(OPENPORT_BUILD_BENCHMARKS)
   FetchContent_MakeAvailable(benchmark)
 endif()
 
-# Trading's margin optimizer uses header-only exact rational arithmetic.
-find_package(Boost 1.83 CONFIG REQUIRED)
 if(OPENPORT_BUILD_PROVIDERS)
   find_package(OpenSSL 3 REQUIRED)
+  find_package(Boost 1.83 CONFIG REQUIRED)
   find_package(ZLIB REQUIRED)
   find_package(Threads REQUIRED)
 endif()

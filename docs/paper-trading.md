@@ -1696,21 +1696,12 @@ to net by expiry. So a credit spread holds its width, an iron condor its wider w
 (a calendar beside it adds nothing), a long butterfly nothing, a calendar nothing beyond its debit, a diagonal the
 strike difference when its long is further out of the money, a covered call nothing
 beyond its shares, and a short strangle its greater side plus the other side's value.
-Covers, straddles and expiry losses are also allocated jointly: each short may
-hold its naked requirement, take a cover or straddle, or join its expiry's loss pool.
-A pool holds its worst intrinsic loss at zero and every strike, with enough long
-calls to bound the upper tail. A long expiring with the pool or later may contribute
-its intrinsic payoff there, but is consumed only once across all pools and covers.
-This preserves the collateral of combined structures, including mixed expiries,
-without charging more than their separate requirements when no opposite positions
-cancel. Cancellation leaves a different book and can change its margin category:
-100 short shares at $500 protected by a $510 call hold $51,000; a separate naked
-short of that call worth $300 holds $9,300. Cancelling those opposite calls leaves
-100 unprotected short shares holding $75,000 under the documented short-sale rule.
-The allocation uses exact
-rational arithmetic to optimize whole contracts and whole lots of 100 shares; money
-remains integer micro-dollars. When this improves on pairing alone, the breakdown names the combined book `netted` and lists
-its held positions once. A butterfly beside a calendar can hold nothing. Long options
+Structures whose requirements come entirely from pairs and unpaired positions combine
+without holding more than each would alone, provided no opposite positions net away.
+Worst-loss netting is evaluated after pairing, not optimized jointly with it: books on
+the same underlying with multiple expiries, where either constituent uses worst-loss
+netting, can still hold more than their separate sum because covers may be allocated
+away from that group. A butterfly beside a calendar can hold nothing. Long options
 and long shares are paid in full, so a protective put needs nothing beyond its premium; short shares no long call protects hold 150% of
 their value. A long that expires before its short does not cover it. (European puts can
 trade below intrinsic value before expiry; the pairing ignores that.)
@@ -1746,7 +1737,7 @@ requirement, one entry per underlying: `{underlying, requirement, parts, scan}`.
 strategy margin each part names the positions it takes, as `{symbol, quantity}` legs
 (the underlying for shares; a position can be split between parts), with its kind
 (`naked`, `vertical`, `covered`, `straddle`, `short_shares`, `protected_shares`,
-`worst_loss`, `netted` for jointly allocated structures, `cash_secured` for a cash account's or IRA's short put, or `long` for
+`worst_loss`, `cash_secured` for a cash account's or IRA's short put, or `long` for
 premium and shares paid in full) and its requirement; the
 parts add up to the underlying's requirement, and the underlyings to `requirement`.
 Under portfolio margin `parts` is empty and `scan` gives the worst scan point

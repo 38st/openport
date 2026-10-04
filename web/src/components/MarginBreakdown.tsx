@@ -13,7 +13,6 @@ export const partLabels: Record<MarginPart["kind"], string> = {
   worst_loss: "Worst loss at expiry",
   long: "Paid in full",
   cash_secured: "Cash-secured put",
-  netted: "Combined strategies",
 }
 const partHints: Record<MarginPart["kind"], string> = {
   naked: "Its buy-back value plus 100 × max(20% of spot − out-of-the-money amount, 10% of spot or strike), plus any house margin",
@@ -25,7 +24,6 @@ const partHints: Record<MarginPart["kind"], string> = {
   worst_loss: "Positions that expire together, held at their worst loss at expiry",
   long: "Premium and shares are paid in full",
   cash_secured: "A cash account's or IRA's short put holds its strike in cash",
-  netted: "Covers, straddles and expiry losses allocated together, using each position once",
 }
 
 /** "−1 SPX Oct 22 4900P" or "+100 SPY shares". */

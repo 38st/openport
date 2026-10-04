@@ -773,7 +773,7 @@ preserves their last scheduled step. Their added journal fields are omitted when
 unused, so runs from before walking limits and inside fills still verify on the new build on the same platform.
 
 Strategy margin's share covers and Reg T straddles (F49), and their joint pairing
-with verticals and expiry worst-loss pools, lower the requirement for some books. Buying power in fill contexts
+with verticals, lower the requirement for some books. Buying power in fill contexts
 therefore differs, and `--verify-run` of affected runs recorded by earlier builds
 reports the first difference. Account type, house margin and portfolio vol shock are
 journaled only when not at their defaults, so other journals keep their bytes.
