@@ -39,7 +39,10 @@ export function ServerAlerts() {
   const alerts = publication.data?.alerts ?? []
   const positions = usePortfolio().data?.positions ?? []
   const mode = trading?.write ?? "disabled"
-  const forwards = source === "live" && !status?.provider.simulated
+  const notifications = status?.notifications
+  const forwards = notifications?.enabled && (source === "live" || source === "replay") &&
+    (source === "live" && !status?.provider.simulated || notifications.include_simulated === true) &&
+    notifications.channels.some((channel) => channel.enabled && channel.events.includes("alert"))
   const held = [...new Set(positions.filter((p) => p.quantity !== 0).map((p) => p.symbol))]
   const heldUnderlyings = [...new Set(positions.filter((p) => p.quantity !== 0).map((p) => p.underlying))]
   const [scope, setScope] = useState<AlertScope>("underlying")
@@ -80,7 +83,7 @@ export function ServerAlerts() {
       await api.createAlert(request, mode)
       setLevel(""); setLabel("")
       setMessage(forwards ? "Alert set. Each firing goes to the configured notification channels."
-        : "Alert set. Firings appear here; demo and replay alerts are not sent externally.")
+        : "Alert set. Firings appear here; external forwarding is not enabled for these alerts.")
     } catch (error) {
       setMessage(error instanceof Error ? `Could not set the alert: ${error.message}` : "Could not set the alert.")
     } finally {
@@ -99,7 +102,7 @@ export function ServerAlerts() {
     <h3 className="text-xs font-medium uppercase tracking-wide text-muted">Account alerts</h3>
     <p className="text-xs text-muted">Watch options, spreads, Greeks, implied volatility and account measures.
       {forwards ? " The server checks them with the browser closed and forwards each firing to the configured channels below."
-        : " The server checks them with each market update. Demo and replay alerts do not send external notifications."}</p>
+        : " The server checks them with each market update. External forwarding requires an enabled alert channel; demo and replay also require include_simulated in the server notification config."}</p>
     <form className="grid grid-cols-2 gap-2" onSubmit={(event) => { event.preventDefault(); void add() }}>
       <label className="trade-label">Watch
         <select className="trade-input" aria-label="Alert scope" value={scope} onChange={(e) => choose(e.target.value as AlertScope)}>

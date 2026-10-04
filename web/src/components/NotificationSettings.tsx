@@ -80,7 +80,8 @@ export function NotificationSettings() {
   return <section className="space-y-2">
     <h3 className="text-xs font-medium uppercase tracking-wide text-muted">Notifications</h3>
     <p className="text-xs text-muted">Send paper trading alerts to Discord, Telegram, ntfy or a webhook while this browser is closed.
-      Live accounts only; replays, drills and backtests never send.</p>
+      {notifications?.include_simulated ? " Demo and replay forwarding is enabled."
+        : " Demo and replay forwarding is off; opt in with include_simulated in the server notification config."} Backtests never send.</p>
     {source !== "live" ? <p className="text-sm text-muted">Switch to live to manage notifications.</p>
       : !notifications?.channels.length ? <p className="text-sm text-muted">No channels configured. Add them with the server's --notify-config file or OPENPORT_NOTIFY_JSON environment variable.</p>
       : <>

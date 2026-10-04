@@ -30,7 +30,8 @@ Engine::Options driver_options(md::Provider& provider, const md::Subscription& s
     options.demo_dividends = options.demo_dividends && options.dividends.empty() && demo->revision() >= 4;
   }
   if (options.replay || provider.name().starts_with("replay") || provider.name() == "demo") options.series.reset();
-  if (options.replay || provider.name().starts_with("replay") || providers::simulated_provider(provider.name()))
+  if (options.sandboxes || (options.notifications && !options.notifications->includes_simulated() &&
+      (options.replay || provider.name().starts_with("replay") || providers::simulated_provider(provider.name()))))
     options.notifications.reset();
   return options;
 }
@@ -59,11 +60,22 @@ Engine::Engine(md::Provider& provider, md::Subscription subscription, Options op
   status_.circuit_breaker = desk_.breaker();
   health_ = status_.underlyings;
   if (options_.notifications) desk_.set_publication_sink([this](std::string_view account, const TradingView& view) {
-    options_.notifications->observe(account, view);
+    const auto id = notification_account(account);
+    notification_accounts_.insert(id);
+    options_.notifications->observe(id, view, replay_ && replay_->fast_forwarding());
   });
   if (options_.notifications) desk_.set_removal_sink([this](const std::string& account) {
-    options_.notifications->remove_account(account);
+    const auto id = notification_account(account);
+    options_.notifications->remove_account(id);
+    notification_accounts_.erase(id);
   });
+}
+
+std::string Engine::notification_account(std::string_view account) const {
+  if (options_.replay)
+    return "replay/" + (options_.run_id.empty() ? std::string("main") : options_.run_id) + "/" + std::string(account);
+  if (providers::simulated_provider(provider_.name())) return "demo/" + std::string(account);
+  return std::string(account);
 }
 
 void Engine::set_dividends(std::vector<trading::Dividend> dividends) {
@@ -134,6 +146,10 @@ void Engine::stop() {
   if (recorder_) recorder_->close();
   stopping_ = true;
   if (thread_.joinable()) thread_.join();
+  if (options_.notifications) {
+    for (const auto& account : notification_accounts_) options_.notifications->remove_account(account, false);
+    notification_accounts_.clear();
+  }
   const std::lock_guard lock(mutex_);
   if (status_.trading.enabled && status_.trading.reason.empty()) status_.trading.reason = "ENGINE_STOPPING";
   status_.trading.write = "disabled";

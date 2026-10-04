@@ -74,6 +74,12 @@ describe("notification settings", () => {
     expect(host.querySelector("button")).toBeNull()
     expect(api.testNotification).not.toHaveBeenCalled()
   })
+  it("reports the operator's simulated forwarding opt-in", async () => {
+    live(); await render()
+    expect(host.textContent).toContain("Demo and replay forwarding is off")
+    live("live", { ...notifications, include_simulated: true }); await render()
+    expect(host.textContent).toContain("Demo and replay forwarding is enabled")
+  })
   it("explains server configuration when no channels exist or the server is older", async () => {
     live("live", { ...notifications, channels: [] }); await render()
     expect(host.textContent).toContain("No channels configured")

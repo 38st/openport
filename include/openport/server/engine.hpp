@@ -162,6 +162,7 @@ class Engine final : public MetricsSource {
   void publish_desk();
   void refresh_analytics();
   void update_health(const md::Event& event, md::Timestamp received);
+  [[nodiscard]] std::string notification_account(std::string_view account) const;
 
   md::Provider& provider_;
   md::Subscription subscription_;
@@ -169,6 +170,7 @@ class Engine final : public MetricsSource {
   md::EventQueue queue_;
   std::unique_ptr<md::RecordingSink> recorder_;
   Desk desk_;  // engine thread only
+  std::set<std::string> notification_accounts_;  // engine thread; forgotten after joining it
 
   std::unique_ptr<SeriesWorker> series_worker_;
   std::thread thread_;

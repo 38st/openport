@@ -25,7 +25,7 @@ bool Engine::post_trading(TradingCommand command, TradingCompletion completion) 
   commands_.push_back({next_command_++, std::move(command), [this, submit, complete = std::move(completion)](TradingReply reply) {
     publish_desk();
     if (submit && options_.notifications && !reply.replayed && !reply.order_id && !reply.decision.ok())
-      options_.notifications->publish({"order_rejected", reply.account, desk_.market_time(),
+      options_.notifications->publish({"order_rejected", notification_account(reply.account), desk_.market_time(),
           "Order rejected: " + std::string(trading::to_string(reply.decision.code)), {}});
     complete(std::move(reply));
   }});

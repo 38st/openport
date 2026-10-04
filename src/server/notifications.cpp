@@ -82,8 +82,9 @@ std::chrono::milliseconds interval(const NotificationChannel& channel) {
 NotificationConfig parse_notification_config(std::string_view text) {
   try {
     const auto root = json::parse(text);
-    keys(root, {"queue_capacity", "channels"});
+    keys(root, {"queue_capacity", "channels", "include_simulated"});
     NotificationConfig config;
+    config.include_simulated = root.value("include_simulated", false);
     if (root.contains("queue_capacity") && !root.at("queue_capacity").is_number_integer()) invalid();
     config.capacity = root.value("queue_capacity", std::size_t{256});
     if (config.capacity < 1 || config.capacity > 10000) invalid();
@@ -154,7 +155,7 @@ NotificationConfig load_notification_config(const std::filesystem::path& file,
 }
 
 Notifications::Notifications(NotificationConfig config, std::unique_ptr<net::HttpClient> http, Options options)
-    : capacity_(config.capacity), http_(std::move(http)), options_(std::move(options)) {
+    : capacity_(config.capacity), include_simulated_(config.include_simulated), http_(std::move(http)), options_(std::move(options)) {
   if (!http_ || capacity_ == 0) invalid();
   for (auto& channel : config.channels) {
     Channel state;
@@ -243,7 +244,7 @@ json Notifications::status() const {
         {"dropped", channel.dropped}, {"last_attempt", stamp(channel.last_attempt)}, {"last_delivery", stamp(channel.last_delivery)},
         {"last_error", channel.last_error.empty() ? json(nullptr) : json(channel.last_error)}});
   }
-  return {{"enabled", !stopping_ && !channels_.empty()}, {"queue_depth", queue_.size() + in_flight_},
+  return {{"enabled", !stopping_ && !channels_.empty()}, {"include_simulated", include_simulated_}, {"queue_depth", queue_.size() + in_flight_},
       {"queue_capacity", capacity_}, {"dropped", dropped_}, {"channels", list}};
 }
 
@@ -336,18 +337,20 @@ void Notifications::run() {
   }
 }
 
-void Notifications::remove_account(const std::string& account) {
+void Notifications::remove_account(const std::string& account, bool discard_pending) {
+  const std::lock_guard observation(observation_mutex_);
   seen_.erase(account);
   const std::lock_guard lock(mutex_);
   for (auto& channel : channels_) channel.near_floor.erase(account);
-  std::erase_if(queue_, [&](const auto& pending) { return pending.event.account == account; });
+  if (discard_pending) std::erase_if(queue_, [&](const auto& pending) { return pending.event.account == account; });
 }
 
-void Notifications::observe(std::string_view account, const TradingView& view) {
+void Notifications::observe(std::string_view account, const TradingView& view, bool history) {
   if (!view.snapshot) return;
+  const std::lock_guard observation(observation_mutex_);
   const std::string id(account);
   auto& seen = seen_[id];
-  const auto previous = seen.snapshot;
+  const auto previous = history ? nullptr : seen.snapshot;
   const auto& current = *view.snapshot;
   const auto emit = [&](std::string kind, md::Timestamp time, std::string message, json details = json::object()) {
     publish({std::move(kind), id, time, std::move(message), std::move(details)});

@@ -2730,7 +2730,9 @@ and the values of underlyings, like those of the account's own orders. Levels ma
 negative, as for a day P&L or a put's delta. Each firing is recorded as an `alert_fired`
 event and in the alert's `fired`, `fired_at` and `value`; the terminal announces it, and
 [external notifications](runtime.md#external-notifications) forward it as the `alert`
-event from live accounts. Replay and scenario accounts' alerts fire in the terminal only.
+event from live accounts. Demo and replay accounts also forward when the operator
+sets `include_simulated: true` in the server notification config; otherwise their
+alerts fire in the terminal only.
 Alerts change no orders or positions: they are allowed whatever the account's state, and
 a reset keeps them. In **Alerts → Account alerts**, choose the scope and measure,
 enter the inclusive level and optionally enable repeat. A spread takes two to four
@@ -3387,7 +3389,9 @@ exercises and staged playbooks. The engine also detects stalled feeds without an
 reader. Each channel can warn when `breach.room` is at or below its dollar distance;
 missing room or incomplete account valuation supplies no price estimate. Channels
 rearm when room moves above the distance. Recovered fills and deliveries are history
-and are not sent again. Replays, drills, scenarios and backtests cannot send.
+and are not sent again. Demo, replay and interactive drill forwarding requires the
+operator's `include_simulated` opt-in. Catch-up history, verification, sandbox
+servers and backtests never send.
 
 The observer and delivery queue do not change reducer inputs or journal records.
 Messages label trading as paper/simulated and use the event's market time. Delivery

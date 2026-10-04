@@ -139,6 +139,7 @@ export interface NotificationChannel {
 }
 export interface NotificationStatus {
   enabled: boolean
+  include_simulated?: boolean
   queue_depth: number
   queue_capacity: number
   dropped: number

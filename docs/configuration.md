@@ -45,7 +45,7 @@ To add a feed, see [writing a provider adapter](providers.md).
 | `--rate R` | The rate assumed when no index curve is available |
 | `--address`, `--port`, `--web-root`, `--allowed-origin`, `--allowed-host`, `--write-token`, `--write-token-file` | The web server and who may write (see [Security](#security)) |
 | `--token-file FILE` | Named tokens: one `NAME SCOPES SECRET` per line, with comma-separated scopes and `#` comments |
-| `--notify-config FILE` | Owner-only JSON file for notification channels and filters; alternatively `OPENPORT_NOTIFY_JSON` or channel environment variables ([setup](runtime.md#external-notifications)) |
+| `--notify-config FILE` | Owner-only JSON file for notification channels, filters and the `include_simulated` demo/replay opt-in (default false); alternatively `OPENPORT_NOTIFY_JSON` or channel environment variables ([setup](runtime.md#external-notifications)) |
 | `--sandboxes N` | Offer up to N visitor accounts; 0 (default) disables them. Requires `--provider demo` and paper trading |
 | `--sandbox-idle-seconds N` | Delete sandboxes after N seconds without authenticated use; default 86400 |
 | `--client-ip-header NAME` | Use this proxy header for sandbox creation limits; unset uses the connection address |

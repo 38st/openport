@@ -52,6 +52,23 @@ beforeEach(() => {
 afterEach(async () => { await act(async () => root.unmount()); host.remove(); client.clear(); vi.useRealTimers(); vi.restoreAllMocks(); vi.unstubAllGlobals() })
 
 describe("account alerts", () => {
+  it.each(["live", "replay"] as const)("shows the simulated forwarding opt-in on %s", async (source) => {
+    const configured = { ...status, provider: { ...status.provider, simulated: true }, notifications: {
+      enabled: true, include_simulated: false, queue_depth: 0, queue_capacity: 256, dropped: 0,
+      channels: [{ id: "hook", type: "webhook" as const, enabled: true, events: ["alert" as const], floor_distance: "500.00",
+        delivered: 0, failures: 0, dropped: 0, last_attempt: null, last_delivery: null, last_error: null }],
+    } }
+    vi.mocked(useLive).mockReturnValue(liveState(configured, null, "open", 0, "main", () => {}, source))
+    await render(<ServerAlerts />)
+    expect(host.textContent).toContain("demo and replay also require include_simulated")
+    configured.notifications.include_simulated = true
+    vi.mocked(useLive).mockReturnValue(liveState(configured, null, "open", 0, "main", () => {}, source))
+    await render(<ServerAlerts />)
+    expect(host.textContent).toContain("forwards each firing")
+    configured.notifications.channels[0]!.enabled = false
+    await render(<ServerAlerts />)
+    expect(host.textContent).not.toContain("forwards each firing")
+  })
   it("lists the server's alerts and sets a new one with its measure and level", async () => {
     await render(<ServerAlerts />)
     expect(host.textContent).toContain("Vol spike: SPX 30-day iv ≥ 25.00")

@@ -4222,7 +4222,7 @@
     "/api/notifications/test": {
       "post": {
         "summary": "Queue a notification test",
-        "description": "Requires admin. Queues a labelled test for one configured channel, bypassing event filters. No destinations or secrets accepted. 404 unknown channel, 409 disabled, 429 queue full, 503 unavailable (including replay and demo sources). A queued response does not confirm delivery; GET /api/status reports results.",
+        "description": "Requires admin. Queues a labelled test for one configured channel, bypassing event filters. No destinations or secrets accepted. 404 unknown channel, 409 disabled, 429 queue full, 503 unavailable (demo/replay require include_simulated in the operator notification config). A queued response does not confirm delivery; GET /api/status reports results.",
         "x-scope": "admin",
         "requestBody": {
           "required": true,
@@ -4475,7 +4475,7 @@
       },
       "post": {
         "summary": "POST /api/alerts",
-        "description": "Paper trading only. Requires trade:ACCOUNT (or trade:*) for live accounts; replay scope for replay accounts. Creates an alert, checked after each market batch and at once; the server's notification channels receive each live-account firing (replays and sandboxes do not forward externally) as the alert event. 400 for malformed terms, 404 for an unregistered contract, 422 INVALID_ALERT past 100 alerts.",
+        "description": "Paper trading only. Requires trade:ACCOUNT (or trade:*) for live accounts; replay scope for replay accounts. Creates an alert, checked after each market batch and at once; configured notification channels receive each firing as the alert event. Demo/replay forwarding requires include_simulated in the operator notification config; replay catch-up history and sandbox servers never forward. 400 for malformed terms, 404 for an unregistered contract, 422 INVALID_ALERT past 100 alerts.",
         "x-scope": "trade",
         "responses": {
           "201": {
@@ -19789,6 +19789,11 @@
       "NotificationStatus": {
         "type": "object",
         "properties": {
+          "include_simulated": {
+            "type": "boolean",
+            "default": false,
+            "description": "Operator opt-in to demo and replay forwarding. Recovery/catch-up history, verification, backtests and sandbox servers never send. Older servers omit this field."
+          },
           "enabled": {
             "type": "boolean"
           },

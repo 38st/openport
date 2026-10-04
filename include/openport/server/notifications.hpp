@@ -30,6 +30,7 @@ struct NotificationChannel {
 struct NotificationConfig {
   std::size_t capacity = 256;
   std::vector<NotificationChannel> channels;
+  bool include_simulated = false;
 };
 /// Parsing and file errors deliberately omit input, paths and JSON diagnostics.
 [[nodiscard]] NotificationConfig parse_notification_config(std::string_view text);
@@ -45,7 +46,7 @@ struct NotificationEvent {
 };
 
 /// One bounded, memory-only delivery queue. No network or logging on producers.
-/// Account observation is single-owner; publish, settings and status are thread-safe.
+/// Observation, publication, settings and status are thread-safe.
 class Notifications {
  public:
   struct Options {
@@ -63,8 +64,10 @@ class Notifications {
   Notifications& operator=(const Notifications&) = delete;
   void stop();
   void publish(const NotificationEvent& event);
-  void observe(std::string_view account, const TradingView& view);
-  void remove_account(const std::string& account);
+  /// History primes observation without delivering recovered or fast-forwarded events.
+  void observe(std::string_view account, const TradingView& view, bool history = false);
+  void remove_account(const std::string& account, bool discard_pending = true);
+  [[nodiscard]] bool includes_simulated() const { return include_simulated_; }
   /// 202 queued, 404 unknown channel, 409 disabled, 429 full, 503 stopped.
   int test(std::string_view channel);
   /// Only nonsecret settings can be changed; invalid input throws a redacted error.
@@ -98,6 +101,7 @@ class Notifications {
   bool enqueue(std::size_t channel, const NotificationEvent& event);
   void run();
   std::size_t capacity_;
+  bool include_simulated_;
   std::unique_ptr<net::HttpClient> http_;
   Options options_;
   mutable std::mutex mutex_;
@@ -109,7 +113,8 @@ class Notifications {
   std::map<std::string, Time> limits_;
   std::atomic<bool> stopping_{false};
   std::thread thread_;
-  std::map<std::string, Seen> seen_;  // engine thread only
+  std::mutex observation_mutex_;
+  std::map<std::string, Seen> seen_;  // observation_mutex_; account names include the replay run
 };
 
 }  // namespace openport::server

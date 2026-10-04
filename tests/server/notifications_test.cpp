@@ -46,7 +46,7 @@ struct Harness {
   std::chrono::steady_clock::time_point now{};
   NotificationHttp* http;
   std::shared_ptr<server::Notifications> notifications;
-  explicit Harness(json channels = json::array({channel()}), std::size_t capacity = 256) {
+  explicit Harness(json channels = json::array({channel()}), std::size_t capacity = 256, bool include_simulated = false) {
     auto client = std::make_unique<NotificationHttp>();
     http = client.get();
     server::Notifications::Options options;
@@ -55,7 +55,7 @@ struct Harness {
     options.clock = [&] { return now; };
     options.wall_clock = [] { return md::kNanosPerSecond; };
     notifications = std::make_shared<server::Notifications>(server::parse_notification_config(
-        json{{"channels", channels}, {"queue_capacity", capacity}}.dump()), std::move(client), options);
+        json{{"channels", channels}, {"queue_capacity", capacity}, {"include_simulated", include_simulated}}.dump()), std::move(client), options);
   }
   void emit(std::string kind = "fill") { notifications->publish({std::move(kind), "main", md::kNanosPerSecond, "Bought 1 SPY at $4.20", {}}); }
   void advance(std::chrono::milliseconds duration = 10s) { now += duration; }
@@ -261,8 +261,10 @@ TEST(Notifications, EnvironmentSupportsSimpleChannelsAndFullConfiguration) {
       {"OPENPORT_NOTIFY_NTFY_URL", "https://ntfy.example/topic"}, {"OPENPORT_NOTIFY_WEBHOOK_URL", "https://hook.example/hook"}};
   const auto read = [&](const char* key) { return env[key]; };
   EXPECT_EQ(server::load_notification_config({}, read).channels.size(), 4U);
-  env["OPENPORT_NOTIFY_JSON"] = json{{"channels", {channel()}}}.dump();
+  EXPECT_FALSE(server::load_notification_config({}, read).include_simulated);
+  env["OPENPORT_NOTIFY_JSON"] = json{{"channels", {channel()}}, {"include_simulated", true}}.dump();
   EXPECT_EQ(server::load_notification_config({}, read).channels.size(), 1U);
+  EXPECT_TRUE(server::load_notification_config({}, read).include_simulated);
   env["OPENPORT_NOTIFY_JSON"].clear(); env["OPENPORT_NOTIFY_TELEGRAM_CHAT_ID"].clear();
   EXPECT_THROW((void)server::load_notification_config({}, read), std::runtime_error);
 }
@@ -277,6 +279,9 @@ TEST(Notifications, RejectsUnsafeOrAmbiguousConfiguration) {
   }
   EXPECT_THROW((void)server::parse_notification_config(json{{"channels", {channel(), channel()}}}.dump()), std::runtime_error);
   EXPECT_THROW((void)server::parse_notification_config(R"({"channels":[],"queue_capacity":0})"), std::runtime_error);
+  for (const auto& value : {json(1), json("true"), json(nullptr)}) {
+    EXPECT_THROW((void)server::parse_notification_config(json{{"channels", json::array()}, {"include_simulated", value}}.dump()), std::runtime_error);
+  }
   for (const std::string type : {"webhook", "ntfy", "discord"}) {
     auto entry = channel(type); entry["url"] = "http://discord.com/api/webhooks/123/token";
     const auto config = json{{"channels", {entry}}}.dump();
@@ -618,7 +623,7 @@ TEST(Notifications, LiveEngineObservesCommandsAndStalledFeedWithoutAnApiReader) 
   for (const auto& call : h.http->calls) kinds.insert(json::parse(call.body).at("event").get<std::string>());
   EXPECT_EQ(kinds, (std::multiset<std::string>{"fill", "order_rejected", "feed_stalled", "feed_stalled"}));
 }
-TEST(Notifications, ReplayDemoAndDrillEnginesCannotNotifyOrTestSend) {
+TEST(Notifications, ReplayDemoAndDrillEnginesDoNotNotifyByDefault) {
   for (const std::string name : {"manual", "replay", "demo"}) {
     Harness h; NotificationProvider provider; provider.provider_name = name;
     server::Engine::Options options; options.notifications = h.notifications; options.replay = name == "manual";
@@ -631,6 +636,28 @@ TEST(Notifications, ReplayDemoAndDrillEnginesCannotNotifyOrTestSend) {
     done.get_future().get(); engine.stop();
     EXPECT_FALSE(h.notifications->deliver_one());
     EXPECT_EQ(h.state()["queue_depth"], 0);
+  }
+}
+TEST(Notifications, SimulatedOptInEnablesDemoAndReplayEngines) {
+  for (const std::string name : {"demo", "replay"}) {
+    Harness h(json::array({channel()}), 256, true);
+    NotificationProvider provider; provider.provider_name = name;
+    server::Engine::Options options;
+    options.notifications = h.notifications;
+    options.replay = name == "replay";
+    server::Engine engine(provider, {{"SPX"}}, options);
+    engine.start();
+    ASSERT_EQ(engine.notifications(), h.notifications.get());
+    server::TradingCommand trip; trip.kind = server::TradingCommand::Kind::Trip;
+    std::promise<void> done;
+    ASSERT_TRUE(engine.post_trading(trip, [&](server::TradingReply) { done.set_value(); }));
+    done.get_future().get();
+    engine.stop();
+    h.drain();
+    ASSERT_EQ(h.http->calls.size(), 1U);
+    const auto body = json::parse(h.http->calls.front().body);
+    EXPECT_EQ(body.at("event"), "rule_trip");
+    EXPECT_EQ(body.at("account"), name == "demo" ? "demo/main" : "replay/main/main");
   }
 }
 TEST(Notifications, WorkerDoesNotHoldQueueMutexDuringHttpAndCancelsShutdown) {

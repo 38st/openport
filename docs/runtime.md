@@ -1251,6 +1251,7 @@ Example configuration (replace the placeholders locally):
 ```json
 {
   "queue_capacity": 256,
+  "include_simulated": false,
   "channels": [
     {"id": "hook", "type": "webhook", "url": "https://example.net/alerts",
      "events": ["fill", "order_rejected", "rule_trip"]},
@@ -1298,15 +1299,24 @@ when its stage ID becomes ready; price refreshes of the same stage stay quiet.
 Feed stalls use the status timeout, the greater of 60 seconds and three poll
 intervals, or an explicit stale/stopped state. Recovery rearms the feed warning.
 
-Only accounts on the live engine send. Historical fills and deliveries loaded at
-startup are ignored. Replay, demo, drill and backtest engines never attach delivery,
-including when the main provider is a replay. Browser price alerts and dividends
-remain in the terminal; this external event set does not forward them. To have a price
-reach you off-screen, set it as an account alert on the underlying instead. Alerts can be
-tried offline: in a replay or demo day they fire in the terminal and are recorded in
-the journal for run verification. The delivery tests exercise every channel with a
-fake HTTP transport, without network access. On a live engine, a channel's test button
-checks its configured delivery path.
+By default only accounts on the live engine send. Set `"include_simulated": true`
+in the notification file or `OPENPORT_NOTIFY_JSON` to also attach delivery to demo
+and replay engines, including the main replay provider and interactive drills.
+The opt-in applies to every configured channel type and its selected events.
+Demo accounts appear as `demo/ACCOUNT`; replay accounts as `replay/RUN_ID/ACCOUNT`
+(`replay/main/ACCOUNT` for a main replay provider without a run ID). Live account
+names are unchanged. These names also keep concurrent live and replay observations
+separate while sharing the bounded queue and destination rate limits.
+
+Historical fills and deliveries loaded at startup, and events re-executed during
+replay start/restart/resume catch-up, are ignored. Once ready, stepping or playing
+a replay forwards new events. Verification, backtests and sandbox servers never
+attach delivery. Browser price alerts and dividends remain in the terminal;
+to receive a price alert off-screen, create an account alert on the underlying.
+Firings are still recorded in the journal for run verification, independently of
+delivery. Tests cover all channel formats and retries with a fake transport, plus
+real loopback HTTP webhook and ntfy delivery from replay alerts, with no external
+service or credentials. A channel's test button checks its configured delivery path.
 
 The default queue holds 256 deliveries, including a request in flight; configure
 1–10,000 with `queue_capacity`. A full queue drops new deliveries and counts them
@@ -1324,7 +1334,7 @@ These budgets stay below Telegram's [published messaging limits](https://core.te
 Generic webhooks and ntfy use one second per destination and honour numeric
 `Retry-After`. Identical destinations share budgets even across channel IDs.
 
-`GET /api/status` includes `notifications`: enabled, queue depth/capacity, total
+`GET /api/status` includes `notifications`: enabled, `include_simulated`, queue depth/capacity, total
 dropped deliveries and each channel's public settings, successful deliveries,
 failed attempts, drops, last attempt, last successful delivery and last error code.
 The browser refreshes status periodically. Times in delivery status are wall time;
