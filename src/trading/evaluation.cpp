@@ -8,6 +8,16 @@
 #include "openport/md/time.hpp"
 
 namespace openport::trading {
+AccountRules original_program_rules(AccountRules rules, Money current_size,
+    const std::optional<SizeScalingProgress>& scaling) {
+  if (scaling) {
+    rules.max_drawdown = scaling->original_max_drawdown;
+    rules.daily_loss_limit = scaling->original_daily_loss_limit;
+    if (rules.lock_balance > Money{}) rules.lock_balance = rules.lock_balance - (current_size - scaling->original);
+  }
+  return rules;
+}
+
 std::int64_t scaling_limit(const AccountRules& rules, Money profit) {
   if (rules.scaling.empty()) return 0;
   auto limit = rules.scaling.front().contracts;

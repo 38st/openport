@@ -257,8 +257,10 @@ TEST(TradingFunded, SizeScalingRejectsEvaluationAndInvalidRangesAndNeverScalesAF
   EXPECT_THROW(validate_rules(bad), TradingError);
   bad.size_scaling->payouts = 101;
   EXPECT_THROW(validate_rules(bad), TradingError);
-  bad = rules; bad.phase = Phase::Evaluation;
-  EXPECT_THROW(validate_rules(bad), TradingError);
+  for (const auto phase : {Phase::Evaluation, Phase::Verification}) {
+    bad = rules; bad.phase = phase;
+    EXPECT_THROW(validate_rules(bad), TradingError);
+  }
   bad = rules; bad.size_scaling->max_balance = m("9999");
   EXPECT_THROW(TradingSession(config(bad), ScriptedMarket{}.time), TradingError);
   ScriptedMarket f;
@@ -772,6 +774,65 @@ TEST(TradingFunded, SizeScalingJournalRoundTripsAndContinuesTheSameReview) {
   ASSERT_TRUE(s.reset_account(m("10000"), funded(), "new attempt", f.time).decision.ok());
   EXPECT_TRUE(s.snapshot()->attempts.back().rules->size_scaling);
   EXPECT_FALSE(s.snapshot()->evaluation.size_scaling);
+  std::filesystem::remove_all(directory);
+}
+
+TEST(TradingFunded, SizeScalingPreservesPurchasedTermsResetCountsAndRecovery) {
+  std::string pattern = (std::filesystem::temp_directory_path() / "openport-size-costs-XXXXXX").string();
+  ASSERT_NE(::mkdtemp(pattern.data()), nullptr);
+  const std::filesystem::path directory = pattern;
+  const auto path = (directory / "account.jsonl").string();
+  ScriptedMarket f;
+  auto rules = size_plan(1, 0);
+  rules.lock_balance = m("10000");
+  rules.evaluation_fee = m("100.000001"); rules.reset_fee = m("25.000002"); rules.max_resets = 2;
+  TradingSession s(config(rules), f.time, FileJournal::create(path));
+  f.seed(s);
+  ASSERT_TRUE(s.reset_account(m("10000"), rules, "first reset", f.time).decision.ok());
+  profit_day(s, f, "200");
+  next_day(s, f, {2026, 9, 23});
+  ASSERT_EQ(s.snapshot()->evaluation.starting_balance, m("12500"));
+  EXPECT_EQ(s.config().rules.lock_balance, m("12500"));
+  EXPECT_EQ(s.config().rules.max_drawdown, m("1250.03"));
+  EXPECT_EQ(s.config().rules.daily_loss_limit, m("625.03"));
+  EXPECT_EQ(original_program_rules(s.config().rules, m("12500"), s.snapshot()->evaluation.size_scaling), rules);
+  EXPECT_EQ(program_costs(*s.snapshot(), s.config().rules).resets_used, 1);
+  auto grown = TradingSession::recover(FileJournal::read(path));
+  EXPECT_EQ(grown.snapshot_json(), s.snapshot_json());
+  EXPECT_EQ(program_costs(*grown.snapshot(), grown.config().rules).resets_used, 1);
+  // Buying the grown size and its current loss amounts is a different purchase.
+  ASSERT_TRUE(grown.reset_account(m("12500"), grown.config().rules, "buy larger plan", f.time).decision.ok());
+  EXPECT_EQ(program_costs(*grown.snapshot(), grown.config().rules).resets_used, 0);
+  EXPECT_EQ(grown.snapshot()->fee_charged.kind, "evaluation");
+  ASSERT_TRUE(s.reset_account(m("10000"), rules, "restart original plan", f.time).decision.ok());
+  EXPECT_EQ(s.snapshot()->fee_charged.kind, "reset");
+  EXPECT_EQ(s.snapshot()->fee_charged.amount, rules.reset_fee);
+  EXPECT_EQ(s.snapshot()->attempts.back().starting_balance, m("12500"));
+  EXPECT_EQ(s.snapshot()->attempts.back().rules->max_drawdown, m("1250.03"));
+  EXPECT_EQ(program_costs(*s.snapshot(), rules).resets_used, 2);
+  // Growing again cannot replenish the reset allowance.
+  profit_day(s, f, "200");
+  next_day(s, f, {2026, 9, 24});
+  auto restored = TradingSession::recover(FileJournal::read(path));
+  EXPECT_EQ(restored.snapshot_json(), s.snapshot_json());
+  EXPECT_EQ(program_costs(*restored.snapshot(), restored.config().rules).resets_used, 2);
+  const auto refused = restored.reset_account(m("10000"), rules, "exhausted", f.time);
+  EXPECT_EQ(refused.decision.code, Reason::RESET_LIMIT);
+  EXPECT_EQ(refused.decision.actual, 3); EXPECT_EQ(refused.decision.limit, 2);
+  const auto recovery = FileJournal::read(path);
+  const auto compacted = (directory / "compacted.jsonl").string();
+  EXPECT_EQ(TradingSession::compact(recovery, *FileJournal::create(compacted)), s.snapshot_json());
+  EXPECT_EQ(FileJournal::read(compacted).head, recovery.head);
+  for (const bool contracts : {true, false}) {
+    auto changed = rules;
+    if (contracts) changed.scaling.back().contracts = 5;
+    else changed.size_scaling->days = 2;
+    EXPECT_FALSE(same_program_rules(rules, changed));
+    auto purchase = TradingSession::recover(recovery);
+    ASSERT_TRUE(purchase.reset_account(m("10000"), changed, "different scaling rules", f.time).decision.ok());
+    EXPECT_EQ(purchase.snapshot()->fee_charged.kind, "evaluation");
+    EXPECT_EQ(program_costs(*purchase.snapshot(), changed).resets_used, 0);
+  }
   std::filesystem::remove_all(directory);
 }
 

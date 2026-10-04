@@ -23460,6 +23460,14 @@
             "items": {
               "$ref": "#/components/schemas/SizeScale"
             }
+          },
+          "original_max_drawdown": {
+            "$ref": "#/components/schemas/Money",
+            "description": "Original purchased loss amount before account size scaling; used for same-plan reset identity."
+          },
+          "original_daily_loss_limit": {
+            "$ref": "#/components/schemas/Money",
+            "description": "Original purchased loss amount before account size scaling; used for same-plan reset identity."
           }
         },
         "required": [
@@ -23474,7 +23482,9 @@
           "period_payouts",
           "payouts_required",
           "next_size",
-          "history"
+          "history",
+          "original_max_drawdown",
+          "original_daily_loss_limit"
         ]
       },
       "RuleEvidence": {

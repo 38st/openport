@@ -64,9 +64,10 @@ json fill_fees_json(const std::optional<FillFees>& f) {
   return {{"commission", f->commission.str()}, {"clearing", f->clearing.str()}, {"regulatory", f->regulatory.str()},
           {"index", f->index.str()}};
 }
-json rules_json(const AccountRules& r, Money initial_cash) {
+json rules_json(const AccountRules& r, Money initial_cash, const std::optional<SizeScalingProgress>& scaling = {}) {
   const bool funded = r.phase == Phase::Funded;
-  json result = {{"plan", nullable(r.plan)}, {"plan_id", nullable(preset_id(initial_cash, r))}, {"phase", funded ? "funded" : r.phase == Phase::Verification ? "verification" : "evaluation"},
+  const auto id = preset_id(scaling ? scaling->original : initial_cash, original_program_rules(r, initial_cash, scaling));
+  json result = {{"plan", nullable(r.plan)}, {"plan_id", nullable(id)}, {"phase", funded ? "funded" : r.phase == Phase::Verification ? "verification" : "evaluation"},
           {"profit_target", positive(r.profit_target)}, {"max_drawdown", positive(r.max_drawdown)},
           {"drawdown_mode", kDrawdownModes[static_cast<int>(r.drawdown_mode)]},
           {"lock_balance", positive(r.lock_balance)}, {"lock_at_start", r.lock_at_start},
@@ -827,6 +828,8 @@ json account_json(const TradingView& view) {
     for (const auto& h : period.history)
       history.push_back({{"day", md::format_date(h.day)}, {"old", h.old.str()}, {"size", h.size.str()}});
     size_scaling = {{"size", e.starting_balance.str()}, {"original", period.original.str()},
+        {"original_max_drawdown", period.original_max_drawdown.str()},
+        {"original_daily_loss_limit", period.original_daily_loss_limit.str()},
         {"max_balance", rule.max_balance.str()}, {"period_started", md::format_date(period.period_started)},
         {"period_days", period.period_days}, {"days_required", rule.days},
         {"period_profit", size_scaling_profit(e, in.balance).str()}, {"profit_required", size_scaling_required(e, rule).str()},
@@ -840,7 +843,8 @@ json account_json(const TradingView& view) {
                        {"trader_share", p.trader_share.str()}, {"balance", p.balance.str()}});
   json next_plans = json::array();
   if (e.status == EvaluationStatus::Passed) {
-    const auto id = preset_id(e.starting_balance, r);
+    const auto id = preset_id(e.size_scaling ? e.size_scaling->original : e.starting_balance,
+        original_program_rules(r, e.starting_balance, e.size_scaling));
     for (const auto& p : plan_presets())
       if (!id.empty() && p.unlocked_by == id) next_plans.push_back(p.id);
   }
@@ -851,13 +855,13 @@ json account_json(const TradingView& view) {
                         {"ended", md::format_timestamp(a.ended)}, {"starting_balance", a.starting_balance.str()},
                         {"final_equity", a.final_equity.str()}, {"status", status_name(a.status)},
                         {"fee_charged", a.fee_charged.amount.str()}, {"fee_kind", nullable(a.fee_charged.kind)},
-                        {"decision", nullable(a.decision)}, {"rules", a.rules ? rules_json(*a.rules, a.starting_balance) : json(nullptr)},
+                        {"decision", nullable(a.decision)}, {"rules", a.rules ? rules_json(*a.rules, a.starting_balance, a.size_scaling) : json(nullptr)},
                         {"decided_at", time_or_null(a.decided_at)}, {"decided_equity", money(a.decided_equity)},
                         {"peak", money(a.peak)}, {"floor", money(a.floor)},
                         {"decision_code", a.status == EvaluationStatus::Active ? json(nullptr) : json(to_string(a.decision_code))}});
   return {{"damaged", damage_json(view.damaged)}, {"journal_size", journal_json(view.journal_bytes, view.journal_transactions, view.run.has_value())},
           {"account_version", std::to_string(s.account_version)}, {"time", md::format_timestamp(s.time)},
-          {"rules", rules_json(r, view.config.initial_cash)}, {"breach", breach_json(view.breach)}, {"warnings", warnings_json(view.warnings)},
+          {"rules", rules_json(r, e.starting_balance, e.size_scaling)}, {"breach", breach_json(view.breach)}, {"warnings", warnings_json(view.warnings)},
           {"guardrails", guardrails_json(view.config.guardrails)}, {"guardrail_state", guardrail_state_json(s)},
           {"evaluation", {
               {"enabled", r.evaluation()}, {"attempt", e.attempt}, {"status", status_name(e.status)},

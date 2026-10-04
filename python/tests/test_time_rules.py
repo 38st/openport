@@ -51,7 +51,8 @@ def test_time_rules_types_and_request_schemas():
         with pytest.raises(jsonschema.ValidationError):
             validator.validate({**funded, "time_limit_days": 30})
         for evaluation in ({**enabled, "size_scaling": size_scaling},
-                           {**enabled, "phase": "evaluation", "size_scaling": size_scaling}):
+                           {**enabled, "phase": "evaluation", "size_scaling": size_scaling},
+                           {**enabled, "phase": "verification", "size_scaling": size_scaling}):
             with pytest.raises(jsonschema.ValidationError):
                 validator.validate(evaluation)
         if path != "AccountRulesInput":

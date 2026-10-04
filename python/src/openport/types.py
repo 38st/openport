@@ -51,7 +51,7 @@ PlanReason = Literal[
     "MIN_TRADING_DAYS", "MIN_PROFITABLE_DAYS", "CONSISTENCY",
     "MAX_CONTRACTS_HELD", "STOP_REQUIRED", "MAX_TRADE_RISK",
     "TIME_LIMIT", "INACTIVITY", "INSTRUMENT_NOT_ALLOWED",
-    "OUTSIDE_PLAN_HOURS", "FLAT_TIME", "OVERNIGHT_HOLD",
+    "OUTSIDE_PLAN_HOURS", "FLAT_TIME", "OVERNIGHT_HOLD", "SCALING_LIMIT",
 ]
 ResetReason = Literal["PLAN_LOCKED", "RESET_LIMIT"]
 
@@ -249,6 +249,8 @@ class SizeScale(TypedDict):
 class SizeScalingStatus(TypedDict):
     size: str
     original: str
+    original_max_drawdown: str
+    original_daily_loss_limit: str
     max_balance: str
     period_started: str
     period_days: int

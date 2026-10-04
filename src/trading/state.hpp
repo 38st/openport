@@ -569,6 +569,7 @@ inline void to_json(Json& j, const AttemptSummary& a) {
   if (a.floor) j["floor"] = *a.floor;
   if (a.fee_charged.amount != Money{}) j["fee_charged"] = a.fee_charged;
   if (a.payouts_received != Money{}) j["payouts_received"] = a.payouts_received;
+  if (a.size_scaling) j["size_scaling"] = *a.size_scaling;
 }
 inline void from_json(const Json& j, AttemptSummary& a) {
   j.at("attempt").get_to(a.attempt); j.at("plan").get_to(a.plan); j.at("started").get_to(a.started);
@@ -581,6 +582,7 @@ inline void from_json(const Json& j, AttemptSummary& a) {
   added_field(j, "decided_equity", a.decided_equity);
   added_field(j, "peak", a.peak); added_field(j, "floor", a.floor);
   added_field(j, "fee_charged", a.fee_charged); added_field(j, "payouts_received", a.payouts_received);
+  added_field(j, "size_scaling", a.size_scaling);
 }
 inline void to_json(Json& j, const Closure& c) {
   j = Json{{"symbol", c.symbol}, {"quantity", c.quantity}, {"price", c.price}, {"time", c.time}, {"kind", c.kind},

@@ -66,6 +66,9 @@ struct BestTrade {
   std::string id;
   Money pnl;  ///< Positive net P&L of a fully closed whole option trade.
 };
+/// Capital growth changes live loss/lock amounts, not the purchased plan's identity.
+[[nodiscard]] AccountRules original_program_rules(AccountRules rules, Money current_size,
+    const std::optional<SizeScalingProgress>& scaling);
 
 /// Rule progress for the current attempt. Fully marked equity (every position
 /// has a mark, fresh or not) drives equity rules; time and overnight rules need no marks.
@@ -281,6 +284,7 @@ struct AttemptSummary {
   std::optional<Money> floor{};
   AttemptFee fee_charged{};
   Money payouts_received{};
+  std::optional<SizeScalingProgress> size_scaling{}; ///< Original plan terms for reset counting after growth.
 };
 
 /// Exercise: contracts exercised early into shares, at intrinsic value.

@@ -55,6 +55,8 @@ export interface SizeScale {
 export interface SizeScalingStatus {
   size: Money
   original: Money
+  original_max_drawdown: Money
+  original_daily_loss_limit: Money
   max_balance: Money
   period_started: string
   period_days: number

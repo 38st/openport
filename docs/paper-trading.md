@@ -2023,7 +2023,7 @@ evaluation's day, so the day's boundary decides which day an overnight trade, a
 day's loss and the end-of-day ratchet count toward. Equity samples carry the plan's
 day.
 
-**Scaling plan.** An optional sizing constraint in either phase, independent of pass objectives and per-order limits. The limit stays fixed through the trading day and changes at rollover from closed balance less starting balance, including losses and withdrawals. See the funded section below for thresholds, reservations and enforcement.
+**Scaling plan.** An optional sizing constraint in evaluation, verification and funded phases, independent of pass objectives and per-order limits. The limit stays fixed through the trading day and changes at rollover from closed balance less starting balance, including losses and withdrawals. See the funded section below for thresholds, reservations and enforcement.
 
 **Daily loss limit.** On every observation of fully marked equity, the limit's level is
 its reference less `daily_loss_limit`. The reference is the day's opening equity, its
@@ -2208,10 +2208,19 @@ These bookkeeping costs never change cash, equity, floors, trading fees or outco
 
 Same plan means the same starting balance and all `AccountRules`, including its
 name, phase, time and inactivity limits, allowed underlyings, trading hours,
-mandatory flat time and overnight policy, after ignoring execution settings (slippage, latency, impact,
+mandatory flat time, overnight policy, contract `scaling` and `size_scaling`, after ignoring execution settings (slippage, latency, impact,
 inside fills and the option fee schedule), broker margin settings (mode, account
 type, house percentage, volatility shock), and these four program cost settings.
 That is also the preset-identity comparison used for locks and plan-name checks.
+Account-size growth retains the same funded plan: compare the **original purchased
+starting balance**, original drawdown and daily-loss amounts, and original lock
+balance. Restarting uses those original terms, charges the reset fee and consumes
+the existing allowance; growth never replenishes resets. Buying the grown balance
+as a new starting balance, or changing either scaling rule, is a different purchase.
+Live and archived rules still report the actual loss amounts and starting balance
+at that time. Size-scaling progress exposes `original_max_drawdown` and
+`original_daily_loss_limit` alongside `original`; archived journal summaries retain
+that progress to recover the comparison exactly, without reversing rounded ratios.
 Counts are derived from consecutive archived attempts with matching recorded
 rules; an old summary without rules ends that known streak. A `RESET_LIMIT`
 refusal is journaled without cancelling orders, closing positions, archiving an

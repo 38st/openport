@@ -297,7 +297,7 @@ it("adds, edits and removes custom scaling steps", async () => {
 })
 
 it("renders size reviews, history, plan facts and the existing rule notice", () => {
-  const size_scaling = { size: "62500.00", original: "50000.00", max_balance: "100000.00", period_started: "2026-09-24",
+  const size_scaling = { size: "62500.00", original: "50000.00", original_max_drawdown: "5000.00", original_daily_loss_limit: "2000.00", max_balance: "100000.00", period_started: "2026-09-24",
     period_days: 3, days_required: 80, period_profit: "1200.50", profit_required: "6250.00", period_payouts: 1, payouts_required: 2,
     next_size: "75000.00", history: [{ day: "2026-09-24", old: "50000.00", size: "62500.00" }] }
   const scaled: Account = { ...planned, rules: { ...planned.rules, phase: "funded", size_scaling: {

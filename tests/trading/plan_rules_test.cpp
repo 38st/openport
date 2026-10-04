@@ -68,6 +68,32 @@ AccountRules scaling_plan() {
   return r;
 }
 
+TEST(PlanRules, VerificationContractScalingStillPassesAndNeverEnablesFundedGrowth) {
+  ScriptedMarket f;
+  auto rules = plan("300", "1000");
+  rules.phase = Phase::Verification;
+  rules.profit_basis = ProfitBasis::Balance;
+  rules.scaling = {{m("0"), 1}, {m("100"), 2}};
+  rules.time_limit_days = 30;
+  JournalFile file;
+  TradingSession s(config(rules), f.time, FileJournal::create(file.path));
+  f.seed(s);
+  EXPECT_EQ(s.submit(f.market("too-big", 2), f.time).decision.code, Reason::SCALING_LIMIT);
+  ASSERT_TRUE(s.submit(f.market("open"), f.time).decision.ok());
+  quote(s, f, "6.20", "6.40");
+  ASSERT_TRUE(s.submit(f.market("close", 1, Side::Sell), f.time).decision.ok());
+  EXPECT_EQ(s.snapshot()->evaluation.status, EvaluationStatus::Active);
+  next_day(s, f, {2026, 9, 23});
+  EXPECT_EQ(s.snapshot()->evaluation.scaling_limit, 2);
+  EXPECT_FALSE(s.snapshot()->evaluation.size_scaling);
+  EXPECT_EQ(s.request_payout(m("10"), f.time).decision.code, Reason::PAYOUT_UNAVAILABLE);
+  ASSERT_TRUE(s.submit(f.market("second-open", 2), f.time).decision.ok());
+  quote(s, f, "5.20", "5.40");
+  ASSERT_TRUE(s.submit(f.market("second-close", 2, Side::Sell), f.time).decision.ok());
+  EXPECT_EQ(s.snapshot()->evaluation.status, EvaluationStatus::Passed);
+  EXPECT_EQ(TradingSession::recover(FileJournal::read(file.path)).snapshot_json(), s.snapshot_json());
+}
+
 TEST(TradingPlanRules, BothContractCapsUseTheSameWorkingOpeningCount) {
   for (const auto fixed : {1, 3}) {
     ScriptedMarket f;

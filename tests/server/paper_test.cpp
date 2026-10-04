@@ -2643,6 +2643,29 @@ TEST(PaperRecovery, WithoutAClosingPrintTheLastPrintInTheCloseLastMinutesSettles
   std::filesystem::remove_all(path.parent_path());
 }
 
+TEST(PaperPlans, ScalingRulesArePartOfPresetIdentity) {
+  const auto* preset = server::find_plan("funded-scaling-50k");
+  ASSERT_NE(preset, nullptr);
+  auto rules = preset->rules;
+  EXPECT_TRUE(server::follows_plan(*preset, preset->initial_cash, rules));
+  rules.scaling.front().contracts = 1;
+  EXPECT_FALSE(server::follows_plan(*preset, preset->initial_cash, rules));
+  rules = preset->rules;
+  rules.size_scaling = trading::SizeScaling{10, 2, 80, 25, Money::parse("100000")};
+  EXPECT_FALSE(server::follows_plan(*preset, preset->initial_cash, rules));
+  auto growing = *preset;
+  growing.rules = rules;
+  trading::SessionConfig config; config.initial_cash = preset->initial_cash; config.rules = rules;
+  trading::TradingSession session(config, 0);
+  auto progress = session.snapshot()->evaluation.size_scaling;
+  ASSERT_TRUE(progress);
+  rules.max_drawdown = rules.max_drawdown.prorate(125, 100);
+  rules.daily_loss_limit = rules.daily_loss_limit.prorate(125, 100);
+  if (rules.lock_balance > Money{}) rules.lock_balance = rules.lock_balance + Money::parse("12500");
+  EXPECT_TRUE(server::follows_plan(growing, progress->original,
+      trading::original_program_rules(rules, Money::parse("62500"), progress)));
+}
+
 TEST(PaperPlans, PresetsListExactRules) {
   PaperProvider provider;
   server::Engine engine(provider, {{"SPX"}}, paper_options());
@@ -2822,8 +2845,10 @@ TEST_F(PaperEngine, SizeScalingRulesParseValidateAndExposeReviewAndAttemptProven
     auto bad = rules; bad["size_scaling"][key] = value;
     expect_error(reset(bad), 400, "INVALID_REQUEST");
   }
-  auto evaluation = rules; evaluation["phase"] = "evaluation"; evaluation["payouts"] = nullptr;
-  expect_error(reset(evaluation), 400, "INVALID_RULES");
+  for (const auto* phase : {"evaluation", "verification"}) {
+    auto evaluation = rules; evaluation["phase"] = phase; evaluation["payouts"] = nullptr;
+    expect_error(reset(evaluation), 400, "INVALID_RULES");
+  }
   auto disabled = rules; disabled["size_scaling"] = nullptr;
   response = reset(disabled);
   ASSERT_EQ(response.status, 200) << response.body;
@@ -2839,8 +2864,11 @@ TEST_F(PaperEngine, SizeScalingAccountViewReportsTheCapitalCreditAndNewReview) {
       {"payouts", {{"qualifying_profit", "10"}, {"qualifying_days", 1}, {"withdrawal_percent", 50},
           {"split_percent", 80}, {"minimum", "10"}, {"caps", json::array()}}},
       {"size_scaling", {{"profit_percent", 1}, {"payouts", 0}, {"days", 1}, {"increase_percent", 25}, {"max_balance", "100000"}}}};
-  const auto reset = write(*engine, "POST", "/api/account/reset", {{"initial_cash", "50000"}, {"rules", rules}, {"reason", "size view"}});
+  const auto reset = write(*engine, "POST", "/api/account/reset", {{"initial_cash", "50000"}, {"rules", rules}, {"reason", "size view"},
+      {"evaluation_fee", "100.000001"}, {"reset_fee", "25.000002"}, {"max_resets", 2}});
   ASSERT_EQ(reset.status, 200) << reset.body;
+  ASSERT_EQ(write(*engine, "POST", "/api/account/reset", {{"initial_cash", "50000"}, {"rules", rules},
+      {"reason", "first reset"}}).status, 200);
   ASSERT_EQ(write(*engine, "POST", "/api/orders", order(market, "size-open", "4.20")).status, 201);
   market.next(); quote("10.00", "10.20");
   auto close = order(market, "size-close", "10.00"); close["side"] = "sell";
@@ -2850,11 +2878,28 @@ TEST_F(PaperEngine, SizeScalingAccountViewReportsTheCapitalCreditAndNewReview) {
   const auto account = read(*engine, "/api/account");
   const auto& size = account["evaluation"]["size_scaling"];
   EXPECT_EQ(size["size"], "62500.00"); EXPECT_EQ(size["original"], "50000.00");
+  EXPECT_EQ(size["original_max_drawdown"], "5000.00"); EXPECT_EQ(size["original_daily_loss_limit"], "0.00");
   EXPECT_EQ(size["period_days"], 0); EXPECT_EQ(size["period_profit"], "0.00");
   EXPECT_EQ(size["profit_required"], "625.00"); EXPECT_EQ(size["next_size"], "75000.00");
   EXPECT_EQ(size["history"], (json::array({{{"day", "2026-09-23"}, {"old", "50000.00"}, {"size", "62500.00"}}})));
   EXPECT_EQ(account["payout"]["profit"], "578.70");
   EXPECT_EQ(account["rules"]["max_drawdown"], "6250.00");
+  EXPECT_EQ(account["costs"]["resets_used"], 1);
+  auto response = write(*engine, "POST", "/api/account/reset", {{"initial_cash", "50000"}, {"rules", rules},
+      {"reason", "restart original size"}});
+  ASSERT_EQ(response.status, 200) << response.body;
+  test::capture_contract("time-rules", "POST", "/api/account/reset", response);
+  const auto restarted = json::parse(response.body);
+  EXPECT_EQ(restarted["costs"]["resets_used"], 2);
+  EXPECT_EQ(restarted["costs"]["fee_kind"], "reset");
+  EXPECT_EQ(restarted["costs"]["fee_charged"], "25.000002");
+  EXPECT_EQ(restarted["rules"]["max_resets"], 2);
+  EXPECT_EQ(restarted["evaluation"]["starting_balance"], "50000.00");
+  EXPECT_EQ(restarted["attempts"].back()["starting_balance"], "62500.00");
+  EXPECT_EQ(restarted["attempts"].back()["rules"]["max_drawdown"], "6250.00");
+  response = write(*engine, "POST", "/api/account/reset", {{"initial_cash", "50000"}, {"rules", rules}, {"reason", "exhausted"}});
+  expect_error(response, 409, "RESET_LIMIT");
+  test::capture_contract("time-rules", "POST", "/api/account/reset", response);
 }
 
 TEST_F(PaperEngine, ScalingRulesAccountViewPreviewsOrdersAndValidation) {

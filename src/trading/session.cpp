@@ -4667,8 +4667,13 @@ ProgramCosts program_costs(const TradingSnapshot& snapshot, const AccountRules& 
   for (const auto& a : snapshot.attempts) { add(a.fee_charged); out.payouts_received = out.payouts_received + a.payouts_received; }
   for (const auto& p : snapshot.evaluation.payouts) out.payouts_received = out.payouts_received + p.trader_share;
   if (snapshot.payouts_received) out.payouts_received = *snapshot.payouts_received;
+  const auto& e = snapshot.evaluation;
+  const auto original = e.size_scaling ? e.size_scaling->original : e.starting_balance;
+  const auto original_rules = original_program_rules(rules, e.starting_balance, e.size_scaling);
   for (auto it = snapshot.attempts.rbegin(); it != snapshot.attempts.rend(); ++it) {
-    if (!it->rules || it->starting_balance != snapshot.evaluation.starting_balance || !same_program_rules(*it->rules, rules)) break;
+    const auto previous = it->size_scaling ? it->size_scaling->original : it->starting_balance;
+    if (!it->rules || previous != original ||
+        !same_program_rules(original_program_rules(*it->rules, it->starting_balance, it->size_scaling), original_rules)) break;
     ++out.resets_used;
   }
   return out;
@@ -5936,7 +5941,8 @@ CommandResult TradingSession::reset_account(Money initial_cash, AccountRules rul
     throw TradingError(Reason::INVALID_RULES, "Account size scaling maximum must be at least the starting balance");
   return impl_->transact(time, "account_reset", [&](State& s, Events& events) {
     const auto snapshot = snapshot_of(s);
-    const bool same = initial_cash == s.config.initial_cash && same_program_rules(rules, s.config.rules);
+    const bool same = initial_cash == s.config.initial_cash && same_program_rules(rules,
+        original_program_rules(s.config.rules, s.evaluation.starting_balance, s.evaluation.size_scaling));
     const auto costs = program_costs(snapshot, s.config.rules);
     if (same && rules.max_resets > 0 && costs.resets_used >= rules.max_resets)
       return CommandResult{{Reason::RESET_LIMIT, "This plan has no resets left; choose a different plan to start a new purchase",
@@ -5963,7 +5969,7 @@ CommandResult TradingSession::reset_account(Money initial_cash, AccountRules rul
     s.attempts.push_back({e.attempt, s.config.rules.plan, e.started, s.time, e.starting_balance, snapshot.equity,
                           e.status, e.decision, e.first_order, e.first_fill, e.decision_code, s.config.rules, e.decided_at,
                           e.status == EvaluationStatus::Active ? std::nullopt : std::optional(e.decided_equity), e.peak,
-                          s.config.rules.max_drawdown > Money{} ? std::optional(e.floor) : std::nullopt, s.fee_charged, {}});
+                          s.config.rules.max_drawdown > Money{} ? std::optional(e.floor) : std::nullopt, s.fee_charged, {}, e.size_scaling});
     if (archive_payouts)
       for (const auto& payout : e.payouts) s.attempts.back().payouts_received = s.attempts.back().payouts_received + payout.trader_share;
     s.fee_charged = {fee, fee == Money{} ? "" : same ? "reset" : activated ? "activation" : "evaluation"};

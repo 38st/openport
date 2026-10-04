@@ -208,8 +208,10 @@ it("round trips account size scaling, disables it and validates every field", ()
     { size_max_balance: "oops" }]) expect(customPlan({ ...form, ...patch }, base)).toHaveProperty("error")
   const off = customPlan({ ...form, size_scaling_enabled: "no", size_days: "oops" }, base)
   expect("error" in off ? off : off.rules.size_scaling).toBeNull()
-  const evaluation = customPlan({ ...form, phase: "evaluation" }, base)
-  expect("error" in evaluation ? evaluation : evaluation.rules.size_scaling).toBeNull()
+  for (const phase of ["evaluation", "verification"] as const) {
+    const evaluation = customPlan({ ...form, phase }, base)
+    expect("error" in evaluation ? evaluation : evaluation.rules.size_scaling).toBeNull()
+  }
 })
 
 it("keeps combined rules while switching phase-specific time and size scaling", () => {

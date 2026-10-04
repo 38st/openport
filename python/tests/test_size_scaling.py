@@ -32,7 +32,8 @@ def test_size_scaling_types_and_contract():
 
 def test_account_size_scaling_preserves_exact_progress(stub, monkeypatch):
     original = stub.respond
-    standing = dict(size="62500.00", original="50000.00", max_balance="200000.00", period_started="2026-09-24",
+    standing = dict(size="62500.00", original="50000.00",
+                    original_max_drawdown="1000.030001", original_daily_loss_limit="500.030001", max_balance="200000.00", period_started="2026-09-24",
                     period_days=12, days_required=80, period_profit="1500.000002", profit_required="6250.00",
                     period_payouts=1, payouts_required=2, next_size="75000.00",
                     history=[dict(day="2026-09-24", old="50000.00", size="62500.00")])

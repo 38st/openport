@@ -462,7 +462,9 @@ class ArchivedReplay final : public MetricsSource {
     out.trading.initial_cash = view_->config.initial_cash;
     out.trading.fee_per_contract = view_->config.fee_per_contract;
     out.trading.plan = view_->config.rules.plan;
-    out.trading.plan_id = preset_id(view_->config.initial_cash, view_->config.rules);
+    const auto& e = view_->snapshot->evaluation;
+    out.trading.plan_id = preset_id(view_->config.initial_cash,
+        trading::original_program_rules(view_->config.rules, e.starting_balance, e.size_scaling));
     out.accounts.push_back({"main", "Replay (read-only)", out.trading, 0, false, {}, view_->journal_bytes, view_->journal_transactions, true});
     return out;
   }
@@ -726,10 +728,13 @@ class ReplayHost::History {
   static json summarize(const std::shared_ptr<const TradingView>& view) {
     if (!view) throw std::runtime_error("Replay account unavailable");
     const auto result = view->snapshot->evaluation.status;
+    const auto& e = view->snapshot->evaluation;
+    const auto id = preset_id(view->config.initial_cash,
+        trading::original_program_rules(view->config.rules, e.starting_balance, e.size_scaling));
     return {{"result", result == trading::EvaluationStatus::Passed ? "pass" : result == trading::EvaluationStatus::Failed ? "fail" : "open"},
             {"pnl", (view->snapshot->equity - view->config.initial_cash).str()},
             {"valuation_complete", view->snapshot->valuation_complete}, {"plan_name", view->config.rules.plan},
-            {"plan_id", preset_id(view->config.initial_cash, view->config.rules).empty() ? json(nullptr) : json(preset_id(view->config.initial_cash, view->config.rules))},
+            {"plan_id", id.empty() ? json(nullptr) : json(id)},
             {"time", md::format_timestamp(view->snapshot->time)}};
   }
   static json summarize_archive(const ArchivedReplay& account) {

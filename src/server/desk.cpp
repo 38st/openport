@@ -948,6 +948,9 @@ void Desk::publish_trading() {
     status.plan = config.rules.plan;
     status.plan_id = preset_id(config.initial_cash, config.rules);
     if (view) {
+      const auto& e = view->snapshot->evaluation;
+      status.plan_id = preset_id(config.initial_cash,
+          trading::original_program_rules(config.rules, e.starting_balance, e.size_scaling));
       status.account_version = view->snapshot->account_version;
       status.kill_latched = view->snapshot->risk.kill_latched;
       if (config.rules.evaluation()) {
@@ -1775,10 +1778,12 @@ void Desk::apply_command(PendingCommand& pending, md::Timestamp market_time, md:
         case TradingCommand::Kind::ResetAccount: {
           // Only a pass of the preset itself unlocks: its balance and rules, not its name.
           const auto* evaluation = c.required_pass.empty() ? nullptr : find_plan_named(c.required_pass);
+          const auto original_rules = trading::original_program_rules(session.config().rules,
+              before->evaluation.starting_balance, before->evaluation.size_scaling);
           const bool restarting = c.program_costs && c.initial_cash == session.config().initial_cash &&
-              trading::same_program_rules(c.rules, session.config().rules);
+              trading::same_program_rules(c.rules, original_rules);
           if (!restarting && !c.required_pass.empty() && (before->evaluation.status != EvaluationStatus::Passed || !evaluation ||
-                                           !follows_plan(*evaluation, before->evaluation.starting_balance, session.config().rules)))
+                                           !follows_plan(*evaluation, session.config().initial_cash, original_rules)))
             result.decision = {Reason::PLAN_LOCKED, "Pass the " + c.required_pass + (c.program_costs ? " to start this step" : " evaluation to start this funded account"),
                                {}, {}, {}};
           else {
