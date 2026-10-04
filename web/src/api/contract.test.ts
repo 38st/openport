@@ -218,7 +218,15 @@ it("includes nullable account size scaling in rules, backtest rules and funded s
     expect(wireType(spec.components.schemas[name]!.properties!.size_scaling!)).toBe("SizeScaling | null")
   expect(wireType(spec.components.schemas.Evaluation!.properties!.size_scaling!)).toBe("SizeScalingStatus | null")
   const request: BacktestStart = { playbook: "sample", scenarios: 1, seed: "0", plan: { initial_cash: "50000",
-    rules: { phase: "funded", payouts: { qualifying_days: 1 }, size_scaling: { profit_percent: 10, payouts: 2,
+    rules: { phase: "funded", payouts: { qualifying_days: 1 }, flat_time: "15:45", no_overnight: true,
+      scaling: [{ profit: "0.00", contracts: 2 }], size_scaling: { profit_percent: 10, payouts: 2,
       days: 80, increase_percent: 25, max_balance: "200000" } } } }
   expect(request.plan).toHaveProperty("rules.size_scaling.days", 80)
+  for (const name of ["AccountRules", "AccountRulesInput"])
+    expect(Object.keys(spec.components.schemas[name]!.properties!)).toEqual(expect.arrayContaining([
+      "flat_time", "no_overnight", "scaling", "size_scaling",
+    ]))
+  expect(Object.keys(spec.components.schemas.Evaluation!.properties!)).toEqual(expect.arrayContaining([
+    "flat_time", "flat_now", "scaling", "size_scaling",
+  ]))
 })

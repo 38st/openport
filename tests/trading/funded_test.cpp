@@ -130,6 +130,74 @@ TEST(TradingFunded, SizeScalingReviewsRestartWhenProfitOrPayoutsAreMissing) {
   }
 }
 
+TEST(TradingFunded, FlatTimeProfitFeedsBothScalingRulesAfterTheDayCloses) {
+  ScriptedMarket f;
+  auto rules = size_plan(1, 0);
+  rules.flat_time = 601;
+  rules.no_overnight = true;
+  TradingSession s(config(rules), f.time);
+  f.seed(s);
+  ASSERT_TRUE(s.submit(f.market("held"), f.time).decision.ok());
+  f.time += md::kNanosPerMinute;
+  ++f.observation;
+  s.on_quotes({f.quote("6.20", "6.40")}, {f.valuation()}, f.time);
+  const auto closed = s.snapshot();
+  ASSERT_TRUE(closed->positions.empty());
+  EXPECT_TRUE(closed->recent_orders.back().request.client_order_id.starts_with("system:flat_time:"));
+  EXPECT_EQ(closed->evaluation.status, EvaluationStatus::Active);
+  EXPECT_EQ(closed->evaluation.scaling_limit, 2);
+  EXPECT_EQ(closed->evaluation.starting_balance, m("10000"));
+  EXPECT_EQ(size_scaling_profit(closed->evaluation, plan_inputs(*closed).balance), m("198.70"));
+  EXPECT_EQ(s.submit(f.market("too-late"), f.time).decision.code, Reason::FLAT_TIME);
+
+  // Record the finished day before publishing the next day's market data.
+  f.time = md::new_york_to_utc({2026, 9, 23}, 10, 0);
+  ASSERT_TRUE(s.roll_day(f.time).decision.ok());
+  const auto& e = s.snapshot()->evaluation;
+  ASSERT_EQ(e.days.size(), 1U);
+  EXPECT_EQ(e.days.back().realised, m("198.70"));
+  EXPECT_EQ(e.days.back().close_equity, closed->equity);
+  EXPECT_EQ(e.days.back().floor, closed->evaluation.floor);
+  EXPECT_EQ(e.starting_balance, m("12500"));
+  EXPECT_EQ(e.scaling_limit, 4);
+  EXPECT_EQ(e.day_open_equity, closed->equity + m("2500"));
+  EXPECT_EQ(size_scaling_profit(e, plan_inputs(*s.snapshot()).balance), Money{});
+  EXPECT_EQ(e.status, EvaluationStatus::Active);
+}
+
+TEST(TradingFunded, OvernightFailureBlocksDueSizeReviewWithPendingFlatCloses) {
+  ScriptedMarket f;
+  auto rules = size_plan(1, 0);
+  rules.flat_time = 16 * 60 + 30;
+  rules.no_overnight = true;
+  TradingSession s(config(rules), f.time);
+  f.seed(s);
+  profit_day(s, f, "200");
+  ASSERT_TRUE(s.submit(f.market("overnight"), f.time).decision.ok());
+  // A fresh marked close after the option session ends cannot execute the flat.
+  f.time = md::new_york_to_utc({2026, 9, 22}, 16, 30);
+  ++f.observation;
+  s.on_quotes({f.quote()}, {f.valuation()}, f.time);
+  ASSERT_TRUE(s.snapshot()->evaluation.flat_pending);
+  ASSERT_FALSE(s.snapshot()->positions.empty());
+  ASSERT_TRUE(s.snapshot()->valuation_complete);
+  ASSERT_GE(size_scaling_profit(s.snapshot()->evaluation, plan_inputs(*s.snapshot()).balance), m("100"));
+
+  f.time = md::new_york_to_utc({2026, 9, 23}, 10, 0);
+  ASSERT_TRUE(s.roll_day(f.time).decision.ok());
+  const auto& e = s.snapshot()->evaluation;
+  EXPECT_EQ(e.status, EvaluationStatus::Failed);
+  EXPECT_EQ(e.decision_code, Reason::OVERNIGHT_HOLD);
+  EXPECT_EQ(e.days.size(), 1U);
+  EXPECT_EQ(e.starting_balance, m("10000"));
+  EXPECT_TRUE(e.size_scaling->history.empty());
+  ++f.observation;
+  s.on_quotes({f.quote()}, {f.valuation()}, f.time);
+  EXPECT_TRUE(s.snapshot()->positions.empty());
+  EXPECT_TRUE(s.snapshot()->recent_orders.back().request.client_order_id.starts_with("system:overnight:"));
+  EXPECT_TRUE(s.snapshot()->evaluation.size_scaling->history.empty());
+}
+
 TEST(TradingFunded, SizeScalingCapsGrowthAndRoundsLossLimitsFromTheOriginalSize) {
   ScriptedMarket f;
   auto rules = size_plan(1, 0);
@@ -662,6 +730,7 @@ TEST(TradingFunded, SizeScalingJournalRoundTripsAndContinuesTheSameReview) {
   const auto path = (directory / "account.jsonl").string();
   ScriptedMarket f;
   auto rules = size_plan(2, 1);
+  rules.flat_time = 945; rules.no_overnight = true;
   rules.inactivity_days = 14;
   rules.underlyings = {"SPX"};
   rules.trading_start = 570; rules.trading_end = 960;
@@ -690,8 +759,13 @@ TEST(TradingFunded, SizeScalingJournalRoundTripsAndContinuesTheSameReview) {
   std::size_t events = 0;
   for (const auto& entry : capture->entries) {
     const auto record = nlohmann::json::parse(entry.payload);
+    bool finished_day = false;
     for (const auto& event : record.at("events")) {
-      if (event.at("type") == "account_scaled") { ++events; }
+      if (event.at("type") == "evaluation_day") finished_day = true;
+      if (event.at("type") == "account_scaled") {
+        EXPECT_TRUE(finished_day);
+        ++events;
+      }
     }
   }
   EXPECT_EQ(events, 1U);

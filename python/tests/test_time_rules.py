@@ -34,6 +34,7 @@ def test_time_rules_types_and_request_schemas():
                                                               "profit_target": "100.00", "max_drawdown": "1000.00"}
         validator.validate(base)
         enabled = {**base, "time_limit_days": 366, "inactivity_days": 1,
+                   "flat_time": "15:45", "no_overnight": True,
                    "underlyings": ["SPX", "BRK.B"], "trading_start": "00:00", "trading_end": "24:00"}
         validator.validate(enabled)
         size_scaling = {"profit_percent": 10, "payouts": 2, "days": 80, "increase_percent": 25,
@@ -94,6 +95,7 @@ def test_read_back_rules_remain_valid_create_and_reset_inputs():
              "min_trading_days": 3, "min_profitable_days": 2, "profitable_day_profit": "10.00",
              "account_type": "margin", "house_margin_percent": 0, "pm_vol_shock": 10,
              "time_limit_days": 30, "inactivity_days": 14, "underlyings": ["SPX"],
+             "flat_time": "15:45", "no_overnight": True,
              "trading_start": "09:30", "trading_end": "16:00", "max_contracts_held": 5,
              "require_stop_loss": True, "max_trade_risk": "123.456789", "max_trade_risk_percent": 25,
              "scaling": [{"profit": "0.00", "contracts": 2}], "size_scaling": None}

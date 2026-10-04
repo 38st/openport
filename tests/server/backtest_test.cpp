@@ -451,6 +451,7 @@ TEST(Backtest, CustomFundedSizeScalingAcceptsExactMoneyAndValidatesTypesAndRange
   const auto definitions = catalogue();
   const auto& scenarios = providers::builtin_scenarios();
   json rules{{"phase", "funded"}, {"payouts", {{"qualifying_days", 1}}},
+      {"flat_time", "15:45"}, {"no_overnight", true},
       {"time_limit_days", 0}, {"inactivity_days", 14}, {"underlyings", {"SPX"}},
       {"trading_start", "09:30"}, {"trading_end", "16:00"}, {"scaling", {{{"profit", "0.00"}, {"contracts", 2}}}},
       {"size_scaling", {{"profit_percent", 1}, {"payouts", 0}, {"days", 2},
@@ -462,6 +463,7 @@ TEST(Backtest, CustomFundedSizeScalingAcceptsExactMoneyAndValidatesTypesAndRange
   const auto parsed = parse(rules);
   ASSERT_TRUE(parsed.config.rules.size_scaling);
   EXPECT_EQ(parsed.config.rules.size_scaling->max_balance, Money::parse("20000.000001"));
+  EXPECT_EQ(parsed.config.rules.flat_time, 945); EXPECT_TRUE(parsed.config.rules.no_overnight);
   EXPECT_EQ(parsed.config.rules.inactivity_days, 14);
   EXPECT_EQ(parsed.config.rules.underlyings, std::vector<std::string>{"SPX"});
   EXPECT_EQ(parsed.config.rules.trading_start, 570); EXPECT_EQ(parsed.config.rules.trading_end, 960);
