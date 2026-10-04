@@ -690,6 +690,24 @@ TEST(ReplayHost, HistoryDeletesDamagedRunsWithTheirSidecarsAndAnswersUnknownIds)
     EXPECT_GT(entry.at("journal_size").at("bytes").get<std::uint64_t>(), 0u);
     EXPECT_GT(entry.at("verification_cost").at("estimated_seconds").get<std::uint64_t>(), 0u);
   }
+  const json* torn_entry = nullptr;
+  for (const auto& entry : history)
+    if (entry.at("id") == ids[2]) torn_entry = &entry;
+  ASSERT_NE(torn_entry, nullptr);
+  EXPECT_EQ(torn_entry->at("torn"), true) << *torn_entry;
+  EXPECT_EQ(torn_entry->at("mismatch"), true) << *torn_entry;
+  const auto expected_bytes = torn_entry->at("journal").at("bytes").get<std::uint64_t>();
+  const auto found_bytes = torn_entry->at("journal_found").at("bytes").get<std::uint64_t>();
+  EXPECT_GT(found_bytes, expected_bytes);
+  const auto integrity_message = torn_entry->at("integrity_message").get<std::string>();
+  EXPECT_NE(integrity_message.find("expected " + std::to_string(expected_bytes) + " bytes, found " + std::to_string(found_bytes)),
+            std::string::npos) << integrity_message;
+  EXPECT_EQ(integrity_message.find("expected " + torn_entry->at("journal").at("transactions").dump() +
+                                   " transactions, found " + torn_entry->at("journal_found").at("transactions").dump()),
+            std::string::npos) << integrity_message;
+  EXPECT_EQ(integrity_message.find("expected head " + torn_entry->at("journal").at("head").get<std::string>() + ", found " +
+                                   torn_entry->at("journal_found").at("head").get<std::string>()),
+            std::string::npos) << integrity_message;
   EXPECT_EQ(call(host, "GET", "/api/replay/history/" + ids[1]).status, 422);
   for (const auto& id : ids) {
     const auto deleted = call(host, "DELETE", "/api/replay/history/" + id);

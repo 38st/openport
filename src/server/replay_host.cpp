@@ -687,9 +687,19 @@ class ReplayHost::History {
             expected.at("bytes") != actual.at("bytes")) {
           out["mismatch"] = true;
           out["truncated"] = actual.at("transactions") < expected.at("transactions") || actual.at("bytes") < expected.at("bytes");
-          const auto message = id + ": journal differs; expected " + expected.at("transactions").dump() +
-              " transactions, found " + actual.at("transactions").dump() + "; expected head " +
-              expected.at("head").get<std::string>() + ", found " + actual.at("head").get<std::string>();
+          std::string message = id + ": journal differs";
+          bool described = false;
+          const auto append = [&](std::string detail) {
+            message += described ? "; " : "; ";
+            message += std::move(detail);
+            described = true;
+          };
+          if (expected.at("transactions") != actual.at("transactions"))
+            append("expected " + expected.at("transactions").dump() + " transactions, found " + actual.at("transactions").dump());
+          if (expected.at("head") != actual.at("head"))
+            append("expected head " + expected.at("head").get<std::string>() + ", found " + actual.at("head").get<std::string>());
+          if (expected.at("bytes") != actual.at("bytes"))
+            append("expected " + expected.at("bytes").dump() + " bytes, found " + actual.at("bytes").dump());
           out["integrity_message"] = out.value("integrity_message", std::string()) +
               (out.contains("integrity_message") ? "; " : "") + message;
         }

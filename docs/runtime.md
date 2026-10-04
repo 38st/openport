@@ -670,7 +670,8 @@ reads expose `journal_found` alongside the checkpoint. `torn: true`, `bytes_cut`
 and `integrity_message` identify an incomplete final line and point to
 `--repair-journals` with the server stopped. `mismatch` and `truncated` flag a changed
 head/count/size, including records removed at a complete line boundary; the message
-names expected and found counts and heads. Summaries are cached by journal size and
+names expected and found counts, heads and bytes for the fields that differ.
+Summaries are cached by journal size and
 modification time. Repairing a torn line does not restore missing records or replace
 the saved final checkpoint.
 
