@@ -1768,7 +1768,11 @@ pairs. Neither uses portfolio margin, and both enforce buying power. The rule co
 what the account cannot hold (`disallowed_shorts`) before and after each order,
 bracket exit, exercise (a long put's exercise sells shares), abandon or share sale, with the open
 orders' sells as if filled; one that adds to it rejects with `ACCOUNT_TYPE`, so closing
-is always allowed. Assignment and delivery still happen as they come.
+is always allowed. A share sale also cannot increase a short share position, even
+by one share within an existing lot. Assignment and delivery still happen as they
+come; the resulting shorts can be bought back. At fill, a changed account-type
+restriction cancels with `RISK_CHANGED`, naming `ACCOUNT_TYPE` in the message,
+like other changed order checks.
 `house_margin_percent` adds a broker's house requirement on top of Reg T: under
 strategy margin, each naked short's requirement beyond its buy-back value and each
 short sale's margin beyond the shares' value rise by that percentage (25 makes an

@@ -1642,7 +1642,12 @@ Decision account_type_check(const State& s, const std::vector<std::pair<std::str
                             const std::map<std::string, Quantity>& shares = {}, OrderId except = 0) {
   const auto type = s.config.rules.account_type;
   if (type == AccountType::Margin) return {};
-  if (disallowed(s, order, shares) > disallowed(s, {}, {}))
+  // Delivery can leave a short share position. It may be bought back, but a
+  // sale must not extend it even inside the same started lot of 100 shares.
+  const bool sells_short = std::any_of(shares.begin(), shares.end(), [&](const auto& item) {
+    return item.second < 0 && shares_held(s, item.first) + item.second < 0;
+  });
+  if (sells_short || disallowed(s, order, shares) > disallowed(s, {}, {}))
     return failure(Reason::ACCOUNT_TYPE, type == AccountType::Cash
         ? "A cash account sells a call only against 100 shares it holds for each contract, and never sells shares short"
         : "An IRA cannot hold a naked call or short shares: cover each short call with 100 shares, or with a long call of "

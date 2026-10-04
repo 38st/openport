@@ -192,6 +192,74 @@ TEST(TradingDelivery, IraExerciseReplacesALongCallsCoverWithShares) {
   EXPECT_EQ(s.snapshot()->buying_power.short_requirement, Money{});
 }
 
+TEST(TradingDelivery, CashAndIraCannotIncreaseAnOddLotShortLeftByDelivery) {
+  const auto put = *md::parse_osi("SPY260922P00520000");
+  for (const auto type : {AccountType::Cash, AccountType::Ira}) {
+    Spy f;
+    AccountRules rules;
+    rules.account_type = type;
+    rules.buying_power = true;
+    TradingSession s(roomy(rules, "1000000"), f.time);
+    f.define(s, put);
+    f.quote(s, put, "10.00", "10.20");
+    ASSERT_TRUE(s.submit(f.market("long put", put, 1), f.time).decision.ok());
+    f.time = put.expiry_time();
+    ASSERT_TRUE(s.settle(put.osi_symbol(), m("510"), f.time).decision.ok());
+    ASSERT_EQ(stock(s, "SPY")->position.shares, -100);
+    f.time = md::new_york_to_utc({2026, 9, 23}, 10, 0);
+    f.price(s);
+    ASSERT_TRUE(s.trade_stock("SPY", 1, f.time).decision.ok());
+    ASSERT_EQ(stock(s, "SPY")->position.shares, -99);
+    // A whole-lot count alone cannot distinguish 99 from 100 short shares.
+    EXPECT_EQ(s.trade_stock("SPY", -1, f.time).decision.code, Reason::ACCOUNT_TYPE);
+    EXPECT_EQ(stock(s, "SPY")->position.shares, -99);
+    ASSERT_TRUE(s.trade_stock("SPY", 99, f.time).decision.ok());
+    EXPECT_TRUE(s.snapshot()->stocks.empty());
+  }
+}
+
+TEST(TradingDelivery, AccountTypeRechecksSingleAndComboCallsAfterExpiryRemovesTheirShares) {
+  const auto put = *md::parse_osi("SPY260922P00520000");
+  const auto call = *md::parse_osi("SPY261022C00520000");
+  const auto hedge = *md::parse_osi("SPY261022P00520000");
+  for (const auto type : {AccountType::Cash, AccountType::Ira}) {
+    for (const bool combo : {false, true}) {
+      Spy f;
+      AccountRules rules;
+      rules.account_type = type;
+      rules.buying_power = true;
+      TradingSession s(roomy(rules, "1000000"), f.time);
+      for (const auto& c : {put, call, hedge}) { f.define(s, c); f.quote(s, c, "10.00", "10.20"); }
+      ASSERT_TRUE(s.trade_stock("SPY", 100, f.time).decision.ok());
+      ASSERT_TRUE(s.submit(f.market("delivery", put, 1), f.time).decision.ok());
+      auto sale = f.market("covered call", call, 1, Side::Sell);
+      sale.type = OrderType::Limit;
+      sale.tif = TimeInForce::Gtc;
+      sale.limit_price = m("11.00");
+      if (combo) {
+        sale.symbol.clear();
+        sale.side = Side::Buy;
+        sale.legs = {{call.osi_symbol(), Side::Sell, 1}, {hedge.osi_symbol(), Side::Buy, 1}};
+        sale.limit_price = m("-0.80");
+      }
+      const auto resting = s.submit(sale, f.time);
+      ASSERT_TRUE(resting.decision.ok()) << resting.decision.message;
+      ASSERT_EQ(s.snapshot()->open_orders.size(), 1U);
+      f.time = put.expiry_time();
+      ASSERT_TRUE(s.settle(put.osi_symbol(), m("510"), f.time).decision.ok());
+      EXPECT_TRUE(s.snapshot()->stocks.empty());
+      f.time = md::new_york_to_utc({2026, 9, 23}, 10, 0);
+      f.quote(s, hedge, "10.00", "10.20");
+      f.quote(s, call, "11.00", "11.20");
+      EXPECT_TRUE(s.snapshot()->open_orders.empty());
+      const auto& cancelled = s.snapshot()->recent_orders.at(*resting.order_id - 1);
+      EXPECT_EQ(cancelled.reason.code, Reason::RISK_CHANGED);
+      EXPECT_NE(cancelled.reason.message.find("ACCOUNT_TYPE"), std::string::npos);
+      EXPECT_EQ(cancelled.filled_quantity, 0);
+    }
+  }
+}
+
 TEST(TradingDelivery, SellingSharesThatCoverACallNeedsWhatTheNakedCallHolds) {
   const auto call = *md::parse_osi("SPY261022C00500000");
   const auto deep = *md::parse_osi("SPY261022C00100000");
