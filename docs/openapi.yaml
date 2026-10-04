@@ -817,7 +817,7 @@
             "$ref": "#/components/responses/Error"
           },
           "422": {
-            "description": "Invalid time_limit_days, inactivity_days, underlyings, trading_start, trading_end, flat_time or no_overnight: INVALID_RULES with a field-specific message. Other trading refusals also use this status.",
+            "description": "Invalid time_limit_days, inactivity_days, underlyings, trading_start, trading_end, flat_time, no_overnight, events, news_before_minutes, news_after_minutes, news_action, hold_restrictions or hold_cutoff: INVALID_RULES with a field-specific message. Other trading refusals also use this status.",
             "content": {
               "application/json": {
                 "schema": {
@@ -1035,7 +1035,7 @@
             "$ref": "#/components/responses/Error"
           },
           "422": {
-            "description": "FLAT_TIME, NEWS_BLACKOUT or HOLD_RESTRICTED: an opening preview blocked by mandatory flat time or a calendar restriction. Error actual=current NY minute, limit=flat_time minute, scope=account. Reductions remain available.",
+            "description": "FLAT_TIME, NEWS_BLACKOUT or HOLD_RESTRICTED: an opening preview blocked by mandatory flat time or a calendar restriction. FLAT_TIME uses NY minute actual/limit and account scope; NEWS_BLACKOUT uses UTC actual/window end; HOLD_RESTRICTED uses null actual, HH:MM limit and kind:scope. Reductions remain available.",
             "content": {
               "application/json": {
                 "schema": {
@@ -1212,7 +1212,7 @@
             "$ref": "#/components/responses/Error"
           },
           "422": {
-            "description": "FLAT_TIME, NEWS_BLACKOUT or HOLD_RESTRICTED: an opening preview blocked by mandatory flat time or a calendar restriction. Error actual=current NY minute, limit=flat_time minute, scope=account. Reductions remain available.",
+            "description": "FLAT_TIME, NEWS_BLACKOUT or HOLD_RESTRICTED: an opening preview blocked by mandatory flat time or a calendar restriction. FLAT_TIME uses NY minute actual/limit and account scope; NEWS_BLACKOUT uses UTC actual/window end; HOLD_RESTRICTED uses null actual, HH:MM limit and kind:scope. Reductions remain available.",
             "content": {
               "application/json": {
                 "schema": {
@@ -1534,7 +1534,7 @@
             "$ref": "#/components/responses/Error"
           },
           "422": {
-            "description": "Invalid time_limit_days, inactivity_days, underlyings, trading_start, trading_end, flat_time or no_overnight: INVALID_RULES with a field-specific message. Other trading refusals also use this status.",
+            "description": "Invalid time_limit_days, inactivity_days, underlyings, trading_start, trading_end, flat_time, no_overnight, events, news_before_minutes, news_after_minutes, news_action, hold_restrictions or hold_cutoff: INVALID_RULES with a field-specific message. Other trading refusals also use this status.",
             "content": {
               "application/json": {
                 "schema": {
@@ -4301,7 +4301,7 @@
             "$ref": "#/components/responses/Error"
           },
           "422": {
-            "description": "FLAT_TIME, NEWS_BLACKOUT or HOLD_RESTRICTED: an opening preview blocked by mandatory flat time or a calendar restriction. Error actual=current NY minute, limit=flat_time minute, scope=account. Reductions remain available.",
+            "description": "FLAT_TIME, NEWS_BLACKOUT or HOLD_RESTRICTED: an opening preview blocked by mandatory flat time or a calendar restriction. FLAT_TIME uses NY minute actual/limit and account scope; NEWS_BLACKOUT uses UTC actual/window end; HOLD_RESTRICTED uses null actual, HH:MM limit and kind:scope. Reductions remain available.",
             "content": {
               "application/json": {
                 "schema": {
@@ -9097,7 +9097,7 @@
           "no_overnight": {
             "type": "boolean",
             "default": false,
-            "description": "Fail an active evaluation or funded attempt with OVERNIGHT_HOLD on a plan date change with held positions, excluding options awaiting settlement. No marks required. Liquidation uses system:overnight:N option orders and rule stock fills. Independent of flat_time."
+            "description": "Fail an active evaluation or funded attempt with OVERNIGHT_HOLD on a plan date change with held positions, excluding options awaiting settlement. No marks required. Liquidation uses system:overnight:N option orders and rule stock fills. Independent of flat_time. Takes precedence over HOLD_RESTRICTED if both fail at the same rollover."
           },
           "events": {
             "type": "array",
@@ -9147,7 +9147,7 @@
             "type": "string",
             "pattern": "^([01][0-9]|2[0-3]):[0-5][0-9]$",
             "default": "15:45",
-            "description": "New York HH:MM, strictly before day_end. The first transaction at/after cutoff acts once even across a gap."
+            "description": "New York HH:MM, strictly before day_end. The first transaction at/after cutoff acts once even across a gap. Flat time closes first on same-transaction ties; existing system closes retain their labels and do not duplicate."
           },
           "scaling": {
             "type": "array",
@@ -18284,7 +18284,7 @@
                       "no_overnight": {
                         "type": "boolean",
                         "default": false,
-                        "description": "Fail an active evaluation or funded attempt with OVERNIGHT_HOLD on a plan date change with held positions, excluding options awaiting settlement. No marks required. Liquidation uses system:overnight:N option orders and rule stock fills. Independent of flat_time."
+                        "description": "Fail an active evaluation or funded attempt with OVERNIGHT_HOLD on a plan date change with held positions, excluding options awaiting settlement. No marks required. Liquidation uses system:overnight:N option orders and rule stock fills. Independent of flat_time. Takes precedence over HOLD_RESTRICTED if both fail at the same rollover."
                       },
                       "events": {
                         "type": "array",
@@ -18334,7 +18334,7 @@
                         "type": "string",
                         "pattern": "^([01][0-9]|2[0-3]):[0-5][0-9]$",
                         "default": "15:45",
-                        "description": "New York HH:MM, strictly before day_end. The first transaction at/after cutoff acts once even across a gap."
+                        "description": "New York HH:MM, strictly before day_end. The first transaction at/after cutoff acts once even across a gap. Flat time closes first on same-transaction ties; existing system closes retain their labels and do not duplicate."
                       },
                       "scaling": {
                         "type": "array",
@@ -21025,7 +21025,7 @@
           "no_overnight": {
             "type": "boolean",
             "default": false,
-            "description": "Fail an active evaluation or funded attempt with OVERNIGHT_HOLD on a plan date change with held positions, excluding options awaiting settlement. No marks required. Liquidation uses system:overnight:N option orders and rule stock fills. Independent of flat_time."
+            "description": "Fail an active evaluation or funded attempt with OVERNIGHT_HOLD on a plan date change with held positions, excluding options awaiting settlement. No marks required. Liquidation uses system:overnight:N option orders and rule stock fills. Independent of flat_time. Takes precedence over HOLD_RESTRICTED if both fail at the same rollover."
           },
           "events": {
             "type": "array",
@@ -21075,7 +21075,7 @@
             "type": "string",
             "pattern": "^([01][0-9]|2[0-3]):[0-5][0-9]$",
             "default": "15:45",
-            "description": "New York HH:MM, strictly before day_end. The first transaction at/after cutoff acts once even across a gap."
+            "description": "New York HH:MM, strictly before day_end. The first transaction at/after cutoff acts once even across a gap. Flat time closes first on same-transaction ties; existing system closes retain their labels and do not duplicate."
           },
           "scaling": {
             "type": "array",

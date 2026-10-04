@@ -1519,11 +1519,25 @@ Decision entry_check(const State& s, const Order& o) {
   return {};
 }
 /// Settlement-pending options are no longer tradable; shares always count.
-bool overnight_positions(const State& s) {
-  if (!s.ledger.stocks().empty()) return true;
-  for (const auto& [symbol, position] : s.ledger.positions())
-    if (position.quantity != 0 && s.time < s.contracts.at(symbol).expiry_time()) return true;
+bool holds_scope(const State& s, const std::string& scope, Timestamp time) {
+  for (const auto& [symbol, position] : s.ledger.positions()) {
+    const auto& contract = s.contracts.at(symbol);
+    if (position.quantity != 0 && (scope.empty() || contract.underlying == scope) && time < contract.expiry_time()) return true;
+  }
+  for (const auto& [symbol, stock] : s.ledger.stocks())
+    if (stock.shares != 0 && (scope.empty() || symbol == scope)) return true;
   return false;
+}
+void record_holding_boundaries(State& s, Events& events);
+/// Broader no-overnight wins if both position rules fail at the same rollover.
+void check_rollover_positions(State& s, Events& events, bool date_changed) {
+  if (s.evaluation.status != EvaluationStatus::Active) return;
+  if (date_changed && s.config.rules.no_overnight && holds_scope(s, {}, s.time))
+    decide(s, {EvaluationStatus::Failed, false, Reason::OVERNIGHT_HOLD, {},
+        "Positions held at the plan day rollover; this plan does not allow overnight holds"}, measure(s).equity, events);
+  else if (!s.evaluation.holding_violations.empty())
+    decide(s, {EvaluationStatus::Failed, false, Reason::HOLD_RESTRICTED, {},
+        "Position held across a restricted boundary: " + s.evaluation.holding_violations.front()}, measure(s).equity, events);
 }
 /// The date latch is separate from the close work, which may need later quotes.
 void start_flat_time(State& s, Events& events) {
@@ -1533,7 +1547,7 @@ void start_flat_time(State& s, Events& events) {
   const auto day = plan_trading_date(rules, s.time);
   if (e.flat_time_day != day) {
     e.flat_time_day = day;
-    e.flat_pending = overnight_positions(s);
+    e.flat_pending = holds_scope(s, {}, s.time);
     event(events, "flat_time", Json{{"day", day}, {"minute", *rules.flat_time}});
   }
   // Reductions keep working, but cannot become openings after mandatory closes.
@@ -1549,17 +1563,15 @@ void start_flat_time(State& s, Events& events) {
     }
   }
 }
-void flatten_positions(State& s, std::string_view label, Events& events);
+void flatten_positions(State& s, std::string_view label, Events& events, const std::string& scope = {});
 void advance(State& s, Timestamp time, Events& events) {
   if (time < 0 || time < s.time) throw TradingError(Reason::INVALID_TIME, "Market time must be nonnegative and monotone");
   const auto previous_time = s.time;
   s.time = time;
-  auto& e = s.evaluation;
   const auto& rules = s.config.rules;
-  if (rules.no_overnight && previous_time > 0 && e.status == EvaluationStatus::Active &&
-      plan_trading_date(rules, time) > plan_trading_date(rules, previous_time) && overnight_positions(s))
-    decide(s, {EvaluationStatus::Failed, false, Reason::OVERNIGHT_HOLD, {},
-        "Positions held at the plan day rollover; this plan does not allow overnight holds"}, measure(s).equity, events);
+  record_holding_boundaries(s, events);
+  if (previous_time > 0 && plan_trading_date(rules, time) > plan_trading_date(rules, previous_time))
+    check_rollover_positions(s, events, true);
   start_flat_time(s, events);
   if (const auto verdict = evaluate_time_rules(s.evaluation, s.config.rules, time); verdict.decided())
     decide(s, verdict, measure(s).equity, events);
@@ -2944,11 +2956,12 @@ void close_shares(State& s, const std::string& symbol, Quantity shares, StockSou
   if (source == StockSource::Trade) count_trade(s);
   event(events, "stock_trade", Json{{"symbol", symbol}, {"shares", -shares}, {"price", *price}});
 }
-/// Mandatory-flat closes share the manual flatten planner. Only executable
+/// All scheduled closes and position-rule liquidations share the manual flatten planner. Only executable
 /// liquidity creates system IOCs; later transactions retry the remaining holdings.
-void flatten_positions(State& s, std::string_view label, Events& events) {
+void flatten_positions(State& s, std::string_view label, Events& events, const std::string& scope) {
   std::vector<std::string> symbols;
-  for (const auto& [symbol, position] : s.ledger.positions()) symbols.push_back(symbol);
+  for (const auto& [symbol, position] : s.ledger.positions())
+    if (scope.empty() || s.contracts.at(symbol).underlying == scope) symbols.push_back(symbol);
   std::map<std::string, Quantity> held_back;
   const auto closes = plan_closes(s, symbols, held_back);
   for (const auto& close : closes) {
@@ -2976,6 +2989,10 @@ void flatten_positions(State& s, std::string_view label, Events& events) {
       else r.legs = close.legs;
       order.system = true; order.reduce_only = true; order.actor = "system";
       order.accepted_at = s.time;
+      // Calendar rules retain their two-sided quote requirement. Mandatory flat
+      // and overnight closes retain Flatten's ask-only reduction policy.
+      if ((label == "news" || label == "hold") && std::any_of(close.legs.begin(), close.legs.end(),
+          [&](const Leg& leg) { return !quote_check(s, leg.symbol).ok(); })) break;
       if (!system_check(s, order).ok()) break;
       order.day_end = order_end(s, r, s.time);
       bool liquid = true;
@@ -2997,9 +3014,10 @@ void flatten_positions(State& s, std::string_view label, Events& events) {
     }
   }
   std::vector<std::pair<std::string, Quantity>> stocks;
-  for (const auto& [symbol, stock] : s.ledger.stocks()) stocks.emplace_back(symbol, stock.shares);
+  for (const auto& [symbol, stock] : s.ledger.stocks())
+    if (scope.empty() || symbol == scope) stocks.emplace_back(symbol, stock.shares);
   for (const auto& [symbol, shares] : stocks) close_shares(s, symbol, shares, StockSource::Rule, events);
-  if (!overnight_positions(s)) s.evaluation.flat_pending = false;
+  if (!holds_scope(s, {}, s.time)) s.evaluation.flat_pending = false;
 }
 /// The status's own code (a pass on the target, a failure on the floor) is the
 /// default a journal leaves out; any other rule's code is recorded with the decision.
@@ -3019,35 +3037,17 @@ void decide(State& s, const PlanVerdict& verdict, Money equity, Events& events) 
   for (const auto id : open_ids(s))
     if (!s.orders[id - 1].system) cancel_order(s, id, failure(Reason::EVALUATION_CLOSED, verdict.message), events);
 }
-/// Scope-aware system closes shared by calendar and future flat-time rules.
-void flatten_scope(State& s, const std::string& scope, std::string_view label, Events& events) {
-  std::vector<std::string> symbols;
-  for (const auto& [symbol, p] : s.ledger.positions())
-    if (p.quantity != 0 && (scope.empty() || s.contracts.at(symbol).underlying == scope)) symbols.push_back(symbol);
-  std::stable_partition(symbols.begin(), symbols.end(), [&](const auto& symbol) { return held(s, symbol) < 0; });
-  for (const auto& symbol : symbols) flatten(s, symbol, label, events);
-  std::vector<std::pair<std::string, Quantity>> stocks;
-  for (const auto& [symbol, p] : s.ledger.stocks())
-    if (p.shares != 0 && (scope.empty() || symbol == scope)) stocks.emplace_back(symbol, p.shares);
-  for (const auto& [symbol, shares] : stocks) close_shares(s, symbol, shares, StockSource::Rule, events);
-}
-bool holds_scope(const State& s, const std::string& scope) {
-  for (const auto& [symbol, p] : s.ledger.positions())
-    if (p.quantity != 0 && (scope.empty() || s.contracts.at(symbol).underlying == scope)) return true;
-  for (const auto& [symbol, p] : s.ledger.stocks())
-    if (p.shares != 0 && (scope.empty() || symbol == scope)) return true;
-  return false;
-}
-void monitor_calendar(State& s, Events& events) {
+/// Runs before any executions, including late mandatory closes after a gap.
+void record_holding_boundaries(State& s, Events& events) {
   const auto& r = s.config.rules;
-  if (r.events.empty() && r.hold_restrictions.empty()) return;
+  if (r.hold_restrictions.empty()) return;
   auto& e = s.evaluation;
   const auto from = e.event_checked > 0 ? e.event_checked : (e.started > 0 ? e.started : s.time);
   const auto windows = event_windows(r, from, s.time);
   // Record every crossed boundary before any late calendar close can remove
   // evidence of a position held across it (including an overlapping news close).
   for (const auto& w : windows) {
-    if (w.kind != "news" && w.end <= s.time && from < w.end && holds_scope(s, w.symbol)) {
+    if (w.kind != "news" && w.end <= s.time && from < w.end && holds_scope(s, w.symbol, w.end)) {
       const auto violation = w.kind + ":" + (w.symbol.empty() ? "account" : w.symbol);
       if (std::find(e.holding_violations.begin(), e.holding_violations.end(), violation) == e.holding_violations.end()) {
         e.holding_violations.push_back(violation);
@@ -3055,6 +3055,21 @@ void monitor_calendar(State& s, Events& events) {
       }
     }
   }
+}
+void monitor_calendar(State& s, Events& events) {
+  const auto& r = s.config.rules;
+  if (r.events.empty() && r.hold_restrictions.empty()) return;
+  auto& e = s.evaluation;
+  const auto from = e.event_checked > 0 ? e.event_checked : (e.started > 0 ? e.started : s.time);
+  const auto windows = event_windows(r, from, s.time);
+  // Same-transaction close ties go to flat time. Without a new calendar close,
+  // preserve F6's normal equity-observation order, including future-only calendars.
+  const bool calendar_close = std::any_of(windows.begin(), windows.end(), [&](const EventWindow& w) {
+    return (w.kind != "news" || (s.time < w.end && r.news_action == "flatten")) && holds_scope(s, w.symbol, s.time) &&
+        std::find(e.event_actions.begin(), e.event_actions.end(), w.key) == e.event_actions.end();
+  });
+  if (calendar_close && e.status == EvaluationStatus::Active && e.day_lock == Reason::NONE && e.flat_pending)
+    flatten_positions(s, "flat_time", events);
   for (const auto& w : windows) {
     // A news window skipped in its entirety never acts retroactively.
     if (w.kind == "news" && s.time >= w.end) continue;
@@ -3069,14 +3084,10 @@ void monitor_calendar(State& s, Events& events) {
     }
     e.event_actions.push_back(w.key);
     event(events, "calendar_action", Json{{"key", w.key}, {"kind", w.kind}, {"start", w.start}, {"end", w.end}});
-    if (w.kind != "news" || r.news_action == "flatten") flatten_scope(s, w.symbol, w.kind == "news" ? "news" : "hold", events);
+    if (e.status == EvaluationStatus::Active && (w.kind != "news" || r.news_action == "flatten"))
+      flatten_positions(s, w.kind == "news" ? "news" : "hold", events, w.symbol);
   }
   e.event_checked = s.time;
-}
-/// Any restriction can share the rollover failure path without adding a separate liquidation implementation.
-void fail_boundary(State& s, Reason code, const std::string& message, Events& events) {
-  if (s.evaluation.status != EvaluationStatus::Active) return;
-  decide(s, {EvaluationStatus::Failed, false, code, {}, message}, measure(s).equity, events);
 }
 /// A plan limit locks the trading day: open orders cancel with its code, the
 /// positions close (monitor_rules) and only closing orders are accepted until rollover.
@@ -3208,8 +3219,8 @@ void monitor_rules(State& s, Events& events) {
   const bool soft = std::find(s.guardrails.latched.begin(), s.guardrails.latched.end(), Reason::SOFT_FLOOR) != s.guardrails.latched.end();
   const bool decided = rules.evaluation() && e.status != EvaluationStatus::Active;
   const bool locked = e.day_lock != Reason::NONE;
-  if (decided && e.decision_code == Reason::OVERNIGHT_HOLD) {
-    flatten_positions(s, "overnight", events);
+  if (decided && (e.decision_code == Reason::OVERNIGHT_HOLD || e.decision_code == Reason::HOLD_RESTRICTED)) {
+    flatten_positions(s, liquidation_label(e, true), events);
     return;
   }
   if (!decided && !locked && e.flat_pending) {
@@ -5763,9 +5774,9 @@ CommandResult TradingSession::roll_day(Timestamp time, const std::vector<Dividen
   return impl_->transact(time, "day_rollover", [&](State& s, Events& events) {
     const auto day = plan_trading_date(s.config.rules, time);
     if (day <= s.day) return CommandResult{failure(Reason::INVALID_TIME, "Rollover requires a later trading date"), {}, 0};
-    if (!s.evaluation.holding_violations.empty())
-      fail_boundary(s, Reason::HOLD_RESTRICTED, "Position held across a restricted boundary: " +
-          s.evaluation.holding_violations.front(), events);
+    // advance already checked the actual date change. Do not classify positions
+    // opened on the new date before this bookkeeping rollover as overnight holds.
+    check_rollover_positions(s, events, false);
     monitor_loss(s, events);
     const auto& snapshot = *closing;
     if (!snapshot.valuation_complete) return CommandResult{failure(Reason::STALE_QUOTE, "Rollover requires complete marked equity"), {}, 0};

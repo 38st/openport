@@ -1637,14 +1637,15 @@ running plan decisions again. The terminal explains leftover positions on the
 Dashboard and Positions page and allows their closing tickets.
 `Evaluation::decision_code`
 names the rule that decided it: `PROFIT_TARGET`, `DRAWDOWN_FLOOR` or
-`DAILY_LOSS_LIMIT`, `TIME_LIMIT`, `INACTIVITY` or `OVERNIGHT_HOLD`. Calendar and
+`DAILY_LOSS_LIMIT`, `TIME_LIMIT`, `INACTIVITY`, `OVERNIGHT_HOLD` or `HOLD_RESTRICTED`. Calendar and
 overnight-hold failures run before the
 command, without requiring marks.
 
 **System orders** perform liquidation and expiry auto-close: market IOC orders with
 `system = true` and client IDs `system:drawdown:N` (a failed attempt), `system:target:N`
 (a passed one), `system:time_limit:N` or `system:inactivity:N` (calendar failures),
-`system:overnight:N` (held positions at rollover), `system:flat_time:N` (mandatory
+`system:overnight:N` (overnight holds), `system:hold:N` (holding cutoffs or failures),
+`system:news:N` (news flatten), `system:flat_time:N` (mandatory
 flat time),
 `system:daily_loss:N` (the plan's daily loss limit, locking the day or
 failing the attempt), `system:expiry:N` (the expiry cutoff) or `system:soft_floor:N` (a
@@ -1952,9 +1953,34 @@ holding date's `day_end` (exclusive). System closes use the existing executable
 liquidity and integer micro-dollar money path; they do not invent fills when the
 market is closed or quotes are stale. Expired positions awaiting settlement are
 skipped. A position still held across the restricted boundary is recorded and
-fails the active attempt with decision `HOLD_RESTRICTED` at the next rollover,
-even if a later close succeeds. Existing post-failure liquidation then applies.
-This does not add flat-time or general no-overnight rules.
+fails the active attempt with decision `HOLD_RESTRICTED` at the next rollover
+(explicit `roll_day` or a transaction crossing the plan trading date), before any
+late close can remove that evidence. Existing post-failure liquidation then applies.
+For mandatory daily closes and the independent general overnight prohibition, see
+[Mandatory flat time and no overnight holds (F6)](#mandatory-flat-time-and-no-overnight-holds-f6).
+
+Combined F6/F17/F59 plans check crossed holding boundaries before any executions,
+using the positions held at each boundary and excluding options already awaiting
+settlement then. At rollover, **`OVERNIGHT_HOLD` takes precedence over
+`HOLD_RESTRICTED`** when both apply; the broader no-overnight rule decides the
+attempt. Both use the same position check and combo-aware system-close planner,
+including share closes, order-size splitting and delayed-order ownership. A decided
+attempt keeps its decision and liquidation label on subsequent quotes.
+
+Flat time, news `flatten` and holding cutoffs share that close planner. A close
+already submitted by an earlier transaction retains its `system:flat_time:N`,
+`system:news:N` or `system:hold:N` label, including while fill latency is pending;
+later triggers do not submit a competing close for its legs. If several triggers
+first act in the **same transaction**, flat time acts first, then calendar windows
+in start-time/key order. This also defines precedence after a gap that reaches
+several cutoffs together. A calendar with no new close in a held scope preserves F6’s
+normal equity-observation order. Shares and fully closed options cannot close twice.
+Calendar news/holding closes still require fresh two-sided quotes. Flat-time and
+overnight closes retain Flatten's existing ask-only reduction policy (buy back a
+short at the ask; dispose of an unbid long at zero).
+Calendar actions remain once-only; mandatory flat time retries remaining holdings,
+and failed attempts retry liquidation with the decision's label. A new retry is
+labelled by the rule submitting it; existing orders are never relabelled.
 
 HTTP evidence: `NEWS_BLACKOUT.actual` is the current UTC timestamp and `limit`
 is the window end, with `scope` the underlying or `account`. For `HOLD_RESTRICTED`,
@@ -3357,7 +3383,8 @@ defined_risk, slippage_ticks, fill_latency_ms, impact_ticks, inside_fill_percent
 pm_vol_shock, buying_power, expiry_cutoff_seconds, lock_at_start, profit_basis, daily_loss_limit,
 daily_loss_basis, daily_loss_action, consistency_percent, consistency_basis, min_trading_days,
 trade_consistency_percent, min_trades, min_hold_seconds, microscalp_seconds, microscalp_percent,
-min_profitable_days, profitable_day_profit, day_end, time_limit_days, inactivity_days, flat_time, no_overnight,
+min_profitable_days, profitable_day_profit, day_end, max_contracts_held, require_stop_loss,
+max_trade_risk, max_trade_risk_percent, time_limit_days, inactivity_days, flat_time, no_overnight,
 underlyings, trading_start, trading_end, scaling, size_scaling, events, news_before_minutes, news_after_minutes,
 news_action, hold_restrictions, hold_cutoff}`.
 `fees` is the optional [fee schedule](#fees). `scaling` defaults to `[]` and uses decimal-string profit thresholds; see [Scaling plan](#funded-accounts-and-payouts).

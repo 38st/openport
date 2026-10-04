@@ -533,3 +533,8 @@ catalogue or known dividend ex-dates; saving freezes them into the plan. Rules,
 Dashboard, chain and tickets explain active/next restrictions and permit reductions.
 Once-only system closes, boundary failures and the holding business calendar are
 journaled for deterministic recovery. See [rule semantics](paper-trading.md#news-blackouts-and-holding-restrictions-f17-f59).
+
+F6, F17 and F59 can be combined with the time, inactivity, underlying, trading-hour,
+contract-count, stop-loss and trade-risk rules. Rollover gives `OVERNIGHT_HOLD`
+precedence over `HOLD_RESTRICTED`; overlapping scheduled closes retain the first
+submitted close's label without duplicating orders.

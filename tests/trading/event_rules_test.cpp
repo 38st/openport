@@ -203,6 +203,121 @@ TEST(EventRules, OverlappingNewsAndDuplicateHoldingScopesActDeterministically) {
   normalize_event_rules(r, true);
   EXPECT_EQ(event_windows(r, md::new_york_to_utc({2026, 9, 22}, 15, 45), md::new_york_to_utc({2026, 9, 22}, 15, 45)).size(), 1U);
 }
+TEST(EventRules, CombinedRolloverPrecedenceAndRecoveryBeforeLateCloses) {
+  for (const bool overnight : {false, true}) {
+    for (const bool explicit_roll : {false, true}) {
+      SCOPED_TRACE(overnight);
+      SCOPED_TRACE(explicit_roll);
+      ScriptedMarket f; f.time = md::new_york_to_utc({2026, 9, 25}, 15, 44);
+      AccountRules r; r.no_overnight = overnight; r.flat_time = 15 * 60 + 45;
+      r.hold_restrictions = {"weekend", "earnings"};
+      r.events = {{"earnings", "2026-09-28", "SPX"}, {"news", "2026-09-28T14:00:00Z"}};
+      r.news_after_minutes = 10; r.news_action = "flatten";
+      JournalFile file;
+      TradingSession s(config(r), f.time, FileJournal::create(file.path)); f.seed(s);
+      ASSERT_TRUE(s.submit(f.market("held"), f.time).decision.ok());
+      const auto rollover = md::new_york_to_utc({2026, 9, 25}, 17, 0);
+      if (explicit_roll) { ASSERT_TRUE(s.roll_day(rollover).decision.ok()); }
+      else s.on_quotes({}, {}, rollover);
+      const auto expected = overnight ? Reason::OVERNIGHT_HOLD : Reason::HOLD_RESTRICTED;
+      EXPECT_EQ(s.snapshot()->evaluation.decision_code, expected);
+      EXPECT_EQ(s.snapshot()->evaluation.holding_violations,
+          (std::vector<std::string>{"earnings:SPX", "weekend:account"}));
+      EXPECT_EQ(TradingSession::recover(FileJournal::read(file.path)).snapshot_json(), s.snapshot_json());
+      tick(s, f, md::new_york_to_utc({2026, 9, 28}, 10, 0));
+      EXPECT_TRUE(s.snapshot()->positions.empty());
+      EXPECT_EQ(s.snapshot()->recent_orders.size(), 2U);
+      EXPECT_TRUE(s.snapshot()->recent_orders.back().request.client_order_id.starts_with(
+          overnight ? "system:overnight:" : "system:hold:"));
+      EXPECT_EQ(s.snapshot()->evaluation.decided_at, rollover);
+      EXPECT_EQ(TradingSession::recover(FileJournal::read(file.path)).snapshot_json(), s.snapshot_json());
+    }
+  }
+}
+TEST(EventRules, CombinedCutoffsKeepFirstCloseLabelWithoutDuplicates) {
+  for (const auto* first : {"flat_time", "news", "hold", "tie"}) {
+    for (const auto latency : {0, 1000}) {
+      SCOPED_TRACE(first);
+      SCOPED_TRACE(latency);
+      ScriptedMarket f; f.contract = *md::parse_osi("SPY261022C00500000");
+      const std::string trigger(first);
+      AccountRules r; r.flat_time = trigger == "flat_time" || trigger == "tie" ? 601 : 602;
+      r.no_overnight = true; r.fill_latency_ms = latency;
+      r.news_after_minutes = 5; r.news_action = "flatten";
+      r.events = {{"news", trigger == "news" || trigger == "tie" ? "2026-09-22T14:01:00Z" : "2026-09-22T14:02:00Z"},
+          {"split", "2026-09-23", "SPY"}};
+      r.hold_restrictions = {"split"}; r.hold_cutoff = trigger == "hold" || trigger == "tie" ? 601 : 602;
+      JournalFile file;
+      TradingSession s(config(r), f.time, FileJournal::create(file.path)); f.seed(s);
+      ASSERT_TRUE(s.submit(f.market("held", 2), f.time).decision.ok());
+      ASSERT_TRUE(s.trade_stock("SPY", 1, f.time, StockPrice{"SPY", f.time, m("500")}).decision.ok());
+      tick(s, f, f.time + md::kNanosPerSecond);
+      f.time = md::new_york_to_utc({2026, 9, 22}, 10, 1); ++f.observation;
+      s.on_quotes({f.quote()}, {f.valuation()}, f.time, {{"SPY", f.time, m("500")}});
+      const auto label = trigger == "tie" ? "flat_time" : trigger;
+      ASSERT_EQ(s.snapshot()->recent_orders.size(), 2U);
+      EXPECT_TRUE(s.snapshot()->recent_orders.back().request.client_order_id.starts_with("system:" + label + ":"));
+      auto recovered = TradingSession::recover(FileJournal::read(file.path));
+      EXPECT_EQ(recovered.snapshot_json(), s.snapshot_json());
+      // Pending latency closes retain ownership when the remaining triggers fire.
+      f.time = md::new_york_to_utc({2026, 9, 22}, 10, 2); ++f.observation;
+      for (auto* session : {&s, &recovered}) {
+        session->on_quotes({f.quote()}, {f.valuation()}, f.time, {{"SPY", f.time, m("500")}});
+        EXPECT_TRUE(session->snapshot()->stocks.empty());
+        EXPECT_EQ(session->snapshot()->stock_fills.size(), 2U);
+        EXPECT_EQ(session->snapshot()->stock_fills.back().source, StockSource::Rule);
+        EXPECT_TRUE(session->snapshot()->positions.empty());
+        EXPECT_EQ(session->snapshot()->recent_orders.size(), 2U);
+        EXPECT_TRUE(session->snapshot()->recent_orders.back().request.client_order_id.starts_with("system:" + label + ":"));
+        EXPECT_EQ(session->snapshot()->evaluation.event_actions.size(), 2U);
+        EXPECT_EQ(session->snapshot()->evaluation.status, EvaluationStatus::Active);
+      }
+      EXPECT_EQ(recovered.snapshot_json(), s.snapshot_json());
+    }
+  }
+}
+TEST(EventRules, UnrelatedCalendarPreservesFlatTimeEquityDecisionOrder) {
+  for (const int calendar : {0, 1, 2}) {
+    SCOPED_TRACE(calendar);
+    ScriptedMarket f;
+    AccountRules r; r.flat_time = 601; r.profit_target = m("100");
+    if (calendar) {
+      r.news_after_minutes = 1; r.news_action = "flatten";
+      r.events = {{"news", calendar == 1 ? "2026-09-23T14:00:00Z" : "2026-09-22T14:01:00Z", "SPY"}};
+      r.hold_restrictions = {"weekend"};
+    }
+    TradingSession s(config(r), f.time); f.seed(s);
+    ASSERT_TRUE(s.submit(f.market("held", 5), f.time).decision.ok());
+    f.time = md::new_york_to_utc({2026, 9, 22}, 10, 1); ++f.observation;
+    s.on_quotes({f.quote("4.40", "4.60")}, {f.valuation()}, f.time);
+    EXPECT_EQ(s.snapshot()->evaluation.status, EvaluationStatus::Passed);
+    EXPECT_EQ(s.snapshot()->evaluation.decision_code, Reason::PROFIT_TARGET);
+    EXPECT_TRUE(s.snapshot()->positions.empty());
+    EXPECT_TRUE(s.snapshot()->recent_orders.back().request.client_order_id.starts_with("system:target:"));
+  }
+}
+TEST(EventRules, BookkeepingRolloverDoesNotFailPositionsOpenedOnTheNewDate) {
+  ScriptedMarket f;
+  AccountRules r; r.no_overnight = true; r.hold_restrictions = {"weekend"};
+  TradingSession s(config(r), f.time); f.seed(s);
+  tick(s, f, md::new_york_to_utc({2026, 9, 23}, 10, 0));
+  ASSERT_TRUE(s.submit(f.market("new-day-entry"), f.time).decision.ok());
+  ASSERT_TRUE(s.roll_day(f.time).decision.ok());
+  EXPECT_EQ(s.snapshot()->evaluation.status, EvaluationStatus::Active);
+  EXPECT_EQ(s.snapshot()->positions.size(), 1U);
+}
+TEST(EventRules, CombinedHoldingAndOvernightExcludeSettlementAtTheBoundary) {
+  ScriptedMarket f; f.contract = *md::parse_osi("SPXW260922C05000000");
+  AccountRules r; r.no_overnight = true; r.flat_time = 16 * 60 + 5;
+  r.hold_restrictions = {"split"}; r.hold_cutoff = 16 * 60 + 5;
+  r.events = {{"split", "2026-09-23", "SPX"}};
+  TradingSession s(config(r), f.time); f.seed(s);
+  ASSERT_TRUE(s.submit(f.market("held"), f.time).decision.ok());
+  s.on_quotes({}, {}, md::new_york_to_utc({2026, 9, 22}, 17, 0));
+  EXPECT_EQ(s.snapshot()->evaluation.status, EvaluationStatus::Active);
+  EXPECT_TRUE(s.snapshot()->evaluation.holding_violations.empty());
+  EXPECT_EQ(s.snapshot()->recent_orders.size(), 1U);
+}
 TEST(EventRules, NormalizeAndValidateCalendar) {
   AccountRules r; r.events = {{"earnings", "2026-09-23", "SPY"}, {"news", "2026-09-22T14:00:00Z"}, {"earnings", "2026-09-23", "SPY", "before_open"}};
   normalize_event_rules(r); ASSERT_EQ(r.events.size(), 2U); EXPECT_EQ(r.events[0].kind, "news"); EXPECT_EQ(r.events[1].session, "before_open");

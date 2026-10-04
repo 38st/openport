@@ -682,3 +682,10 @@ saved AccountRules calendar in live, replay and custom backtest plans. Blackouts
 and holding cutoffs block/cancel openings with NEWS_BLACKOUT/HOLD_RESTRICTED;
 managed exits and reductions remain available. System closes do not count as
 trader executions. See [F17/F59](paper-trading.md#news-blackouts-and-holding-restrictions-f17-f59).
+
+Custom backtests preserve combined F6/F17/F59 rules alongside F31/F58/F62 and
+F15/F60 in daily and attempt journals, including the frozen holding calendar.
+Scheduled closes share one planner: flat time acts first on same-transaction ties,
+and a pending close from an earlier trigger keeps its label without duplication.
+At rollover, `OVERNIGHT_HOLD` precedes `HOLD_RESTRICTED`. See
+[combined rule semantics](paper-trading.md#news-blackouts-and-holding-restrictions-f17-f59).

@@ -365,3 +365,8 @@ NEWS_BLACKOUT HTTP evidence contains UTC actual/limit strings; HOLD_RESTRICTED h
 actual null, cutoff HH:MM limit, and scope `kind:underlying` or `kind:account`.
 The underlying summary's `expiries[].dividends[].ex_date` can be imported into
 saved ex_dividend events. See [paper trading](paper-trading.md#news-blackouts-and-holding-restrictions-f17-f59).
+
+Combined F6/F17/F59 rules round-trip together through create, reset and archived
+attempt rules. If multiple opening restrictions apply, `FLAT_TIME` is checked
+before calendar restrictions. `OVERNIGHT_HOLD` takes precedence over
+`HOLD_RESTRICTED` at rollover. See [combined rule semantics](paper-trading.md#news-blackouts-and-holding-restrictions-f17-f59).

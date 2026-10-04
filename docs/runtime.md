@@ -1493,3 +1493,9 @@ hold_cutoff when nondefault. Holding plans also journal their business-day calen
 Once-only calendar actions and crossed holding boundaries are journaled; recovery
 never rereads the server CSV. Off-default omission keeps old plans' journal bytes
 unchanged. Replay driver and scenario revisions are unchanged.
+
+Combined F6/F17/F59 plans record crossed holding boundaries before executions.
+At rollover, `OVERNIGHT_HOLD` precedes `HOLD_RESTRICTED` when both apply. Flat time
+acts before calendar closes in the same transaction; journaled pending system
+orders retain their labels and ownership of their legs after recovery. See
+[combined rule semantics](paper-trading.md#news-blackouts-and-holding-restrictions-f17-f59).
