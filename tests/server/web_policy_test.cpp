@@ -509,11 +509,15 @@ TEST_F(StaticFiles, TokenReloadRouteChecksAdminAndRevokesExistingWebSockets) {
     req.set(http::field::authorization, "Bearer reader-secret");
   }));
   ws.handshake("localhost", "/ws");
-  // A ping proves the server's accept handler has registered the socket in the hub.
+  // Wait for the pong: sending a ping alone can race the server's accept handler
+  // and drop the broadcast before the socket has been registered in the hub.
+  ws.control_callback([&](websocket::frame_type kind, beast::string_view) {
+    if (kind == websocket::frame_type::pong) web.broadcast("before");
+  });
   ws.ping({});
-  web.broadcast("before");
   beast::flat_buffer received;
   ws.read(received);
+  ws.control_callback({});
   EXPECT_EQ(beast::buffers_to_string(received.data()), "before");
   std::ofstream(path) << "owner admin owner-secret\n";
   EXPECT_EQ(call(http::verb::post, "/api/tokens/reload", "owner-secret").result_int(), 200U);
