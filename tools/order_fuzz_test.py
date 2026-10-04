@@ -20,6 +20,7 @@ CALL = "SPY   260916C00590000"
 PUT = "SPY   260916P00590000"
 NOW = "2026-09-16T13:30:00.000Z"
 END = "2026-09-16T20:15:00.000Z"
+MID = "2026-09-16T16:45:00.000Z"
 
 
 def state():
@@ -130,6 +131,57 @@ def scripted_run(api, repeat=False, commands=None, **kwargs):
     with patch.object(fuzz.Generator, "draw", side_effect=commands) as draw, patch.object(fuzz.time, "sleep"):
         result = fuzz.fuzz(api, ops=len(commands), repeat=repeat, out=lambda *x: None, **kwargs)
     return result, draw
+
+
+class RestartAPI(ScriptAPI):
+    """Complete source tape, two transactions at T, and a rebuilding restart."""
+    def __init__(self, directory, damage=None, **kwargs):
+        super().__init__(**kwargs)
+        self.directory, self.damage = Path(directory), damage
+        self.rebuilding = False
+        self.lines = [json.dumps(dict(seq=i, time=fuzz.market_ns(t), hash=f"hash-{i}", payload={})).encode() + b"\n"
+                      for i, t in enumerate((NOW, MID, MID, END), 1)]
+
+    def entry(self, run):
+        entry = super().entry(run)
+        raw = (self.directory / f"run-{run}.jsonl").read_bytes()
+        lines = raw.splitlines()
+        entry["journal"] = dict(head=json.loads(lines[-1])["hash"], transactions=len(lines), bytes=len(raw))
+        entry["journal_found"] = entry["journal"].copy()
+        return entry
+
+    def call(self, method, path, body=None):
+        status, response = super().call(method, path, body)
+        if path == fuzz.PREFIX:
+            if method == "POST":
+                raw = b"".join(self.lines)
+                if "restart" in body:
+                    self.current["portfolio"]["time"] = body["at"]
+                    raw = b"".join(self.lines[:3])
+                    if self.damage == "missing_boundary":
+                        raw = b"".join(self.lines[:2])
+                    elif self.damage == "extra":
+                        raw += self.lines[3]
+                    elif self.damage == "bytes":
+                        raw = raw.replace(b'"payload": {}', b'"payload": []')
+                    elif self.damage == "source":
+                        source = self.directory / (body["restart"] + ".jsonl")
+                        source.write_bytes(source.read_bytes().replace(b'"payload": {}', b'"payload": []'))
+                    self.rebuilding = True
+                (self.directory / f"run-{self.run}.jsonl").write_bytes(raw)
+            if method == "PUT" and "until" in body:
+                self.current["portfolio"]["time"] = body["until"]
+            if method != "DELETE":
+                response["replay"].update(time=self.current["portfolio"]["time"],
+                                           settled_through=self.current["portfolio"]["time"],
+                                           fast_forwarding=self.rebuilding)
+                self.rebuilding = False
+        return status, response
+
+
+RESTART_COMMANDS = [fuzz.operation("advance", "PUT", "", dict(until=MID)),
+                    fuzz.operation("cancel", "DELETE", "/orders/17"),
+                    fuzz.operation("advance", "PUT", "", dict(until=END))]
 
 
 class InvariantTest(unittest.TestCase):
@@ -267,6 +319,122 @@ class FlowTest(unittest.TestCase):
         self.assertEqual(counts["orders"], {"system": 2})
         self.assertEqual(counts["playbook"]["fills"], 1)
         self.assertEqual(counts["playbook"]["time_stop_orders"], 1)
+
+    def test_restart_prefix_repeat_and_both_verifiers(self):
+        with tempfile.TemporaryDirectory() as directory:
+            api = RestartAPI(directory)
+            with patch.object(fuzz.subprocess, "run", return_value=subprocess.CompletedProcess([], 0, "passed", "")) as cli:
+                result, draw = scripted_run(api, repeat=True, restart=True, playbook=True, binary="openportd",
+                                            directory=directory, commands=RESTART_COMMANDS)
+            self.assertEqual(result["exit_status"], 0, result)
+            self.assertEqual(draw.call_count, 3)
+            self.assertEqual(api.started[1], dict(restart="run-1", at=MID))
+            self.assertEqual(result["restart"]["prefix"]["transactions"], 3)
+            self.assertEqual(result["restart"]["files"], "identical_prefix")
+            self.assertEqual(result["restart"]["settled_through"], MID)
+            self.assertEqual(result["restart"]["verification"]["status"], "passed")
+            self.assertEqual(result["restart"]["cli_verification"]["status"], "passed")
+            self.assertEqual(cli.call_count, 3)
+            self.assertIn(str(Path(directory, "run-2.jsonl").resolve()), cli.call_args_list[1].args[0])
+            # Restart replays the saved mode; it must not issue an extra mode write.
+            self.assertEqual(len([c for c in api.calls if c[1].endswith("/mode")]), 2)
+            self.assertEqual(result["runs"][1]["run_id"], "run-3")
+
+    def test_restart_detects_cut_errors_changed_bytes_and_source_mutation(self):
+        for damage in ("missing_boundary", "extra", "bytes", "source"):
+            with self.subTest(damage=damage), tempfile.TemporaryDirectory() as directory:
+                api = RestartAPI(directory, damage)
+                with patch.object(fuzz.subprocess, "run", return_value=subprocess.CompletedProcess([], 0, "", "")):
+                    result, _ = scripted_run(api, restart=True, binary="openportd", directory=directory, commands=RESTART_COMMANDS)
+                self.assertEqual(result["exit_status"], 1)
+                self.assertEqual(result["restart"]["status"], "failed")
+                checks = {f["check"] for f in result["restart"]["failures"]}
+                self.assertIn("restart_source_changed" if damage == "source" else "restart_prefix", checks)
+
+    def test_restart_verifier_failures_are_campaign_failures(self):
+        for http_status, cli_status, check in (("failed", 0, "verification"), ("passed", 1, "cli_verification")):
+            class RestartVerifyFailure(RestartAPI):
+                def call(self, method, path, body=None):
+                    status, response = super().call(method, path, body)
+                    if self.run == 2 and method == "GET" and path.endswith("/verify") and response["status"] == "passed":
+                        response["status"] = http_status
+                    return status, response
+            with tempfile.TemporaryDirectory() as directory:
+                api = RestartVerifyFailure(directory)
+                with patch.object(fuzz.subprocess, "run", side_effect=[subprocess.CompletedProcess([], code, "", "") for code in (0, cli_status)]):
+                    result, _ = scripted_run(api, restart=True, binary="openportd", directory=directory, commands=RESTART_COMMANDS)
+                self.assertEqual(result["exit_status"], 1)
+                self.assertFalse(result["runs"][0]["failures"])
+                self.assertIn(check, [f["check"] for f in result["restart"]["failures"]])
+
+    def test_uncertain_restart_still_stops(self):
+        class LostRestart(RestartAPI):
+            def call(self, method, path, body=None):
+                response = super().call(method, path, body)
+                if path == fuzz.PREFIX and method == "POST" and "restart" in body:
+                    raise fuzz.FuzzError("lost response")
+                return response
+        with tempfile.TemporaryDirectory() as directory:
+            api = LostRestart(directory)
+            with patch.object(fuzz.subprocess, "run", return_value=subprocess.CompletedProcess([], 0, "", "")):
+                result, _ = scripted_run(api, restart=True, binary="openportd", directory=directory, commands=RESTART_COMMANDS)
+            self.assertEqual(result["exit_status"], 1)
+            self.assertEqual(api.calls[-1][:2], ("DELETE", fuzz.PREFIX))
+
+    def test_restart_requires_local_verifier_and_directory_before_start(self):
+        for kwargs in ({}, {"binary": "openportd"}, {"directory": "/tmp/replays"}):
+            api = ScriptAPI()
+            result, _ = scripted_run(api, restart=True, **kwargs)
+            self.assertEqual(result["exit_status"], 1)
+            self.assertFalse(api.calls)
+
+    def test_restart_cli_flags_and_missing_dependency(self):
+        stdout, stderr = io.StringIO(), io.StringIO()
+        with tempfile.TemporaryDirectory() as directory:
+            api = RestartAPI(directory)
+            with patch.object(fuzz, "Client", return_value=api), patch.object(fuzz.Generator, "draw", side_effect=RESTART_COMMANDS), \
+                    patch.object(fuzz.subprocess, "run", return_value=subprocess.CompletedProcess([], 0, "", "")), \
+                    patch.object(fuzz.time, "sleep"), redirect_stdout(stdout), redirect_stderr(stderr):
+                status = fuzz.main([api.base, "--ops", "3", "--repeat", "--playbook", "--restart-check",
+                                    "--openportd", "openportd", "--replays-dir", directory, "--json", "-"])
+            self.assertEqual(status, 0)
+            report = json.loads(stdout.getvalue())
+            self.assertEqual(report["restart"]["status"], "passed")
+            self.assertEqual(report["determinism"]["status"], "passed")
+        with redirect_stderr(stderr), self.assertRaises(SystemExit) as error:
+            fuzz.main([api.base, "--restart-check"])
+        self.assertEqual(error.exception.code, 2)
+        self.assertIn("requires --openportd and --replays-dir", stderr.getvalue())
+
+    def test_restart_requires_paused_settlement_and_interior_time(self):
+        with patch.object(fuzz.time, "monotonic", side_effect=[0, 2]):
+            with self.assertRaisesRegex(fuzz.FuzzError, "timed out"):
+                fuzz.wait_paused(ScriptAPI(), dict(fast_forwarding=True), timeout=1)
+        with self.assertRaisesRegex(fuzz.FuzzError, "settle paused"):
+            fuzz.wait_paused(ScriptAPI(), dict(time=MID, paused=False), MID)
+        with self.assertRaisesRegex(fuzz.FuzzError, "settle through"):
+            fuzz.wait_paused(ScriptAPI(), dict(time=MID, settled_through=NOW, paused=True), MID)
+        with self.assertRaisesRegex(fuzz.FuzzError, "strictly inside"):
+            fuzz.restart_time(dict(start_market_time=NOW, end_market_time=END, commands=[dict(market_time=NOW)]))
+
+    def test_inclusive_nanosecond_cut_and_market_midpoint(self):
+        t = "2026-09-16T16:45:00.000000001Z"
+        self.assertEqual(fuzz.market_ns(t) - fuzz.market_ns(MID), 1)
+        self.assertEqual(fuzz.market_ns("2026-09-16T12:45:00.000000001-04:00"), fuzz.market_ns(t))
+        source = dict(start_market_time=NOW, end_market_time=END,
+                      commands=[dict(market_time=NOW)] * 30 + [dict(market_time=MID), dict(market_time=END)])
+        self.assertEqual(fuzz.restart_time(source), MID)  # Market midpoint, not command index.
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory, "source.jsonl")
+            records = [dict(seq=i, time=fuzz.market_ns(MID) + n, hash=str(i)) for i, n in enumerate((0, 1, 1, 2), 1)]
+            lines = [json.dumps(r).encode() + b"\n" for r in records]
+            path.write_bytes(b"".join(lines))
+            prefix = fuzz.journal_prefix(path, t)
+            self.assertEqual(prefix["transactions"], 3)
+            self.assertEqual(prefix["bytes"], sum(map(len, lines[:3])))
+            path.write_bytes(b"".join(lines)[:-1])
+            with self.assertRaises(fuzz.FuzzError):
+                fuzz.journal_prefix(path, t)
 
     def test_refusals_repeat_exact_tape_and_pause(self):
         api = ScriptAPI()

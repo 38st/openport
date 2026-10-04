@@ -1,7 +1,8 @@
 #!/usr/bin/env python3
 """Random orders and exact accounting checks on an isolated, paused replay.
 
-    tools/order_fuzz.py URL --scenario hold-overnight --ops 200 --repeat --playbook
+    tools/order_fuzz.py URL --scenario hold-overnight --ops 200 --repeat \
+        --playbook --restart-check --openportd build/apps/openportd --replays-dir DIR
 
 Replaces any existing replay. Never trades the live account. --seed selects the
 market (default 81723); --fuzz-seed selects commands (default 1). JSON includes the
@@ -28,17 +29,20 @@ verification or byte comparison. Verification never repairs or compacts a journa
 
 --playbook creates one live catalogue definition (left off on live accounts), then
 enables the same version in auto on each replay. Tagged orders and their fills are
-counted by actor; no automatic fills is a coverage failure.
+counted by actor; no automatic fills is a coverage failure. --restart-check needs
+--openportd and --replays-dir and checks an inclusive, mid-run journal prefix.
 """
 import argparse
 from collections import Counter
 import copy
-from datetime import datetime
+from datetime import datetime, timezone
 from decimal import Decimal, InvalidOperation, ROUND_HALF_UP
 import http.client
+import hashlib
 import json
 from pathlib import Path
 import random
+import re
 import subprocess
 import sys
 import time
@@ -239,6 +243,16 @@ def grid_price(underlying, price):
 
 def epoch(value):
     return datetime.fromisoformat(value.replace("Z", "+00:00")).timestamp()
+
+
+def market_ns(value):
+    """Journal timestamps are nanoseconds; do not round the inclusive cut via float."""
+    match = re.fullmatch(r"(.*T\d{2}:\d{2}:\d{2})(?:\.(\d{1,9}))?(Z|[+-]\d{2}:\d{2})", value)
+    if not match:
+        raise FuzzError(f"expected a zoned market timestamp: {value}")
+    whole, fraction, zone = match.groups()
+    delta = datetime.fromisoformat(whole + zone.replace("Z", "+00:00")) - datetime(1970, 1, 1, tzinfo=timezone.utc)
+    return (delta.days * 86400 + delta.seconds) * 10 ** 9 + int((fraction or "").ljust(9, "0"))
 
 
 def create_playbook(client):
@@ -455,6 +469,140 @@ def verify(client, run_id, timeout=3600, pause=.2):
         time.sleep(pause)
 
 
+def wait_paused(client, replay, at=None, timeout=3600):
+    deadline = time.monotonic() + timeout
+    while replay and (replay.get("fast_forwarding") or replay.get("stepping") or not replay.get("time")):
+        if time.monotonic() >= deadline:
+            raise FuzzError("replay preparation timed out")
+        time.sleep(.1)
+        replay = get(client, PREFIX)["replay"]
+    if not replay or not replay["paused"]:
+        raise FuzzError("replay did not settle paused")
+    if at and market_ns(replay.get("settled_through") or replay["time"]) != market_ns(at):
+        raise FuzzError(f"restart did not settle through {at}: {replay}")
+    return replay
+
+
+def verify_saved(client, result, binary, directory, failure, out):
+    run_id = result["run_id"]
+    try:
+        history = get(client, PREFIX + "/history")["history"]
+        entry = next((r for r in history if r["id"] == run_id), None)
+        if entry is None:
+            raise FuzzError(f"run {run_id} missing from history")
+        result["history"] = entry
+        try:
+            check_history(entry)
+        except FuzzError as exc:
+            failure("journal_integrity", message=str(exc))
+        out("verifying", run_id, "via HTTP")
+        result["verification"] = verify(client, run_id)
+        if result["verification"]["status"] != "passed":
+            failure("verification", result=result["verification"])
+        if binary:
+            path = journal_path(entry, directory)
+            out("verifying", run_id, "via --verify-run", path)
+            process = subprocess.run([str(binary), "--verify-run", str(path.resolve())],
+                                     capture_output=True, text=True, timeout=3600, check=False)
+            result["cli_verification"] = dict(status="passed" if process.returncode == 0 else "failed",
+                                              returncode=process.returncode, journal=str(path),
+                                              stdout=process.stdout, stderr=process.stderr)
+            if process.returncode:
+                failure("cli_verification", result=result["cli_verification"])
+    except (FuzzError, OSError, ValueError, KeyError, subprocess.TimeoutExpired) as exc:
+        failure("verification", message=str(exc))
+
+
+def restart_time(source):
+    start, end = market_ns(source["start_market_time"]), market_ns(source["end_market_time"])
+    candidates = {op["market_time"] for op in source["commands"] if start < market_ns(op["market_time"]) < end}
+    if not candidates:
+        raise FuzzError("restart needs a recorded command time strictly inside the run")
+    return min(candidates, key=lambda t: (abs(2 * market_ns(t) - start - end), market_ns(t)))
+
+
+def journal_prefix(path, at):
+    """Locate the end of the LAST transaction <= T, retaining exact file bytes."""
+    target, offset, previous, count = market_ns(at), 0, -1, 0
+    digest, prefix = hashlib.sha256(), None
+    with open(path, "rb") as stream:
+        for line in stream:
+            digest.update(line)
+            record = json.loads(line)
+            count += 1
+            timestamp = record["time"]
+            if (not line.endswith(b"\n") or type(timestamp) is not int or timestamp < previous
+                    or record["seq"] != count):
+                raise FuzzError("invalid source journal sequence, time or incomplete record")
+            previous = timestamp
+            offset += len(line)
+            if timestamp <= target:
+                prefix = dict(bytes=offset, transactions=count, head=record["hash"], last_time_ns=timestamp)
+    if prefix is None:
+        raise FuzzError("source journal has no transaction at or before restart time")
+    return dict(prefix, source_sha256=digest.hexdigest(), source_bytes=offset)
+
+
+def identical_prefix(source, restarted, length):
+    with open(source, "rb") as a, open(restarted, "rb") as b:
+        while length:
+            chunk = a.read(min(length, 1024 * 1024))
+            if not chunk or chunk != b.read(len(chunk)):
+                return False
+            length -= len(chunk)
+        return not b.read(1)  # An extra transaction is also a mismatch.
+
+
+def restart_check(client, source, binary, directory, out=print):
+    result = dict(status="failed", failures=[], verification={"status": "not_run"},
+                  cli_verification={"status": "not_run"})
+    attempted = False
+
+    def failure(check, **values):
+        item = dict(check=check, **values)
+        result["failures"].append(item)
+        out("FAIL restart", dumps(item).strip())
+
+    try:
+        if not binary or not directory:
+            raise FuzzError("--restart-check requires --openportd and --replays-dir")
+        at = restart_time(source)
+        source_path = journal_path(source["history"], directory)
+        prefix = journal_prefix(source_path, at)
+        result.update(source_run_id=source["run_id"], at=at, prefix=prefix)
+        out("restarting", source["run_id"], "at", at, "prefix transactions", prefix["transactions"])
+        attempted = True
+        replay = request(client, "POST", PREFIX, dict(restart=source["run_id"], at=at))[1]["replay"]
+        result["run_id"] = replay["id"]
+        if replay["id"] == source["run_id"]:
+            raise FuzzError("restart reused source run ID")
+        replay = wait_paused(client, replay, at)
+        result["settled_through"] = replay.get("settled_through") or replay["time"]
+    except (FuzzError, KeyError, TypeError, ValueError, OSError) as exc:
+        failure("restart", message=str(exc))
+    finally:
+        if attempted:
+            try:
+                request(client, "DELETE", PREFIX)
+            except (FuzzError, OSError) as exc:
+                failure("stop", message=str(exc))
+    if "run_id" in result:
+        verify_saved(client, result, binary, directory, failure, out)
+        try:
+            current = journal_prefix(source_path, at)
+            if current != prefix:
+                failure("restart_source_changed", before=prefix, after=current)
+            entry = result["history"]
+            equal = identical_prefix(source_path, journal_path(entry, directory), prefix["bytes"])
+            result["files"] = "identical_prefix" if equal else "different"
+            if not equal or entry["journal"] != {k: prefix[k] for k in ("head", "bytes", "transactions")}:
+                failure("restart_prefix", expected=prefix, actual=entry["journal"])
+        except (FuzzError, KeyError, TypeError, ValueError, OSError) as exc:
+            failure("restart_prefix", message=str(exc))
+    result["status"] = "failed" if result["failures"] else "passed"
+    return result
+
+
 def identical_journals(first, second):
     """Read every byte; stat-based caches must not hide a changed journal."""
     with open(first, "rb") as a, open(second, "rb") as b:
@@ -506,14 +654,7 @@ def run_once(client, start, ops, fuzz_seed, tape=None, binary=None, directory=No
         replay = request(client, "POST", PREFIX, start)[1]["replay"]
         run_id = replay["id"]
         result.update(run_id=run_id, scenario=replay["scenario"], seed=replay["seed"], plan=replay["plan"])
-        deadline = time.monotonic() + 3600
-        while replay.get("fast_forwarding") or not replay.get("time"):
-            if time.monotonic() >= deadline:
-                raise FuzzError("replay preparation timed out")
-            time.sleep(.1)
-            replay = get(client, PREFIX)["replay"]
-        if not replay["paused"]:
-            raise FuzzError("replay did not start paused")
+        replay = wait_paused(client, replay)
         if playbook:
             identifier = playbook["id"]
             enabled = request(client, "PUT", PREFIX + f"/playbooks/{identifier}/mode", {"mode": "auto"})[1]
@@ -573,41 +714,18 @@ def run_once(client, start, ops, fuzz_seed, tape=None, binary=None, directory=No
                 failure("stop", message=str(exc))
     if run_id:
         op = None
-        try:
-            history = get(client, PREFIX + "/history")["history"]
-            entry = next((r for r in history if r["id"] == run_id), None)
-            if entry is None:
-                raise FuzzError(f"run {run_id} missing from history")
-            result["history"] = entry
-            try:
-                check_history(entry)
-            except FuzzError as exc:
-                failure("journal_integrity", message=str(exc))
-            out("verifying", run_id, "via HTTP")
-            result["verification"] = verify(client, run_id)
-            if result["verification"]["status"] != "passed":
-                failure("verification", result=result["verification"])
-            if binary:
-                path = journal_path(entry, directory)
-                out("verifying", run_id, "via --verify-run", path)
-                process = subprocess.run([str(binary), "--verify-run", str(path.resolve())],
-                                         capture_output=True, text=True, timeout=3600, check=False)
-                result["cli_verification"] = dict(status="passed" if process.returncode == 0 else "failed",
-                                                  returncode=process.returncode, journal=str(path),
-                                                  stdout=process.stdout, stderr=process.stderr)
-                if process.returncode:
-                    failure("cli_verification", result=result["cli_verification"])
-        except (FuzzError, OSError, ValueError, KeyError, subprocess.TimeoutExpired) as exc:
-            failure("verification", message=str(exc))
+        verify_saved(client, result, binary, directory, failure, out)
     return result
 
 
 def fuzz(client, scenario="reversal", seed=81723, ops=300, fuzz_seed=1, plan="practice", repeat=False,
-         binary=None, directory=None, out=print, playbook=False):
+         binary=None, directory=None, out=print, playbook=False, restart=False):
     start = dict(scenario=scenario, seed=str(seed), plan=plan, paused=True)
     result = dict(url=client.base, scenario=scenario, seed=str(seed), fuzz_seed=fuzz_seed, ops=ops, plan=plan,
-                  runs=[], determinism={"status": "not_requested"})
+                  runs=[], determinism={"status": "not_requested"}, restart={"status": "not_requested"})
     try:
+        if restart and (not binary or not directory):
+            raise FuzzError("--restart-check requires --openportd and --replays-dir")
         definition = create_playbook(client) if playbook else None
         if definition:
             result["playbook"] = dict(definition=definition, mode="auto")
@@ -617,6 +735,8 @@ def fuzz(client, scenario="reversal", seed=81723, ops=300, fuzz_seed=1, plan="pr
         return result
     first = run_once(client, start, ops, fuzz_seed, binary=binary, directory=directory, out=out, playbook=definition)
     result["runs"].append(first)
+    if restart:
+        result["restart"] = restart_check(client, first, binary, directory, out)
     if repeat:
         result["determinism"] = {"status": "failed", "message": "first run did not complete the command tape"}
         if len(first["commands"]) == ops and "history" in first:
@@ -627,7 +747,8 @@ def fuzz(client, scenario="reversal", seed=81723, ops=300, fuzz_seed=1, plan="pr
                 result["determinism"] = compare_runs(result["runs"], directory)
             except (FuzzError, OSError, KeyError) as exc:
                 result["determinism"] = dict(status="failed", message=str(exc))
-    result["exit_status"] = int(any(r["failures"] for r in result["runs"]) or result["determinism"]["status"] == "failed")
+    result["exit_status"] = int(any(r["failures"] for r in result["runs"]) or result["determinism"]["status"] == "failed"
+                                or result["restart"]["status"] == "failed")
     return result
 
 
@@ -641,6 +762,7 @@ def main(argv=None):
     parser.add_argument("--plan", default="practice")
     parser.add_argument("--repeat", action="store_true")
     parser.add_argument("--playbook", action="store_true", help="create a one-unit SPX time-window spread and enable replay auto")
+    parser.add_argument("--restart-check", action="store_true", help="restart at a recorded mid-run time; require exact prefix and both verifiers")
     parser.add_argument("--token")
     parser.add_argument("--json", metavar="PATH", help="sorted JSON summary; - writes stdout")
     parser.add_argument("--openportd", metavar="BIN")
@@ -648,9 +770,11 @@ def main(argv=None):
     args = parser.parse_args(argv)
     if args.ops < 1 or not 0 <= args.seed < 2 ** 64:
         parser.error("--ops must be positive and --seed must fit uint64")
+    if args.restart_check and (not args.openportd or not args.replays_dir):
+        parser.error("--restart-check requires --openportd and --replays-dir")
     out = lambda *parts: print(*parts, file=sys.stderr if args.json == "-" else sys.stdout, flush=True)
     result = fuzz(Client(args.url, args.token), args.scenario, args.seed, args.ops, args.fuzz_seed, args.plan,
-                  args.repeat, args.openportd, args.replays_dir, out, args.playbook)
+                  args.repeat, args.openportd, args.replays_dir, out, args.playbook, args.restart_check)
     for run in result["runs"]:
         out("run", run.get("run_id"), "operations", dict(run["operations"]), "refusals", dict(run["refusals"]),
             "preview refusals", dict(run["preview_refusals"]),
@@ -658,6 +782,8 @@ def main(argv=None):
             "actors", run.get("actors", {}),
             "verify", run["verification"]["status"], "CLI", run["cli_verification"]["status"])
     out("determinism", result["determinism"], "exit", result["exit_status"])
+    if args.restart_check:
+        out("restart", result["restart"])
     if args.json:
         try:
             if args.json == "-":
