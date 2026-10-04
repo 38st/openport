@@ -804,6 +804,12 @@ ReplayHost::~ReplayHost() {
   for (auto& job : left) job.complete(api_error(503, "ENGINE_STOPPING", "The replay host is stopping"));
   try { stop(); }
   catch (const std::exception& error) { std::fprintf(stderr, "Replay shutdown: %s\n", error.what()); }
+  try {
+    const std::lock_guard control_lock(control_mutex_);
+    stop_verifier();
+  } catch (const std::exception& error) {
+    std::fprintf(stderr, "Replay verifier shutdown: %s\n", error.what());
+  }
 }
 
 void ReplayHost::enqueue(const ApiRequest& request, const ApiCompletion& complete) {
