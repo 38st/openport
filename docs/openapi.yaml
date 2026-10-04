@@ -800,7 +800,7 @@
       },
       "post": {
         "summary": "POST /api/accounts",
-        "description": "Requires admin. 409 ACCOUNTS_UNSUPPORTED on a server that keeps a single account (no accounts directory, or a replay).",
+        "description": "Requires admin. Custom funded rules are refused; a funded account starts from an account that passed its evaluation. 409 ACCOUNTS_UNSUPPORTED on a server that keeps a single account (no accounts directory, or a replay).",
         "x-scope": "admin",
         "responses": {
           "201": {
@@ -12068,7 +12068,8 @@
               }
             ]
           }
-        ]
+        ],
+        "description": "Starts a new attempt from a preset plan or custom rules. Custom funded reset rules are accepted when they include payouts; preset funded steps still require the matching passed prerequisite."
       },
       "Side": {
         "anyOf": [
@@ -14857,7 +14858,8 @@
               }
             ]
           }
-        ]
+        ],
+        "description": "Creates a named live account from a preset plan or custom evaluation/verification rules. Custom funded rules are refused because a funded account starts from an account that passed its evaluation."
       },
       "CreateAccountResponse": {
         "type": "object",
@@ -16561,7 +16563,7 @@
                   "string",
                   "null"
                 ],
-                "description": "Numeric for existing checks. NEWS_BLACKOUT: ISO UTC actual time/window end. HOLD_RESTRICTED: actual null, limit HH:MM ET, scope kind:underlying or kind:account."
+                "description": "Numeric for existing checks. MAX_VOLUME_SHARE: actual is held plus opening contracts; limit is percent * volume / 100 unrounded and may be fractional, null without usable volume. NEWS_BLACKOUT: ISO UTC actual time/window end. HOLD_RESTRICTED: actual null, limit HH:MM ET, scope kind:underlying or kind:account."
               },
               "limit": {
                 "type": [
@@ -16569,7 +16571,7 @@
                   "string",
                   "null"
                 ],
-                "description": "Numeric for existing checks. NEWS_BLACKOUT: ISO UTC actual time/window end. HOLD_RESTRICTED: actual null, limit HH:MM ET, scope kind:underlying or kind:account."
+                "description": "Numeric for existing checks. MAX_VOLUME_SHARE: actual is held plus opening contracts; limit is percent * volume / 100 unrounded and may be fractional, null without usable volume. NEWS_BLACKOUT: ISO UTC actual time/window end. HOLD_RESTRICTED: actual null, limit HH:MM ET, scope kind:underlying or kind:account."
               },
               "scope": {
                 "anyOf": [
@@ -18548,7 +18550,7 @@
                     },
                     "required": [],
                     "additionalProperties": false,
-                    "description": "Unspecified rules use AccountRules defaults; expiry_cutoff is nanoseconds. Custom evaluation and verification rules require a positive target. Custom funded rules require payouts and can enable size_scaling; they do not withdraw automatically. Locked verification and funded preset IDs remain refused. Program fees are decimal-string bookkeeping costs, independent of paper balances.",
+                    "description": "Unspecified rules use AccountRules defaults; expiry_cutoff is nanoseconds. Custom evaluation and verification rules require a positive target. Custom funded reset and backtest rules require payouts and can enable size_scaling; they do not withdraw automatically. Account creation refuses custom funded rules because a funded account starts from an account that passed its evaluation. Locked verification and funded preset IDs remain refused. Program fees are decimal-string bookkeeping costs, independent of paper balances.",
                     "allOf": [
                       {
                         "if": {
@@ -20363,7 +20365,7 @@
               "string",
               "null"
             ],
-            "description": "Numeric for existing checks. NEWS_BLACKOUT: ISO UTC actual time/window end. HOLD_RESTRICTED: actual null, limit HH:MM ET, scope kind:underlying or kind:account."
+            "description": "Numeric for existing checks. MAX_VOLUME_SHARE: actual is held plus opening contracts; limit is percent * volume / 100 unrounded and may be fractional, null without usable volume. NEWS_BLACKOUT: ISO UTC actual time/window end. HOLD_RESTRICTED: actual null, limit HH:MM ET, scope kind:underlying or kind:account."
           },
           "limit": {
             "type": [
@@ -20371,7 +20373,7 @@
               "string",
               "null"
             ],
-            "description": "Numeric for existing checks. NEWS_BLACKOUT: ISO UTC actual time/window end. HOLD_RESTRICTED: actual null, limit HH:MM ET, scope kind:underlying or kind:account."
+            "description": "Numeric for existing checks. MAX_VOLUME_SHARE: actual is held plus opening contracts; limit is percent * volume / 100 unrounded and may be fractional, null without usable volume. NEWS_BLACKOUT: ISO UTC actual time/window end. HOLD_RESTRICTED: actual null, limit HH:MM ET, scope kind:underlying or kind:account."
           },
           "scope": {
             "anyOf": [

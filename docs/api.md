@@ -105,7 +105,7 @@ remain allowed. There is no grace period. The appended `funded-scaling-50k` pres
 requires a passed `intraday-50k` evaluation, like the other funded preset gates.
 See [Scaling plan](paper-trading.md#funded-accounts-and-payouts).
 
-Custom funded account/reset and backtest rules accept nullable `size_scaling`:
+Custom funded reset and backtest rules accept nullable `size_scaling`:
 `{profit_percent, payouts, days, increase_percent, max_balance}`. Counts are whole
 numbers: profit/increase 1–100, payouts 0–100, days 1–366; maximum balance is a
 money string at least the starting balance. Evaluation-phase use or invalid ranges
@@ -114,7 +114,9 @@ null. Every completed review restarts; qualifying active accounts receive linear
 capital growth from the original balance. `evaluation.size_scaling` exposes size,
 original/max/next size, review start/day count, net profit and payouts versus
 requirements, and `{day, old, size}` history (schemas `SizeScaling`,
-`SizeScalingStatus`). Withdrawals are added back to review profit; growth is not P&L.
+`SizeScalingStatus`). Account creation refuses custom funded rules: a funded account
+starts from an account that passed its evaluation. Withdrawals are added back to
+review profit; growth is not P&L.
 
 The web terminal uses these routes, so anything it does can be scripted:
 
@@ -152,7 +154,7 @@ The web terminal uses these routes, so anything it does can be scripted:
 | `GET /api/plans`, `POST /api/account/reset` | The plans, and a new attempt; optional `fill_model` selects `as_displayed`, `conservative` or `midpoint`, and optional `margin`, `account_type` (`margin`, `cash`, `ira`), `house_margin_percent` and `pm_vol_shock` set the account's margin |
 | `POST /api/sandboxes` | Create a private demo practice account and return its token once; unauthenticated when enabled, 404 when off, 429 at capacity or a creation rate limit |
 | `PATCH /api/accounts/{id}`, `DELETE /api/accounts/{id}` | Admin: rename/archive/unarchive or delete named live accounts; archived accounts are readable but frozen, `GET /api/accounts?archived=true` includes them; deletion retains files and reserves the ID |
-| `GET /api/accounts`, `POST /api/accounts` | List the accounts or create one (`plan_id` accompanies each plan name; null for custom rules), with optional `copy_settings_from` (active limits and guardrails), `fill_model` and margin settings as for a reset; account routes take `?account=ID`; sandbox tokens default to their own account, other credentials to main |
+| `GET /api/accounts`, `POST /api/accounts` | List the accounts or create one (`plan_id` accompanies each plan name; null for custom evaluation/verification rules; custom funded rules are refused), with optional `copy_settings_from` (active limits and guardrails), `fill_model` and margin settings as for a reset; account routes take `?account=ID`; sandbox tokens default to their own account, other credentials to main |
 | `GET`, `POST`, `PUT`, `DELETE /api/replay` | List recordings, scenarios and run history; start `{file}` or `{scenario}` (`demo` also accepted), with `plan`, `speed`, `start_at`, `paused` and scenario `seed`/`date`, or continue an interrupted saved run with `{resume}`; control or stop. `/api/replay/X` mirrors `/api/X`; replay scope also permits reset, limits, guardrails and kill on the isolated account |
 | `PUT /api/replay {"until":"HH:MM[:SS]"}` | Advance through a New York session time (in a scenario of several sessions, its next occurrence at or after the replay's time), or a date and time such as `2026-09-17T10:30` (New York unless zoned), then pause; responds after analytics and trading settle, with `settled_through`. Meanwhile `stepping` is true and replay writes return `REPLAY_STEPPING`; a target past the recording's end returns 400 and plays nothing |
 | `PUT /api/replay {"until":"+15s"}` | Relative whole-second `+Ns`, `+Nm`, `+Nh`, or `next` for one complete snapshot/batch; past EOF is refused before moving |
@@ -351,7 +353,7 @@ Custom account/reset/backtest rules accept `min_hold_seconds` (0–3600) and the
 
 Custom plan rules also accept boolean `no_hedging` and `no_counter_positions` (default false). `HEDGING` is a reducer refusal; `COUNTER_POSITION` is a server refusal before order journaling. Both return HTTP 422, and previews return the same reason with structured direction `evidence` (underlying, order/held dollar delta, and other account ID for cross-account checks). Pure reductions are exempt. Only the ordering account’s cross-account setting counts; see [direction rules](paper-trading.md#direction-rules-f65).
 
-`max_volume_percent` is an optional whole percent 0–100 (0 disables) on custom account/reset/backtest rules. The server gate checks each option leg’s absolute held plus opening contracts against current-date volume, with exact integer arithmetic. Missing/stale volume refuses. `MAX_VOLUME_SHARE` returns HTTP 422 and `evidence: {contract, contracts, volume, percent}` (volume null if unknown); previews report the same reason. Backtests lacking volume, including generated scenarios, reject the enabled rule with HTTP 400. See [volume-share rule](paper-trading.md#volume-share-rule-f66).
+`max_volume_percent` is an optional whole percent 0–100 (0 disables) on custom account/reset/backtest rules. The server gate checks each option leg’s absolute held plus opening contracts against current-date volume, with exact integer arithmetic. Missing/stale volume refuses. `MAX_VOLUME_SHARE` returns HTTP 422 and `evidence: {contract, contracts, volume, percent}` (volume null if unknown); `actual` is held plus opening contracts and `limit` is `percent × volume / 100` unrounded, so it may be fractional. Previews report the same reason. Backtests lacking volume, including generated scenarios, reject the enabled rule with HTTP 400. See [volume-share rule](paper-trading.md#volume-share-rule-f66).
 
 ### Saved event calendars and opening restrictions (F17/F59)
 

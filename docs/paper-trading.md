@@ -3494,7 +3494,7 @@ focus at the top of the ticket.
 | `POST /api/account/payout` | Decimal-string `amount` in whole cents; returns the account view with the recorded payout |
 | `GET /api/accounts` | `accounts`: each account's `id`, `name`, `trading` status and `equity`, the main one first |
 | `PATCH /api/accounts/{id}`, `DELETE /api/accounts/{id}` | Admin: rename/archive/unarchive or delete a named account; see [accounts](#accounts) |
-| `POST /api/accounts` | `name` and a preset `plan`, or `initial_cash` and `rules`; 201 returns the new account's `id`, `name`, version, plan and equity (see [accounts](#accounts)) |
+| `POST /api/accounts` | `name` and a preset `plan`, or `initial_cash` and custom evaluation/verification `rules`; custom funded rules are refused because funded accounts start from an account that passed its evaluation. 201 returns the new account's `id`, `name`, version, plan and equity (see [accounts](#accounts)) |
 
 Sandbox tokens default to their own account on all account reads and writes when
 `account` is omitted. Explicit `?account=` is still checked and cannot select main
@@ -3898,8 +3898,10 @@ substitute for today's unknown volume.
 
 `MAX_VOLUME_SHARE` includes `evidence: {contract, contracts, volume, percent}`;
 `volume` is null when unknown/stale, `contracts` is held plus opening, and
-`contract` is canonical OSI. `actual` is that contract count, `limit` is the
-permitted count (null without usable volume), and HTTP `scope` is the underlying.
+`contract` is canonical OSI. `actual` is that contract count, `limit` is
+`percent × volume / 100` unrounded (null without usable volume), so it may be
+fractional; the order fits when held plus opening contracts are at most that value.
+HTTP `scope` is the underlying.
 The message includes these values for order and strategy tickets. Single-leg,
 multi-leg, modification and playbook paths and their previews share the gate.
 Acceptance checks today's observation; resting orders are not re-gated on later
