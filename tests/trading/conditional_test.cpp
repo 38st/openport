@@ -509,7 +509,7 @@ TEST(TradingConditional, AHeldContractTakesAStopAndTargetThatCancelEachOther) {
   const auto placed = s.submit(held_exits(f, "exits", 2, stop_at("3.50"), target_at("5.00")), f.time);
   ASSERT_TRUE(placed.decision.ok()) << placed.decision.message;
   EXPECT_TRUE(s.submit(held_exits(f, "exits", 2, stop_at("3.50"), target_at("5.00")), f.time).replayed);
-  const auto& target = order(s, *placed.order_id);
+  const auto target = order(s, *placed.order_id);
   EXPECT_EQ(target.role, OrderRole::TakeProfit);
   EXPECT_EQ(target.status, OrderStatus::Working);
   EXPECT_EQ(target.filled_quantity, 0);
