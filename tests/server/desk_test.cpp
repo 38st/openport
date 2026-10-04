@@ -141,6 +141,7 @@ TEST(Desk, RestingVolumeOrdersCancelOnZeroOrStaleVolumeOnlyWhenTheyCanFill) {
     test::RecordingFile file;
     test::ScriptedMarket market;
     server::Desk::Options options;
+    options.analytics.fallback_rate = 0;
     options.paper.rules.max_volume_percent = 10;
     options.paper_journal = file.directory / "volume.jsonl";
     server::Desk desk("test", {}, {{"SPX"}}, options);
@@ -150,7 +151,8 @@ TEST(Desk, RestingVolumeOrdersCancelOnZeroOrStaleVolumeOnlyWhenTheyCanFill) {
     desk.replay_batch(batch, market.time);
     server::TradingCommand entry;
     entry.order = market.limit("resting", 1, "4.00", trading::Side::Buy, trading::TimeInForce::Gtc);
-    ASSERT_TRUE(command(desk, entry, market.time, market.time).decision.ok());
+    const auto accepted = command(desk, entry, market.time, market.time);
+    ASSERT_TRUE(accepted.decision.ok()) << accepted.decision.message;
     if (stale) market.time = md::new_york_to_utc({2026, 9, 23}, 10, 0);
     else market.next();
     batch = market_batch(market);
@@ -177,6 +179,7 @@ TEST(Desk, CounterPositionsCountWorkingOpeningsAndCancelAtFillAfterAnotherAccoun
     test::RecordingFile file;
     test::ScriptedMarket market;
     server::Desk::Options options;
+    options.analytics.fallback_rate = 0;
     options.paper.rules.no_counter_positions = true;
     options.paper.limits.aggregate = {1e9, 1e9}; options.paper.limits.per_underlying = {1e9, 1e9};
     options.paper_journal = file.directory / "paper.jsonl";
@@ -191,7 +194,7 @@ TEST(Desk, CounterPositionsCountWorkingOpeningsAndCancelAtFillAfterAnotherAccoun
     server::TradingCommand entry;
     entry.account = "other"; entry.order = market.limit("working-long", 1, "4.00");
     const auto other = command(desk, entry, market.time, market.time);
-    ASSERT_TRUE(other.decision.ok());
+    ASSERT_TRUE(other.decision.ok()) << other.decision.message;
     EXPECT_TRUE(desk.trading_view("other")->snapshot->positions.empty());
     entry.order = market.limit("working-short", 1, "4.50", trading::Side::Sell);
     ASSERT_TRUE(command(desk, entry, market.time, market.time).decision.ok());
@@ -260,6 +263,7 @@ TEST(Desk, VolumeFillRechecksVerifyAndOlderRecordedRunsKeepAcceptanceOnlyFills) 
   for (const bool enabled : {false, true}) {
     md::RecordingReader reader(file.path);
     server::Desk::Options options;
+    options.analytics.fallback_rate = 0;
     options.replay = true; options.opening_rule_checks = enabled;
     options.paper.rules.max_volume_percent = 10;
     options.run_input = server::recording_input(file.path);
@@ -272,7 +276,8 @@ TEST(Desk, VolumeFillRechecksVerifyAndOlderRecordedRunsKeepAcceptanceOnlyFills) 
       desk.replay_batch(batch->events, batch->received, batch->time);
       if (!submitted) {
         server::TradingCommand entry; entry.order = market.limit("resting", 1, "4.00");
-        ASSERT_TRUE(command(desk, entry, desk.market_time(), batch->received).decision.ok());
+        const auto accepted = command(desk, entry, desk.market_time(), batch->received);
+        ASSERT_TRUE(accepted.decision.ok()) << accepted.decision.message;
         submitted = true;
       }
     }
