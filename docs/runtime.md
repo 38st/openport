@@ -136,6 +136,7 @@ Supported `openportd --option KEY=VALUE` keys:
 | tastytrade | `sandbox=false` only; `dxlink_time_unit=milliseconds` (default) or `unknown` |
 | Databento | `quotes=cbbo-1s` or `quotes=cmbp-1`, `trades=on` or `trades=off` |
 | Replay | `file=PATH` (required), `speed=1`, `10`, `60` or `max`, `loop=on` or `off` |
+| Demo | `days=ID,ID,...`, `speed=1`, `2`, `5`, `10`, `30`, `60`, `120` or `300` (default 1), `revision=1..5` (default 5) |
 
 Databento parent subscriptions stream the entire option chain upstream. Both
 CLIs reject nonzero `--expiries` or `--window` with that provider; those filters
@@ -850,17 +851,19 @@ in `--scenario-dir` remain available on Replay. `--option speed=N` accepts 1, 2,
 Without `--symbols`, the feed subscribes to SPX, SPY, QQQ, XSP, NDX, RUT and VIX. Other symbols and
 nonzero `--expiries` or `--window` are rejected.
 
-Revision 4 adds American ETF option prices and a simulated quarterly SPY/QQQ dividend
-calendar, with ex-date price drops and known payments included in option forwards.
-The [scenario rules](scenarios.md) define dates, amounts and precedence.
-`--option revision=3` retains the earlier European ETF prices and explicit session
-dividends only. Revision 3 adds those four indices to every selected demo day, without changing
-that built-in's Replay source or symbol list. `--option revision=2` retains the old
-three-symbol feed, generator output and twelve-day rotation; `revision=1` selects
-the original chain. Use the same revision and `days` options when resuming an older
-demo journal: live account journals do not record their feed configuration. Scenario
-replay journals record the revision and select it automatically for verification
-and recovery.
+Revision 5 is the default: regular event times and window endpoints scale into early
+closes, rounded down to minutes. Revision 4 adds American ETF option prices and a
+simulated quarterly SPY/QQQ dividend calendar, with ex-date price drops and known
+payments included in option forwards. The [scenario rules](scenarios.md) define
+dates, amounts and precedence. `--option revision=4` keeps that calendar without
+revision 5's regular-time scaling. `--option revision=3` retains the earlier
+European ETF prices and explicit session dividends only. Revision 3 adds those four
+indices to every selected demo day, without changing that built-in's Replay source
+or symbol list. `--option revision=2` retains the old three-symbol feed, generator
+output and twelve-day rotation; `revision=1` selects the original chain. Use the
+same revision and `days` options when resuming an older demo journal: live account
+journals do not record their feed configuration. Scenario replay journals record
+the revision and select it automatically for verification and recovery.
 
 The default first date is the last trading date before startup's New York date.
 Each next session uses the next trading date, skipping weekends and calendar holidays.

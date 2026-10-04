@@ -269,7 +269,8 @@ TEST(Cli, DaemonHelpGoesToStdoutAndExitsZero) {
     EXPECT_EQ(WEXITSTATUS(status), 0) << output;
     const auto usage = output.substr(0, output.find("\n\n"));
     for (const auto* expected : {"[--symbols SPX,SPY,QQQ,IWM,DIA]", "[--series-dir DIR] [--no-series]",
-                                 "--backfill-series FILE... [--force]", "demo: simulated regular sessions", "tradier tastytrade"})
+                                 "--backfill-series FILE... [--force]", "demo: simulated regular sessions",
+                                 "--option revision=1|2|3|4|5 (default 5)", "tradier tastytrade"})
       EXPECT_NE(output.find(expected), std::string::npos) << expected << '\n' << output;
     EXPECT_NE(usage.find("--no-series"), std::string::npos) << usage;
   }
