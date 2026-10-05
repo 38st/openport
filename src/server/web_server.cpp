@@ -635,6 +635,7 @@ void Hub::broadcast(const std::shared_ptr<const std::string>& message) {
 struct Shared {
   std::filesystem::path web_root;
   AsyncApiHandler api;
+  std::chrono::steady_clock::duration read_timeout;
   WritePolicy write_policy;
   Hub hub;
   WebSocketSlots slots;
@@ -674,7 +675,7 @@ class HttpSession : public Session, public std::enable_shared_from_this<HttpSess
     if (stopped_) return;
     parser_.emplace();
     parser_->body_limit(64 * 1024);
-    stream_.expires_after(std::chrono::seconds(60));
+    stream_.expires_after(shared_.read_timeout);
     http::async_read(stream_, buffer_, *parser_,
                      beast::bind_front_handler(&HttpSession::on_read, shared_from_this()));
   }
@@ -686,6 +687,8 @@ class HttpSession : public Session, public std::enable_shared_from_this<HttpSess
       return;
     }
     if (ec) return;
+    // Reading is complete. Engine work may take longer than the read budget.
+    stream_.expires_never();
     http::request<http::string_body> request = parser_->release();
 
     // Before anything is served: a DNS-rebinding page addresses the server by a name
@@ -869,6 +872,8 @@ class HttpSession : public Session, public std::enable_shared_from_this<HttpSess
 
   void respond(http::message_generator&& message) {
     const bool keep_alive = message.keep_alive();
+    // Bound a stalled client from the start of this write, not the request read.
+    stream_.expires_after(std::chrono::seconds(60));
     beast::async_write(stream_, std::move(message),
                        [self = shared_from_this(), keep_alive](beast::error_code ec, std::size_t) {
                          if (ec) return;
@@ -957,10 +962,12 @@ struct WebServer::Impl {
 WebServer::WebServer(std::string address, unsigned short port, std::filesystem::path web_root,
                      AsyncApiHandler api, std::vector<std::string> allowed_origins, std::string write_token,
                      std::vector<std::string> allowed_hosts, std::vector<NamedToken> tokens, bool require_token,
-                     std::shared_ptr<Sandboxes> sandboxes, std::string client_ip_header, std::shared_ptr<TokenFile> token_file)
+                     std::shared_ptr<Sandboxes> sandboxes, std::string client_ip_header, std::shared_ptr<TokenFile> token_file,
+                     std::chrono::steady_clock::duration read_timeout)
     : impl_(std::make_unique<Impl>()) {
   impl_->shared.web_root = std::move(web_root);
   impl_->shared.api = std::move(api);
+  impl_->shared.read_timeout = read_timeout;
   for (const auto& origin : allowed_origins) {
     if (!normalize_origin(origin)) throw std::invalid_argument("invalid allowed origin: " + origin);
   }

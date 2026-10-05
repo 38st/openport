@@ -5,6 +5,13 @@ construct a new instance. Engine startup failure stops the provider before its
 queue is destroyed. Server shutdown closes the listener and all HTTP/WebSocket
 sessions on their executors and drains cancellation handlers before joining.
 
+HTTP request reads have a 60-second deadline, including idle time between requests
+on a keep-alive connection. Once a request is fully read, that deadline is cleared
+while the engine prepares its response, including long replay operations. Each
+response write gets a fresh 60-second deadline; a successful keep-alive response
+starts a new request read deadline. `WebServer` callers can override `read_timeout`
+at construction without changing the response write deadline.
+
 Polling shutdown checks a shared atomic cancellation flag every 25 ms while
 connecting, handshaking TLS, writing, and reading. Pagination, ThetaData endpoint
 sequences, and open-interest refreshes check cancellation between requests.
