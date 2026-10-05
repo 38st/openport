@@ -10,6 +10,7 @@
 #include "openport/providers/replay_batches.hpp"
 #include "server/run_json.hpp"
 #include "support/recording.hpp"
+#include "support/sanitizer.hpp"
 #include "support/contract_capture.hpp"
 
 namespace {
@@ -279,6 +280,7 @@ TEST(Backtest, EntryReasonsRetainSpecificMissingConditions) {
   EXPECT_EQ(report.at("attempts")[0].at("entry_reasons"), expected);
 }
 TEST(Backtest, GeneratedDaysMatchSingleReplayAndParallelReportsAreByteIdentical) {
+  const test::SanitizerScenarioScale scale;
   test::RecordingFile storage;
   auto definitions = catalogue();
   definitions["definitions"]["batch"]["versions"][0]["structure"]["template"]["target"] = {{"mode", "delta"}, {"value", 15}};
@@ -1088,6 +1090,7 @@ TEST(Backtest, JointSelectorsValidateDistinctIdsAndPinLatest) {
   EXPECT_EQ(pinned.playbooks.at("definitions").at("alpha").at("versions").size(), 1U);
 }
 TEST(Backtest, JointGeneratedAccountSharesCapAndIsIdenticalAtOneAndEightWorkers) {
+  const test::SanitizerScenarioScale scale;
   test::RecordingFile storage;
   const auto definitions = joint_catalogue();
   const json body{{"playbooks", {"zeta@1", "alpha"}},
@@ -1111,7 +1114,7 @@ TEST(Backtest, JointGeneratedAccountSharesCapAndIsIdenticalAtOneAndEightWorkers)
   ASSERT_EQ(first.at("playbooks").size(), 2U);
   EXPECT_EQ(first.at("playbooks")[0].at("id"), "alpha");
   EXPECT_EQ(first.at("playbooks")[1].at("id"), "zeta");
-  request.workers = 8;
+  request.workers = test::sanitizer_scale(8U, 2U);
   const auto second = server::run_backtest(request, storage.directory / "eight", cancel);
   EXPECT_EQ(bytes(storage.directory / "one/report.json"), bytes(storage.directory / "eight/report.json"));
   EXPECT_EQ(first.dump(), second.dump());
@@ -1422,6 +1425,7 @@ TEST(Backtest, CliJointSelectorsRunDeterministicallyAndRejectInvalidLists) {
 }  // namespace
 
 TEST(Backtest, VolumeRuleAllowsOpeningFillsForGeneratedAndExplicitScenarioDays) {
+  const test::SanitizerScenarioScale scale;
   test::RecordingFile storage;
   const auto scenario = volume_scenario(storage.directory);
   auto definitions = catalogue();

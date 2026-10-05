@@ -14,6 +14,7 @@
 #include "openport/server/replay_host.hpp"
 #include "openport/server/run.hpp"
 #include "support/recording.hpp"
+#include "support/sanitizer.hpp"
 
 namespace {
 using namespace openport;
@@ -71,12 +72,25 @@ const trading::Order* find(const trading::TradingSnapshot& snapshot, const std::
 }
 
 TEST(MultiDayReplay, OneRunCarriesTheAccountThroughEverySessionAndItsJournalVerifies) {
+  const test::SanitizerScenarioScale scale;
   test::RecordingFile file;
   const auto source = file.directory / "carry.json";
-  { std::ofstream out(source); out << kCarry; }
+  {
+    std::ofstream out(source);
+    if (test::sanitizer_build()) {
+      // Keep two calendar rollovers as well as regular/curb/overnight transitions
+      // in the smaller recording; the assertions below still inspect Thursday.
+      auto carry = json::parse(kCarry);
+      for (int day = 0; day < 2; ++day)
+        carry["sessions"].push_back({{"session", "regular"}, {"drift", {{1, 0}}}});
+      out << carry;
+    } else {
+      out << kCarry;
+    }
+  }
   const auto scenario = providers::read_scenario(source);
   const auto windows = providers::scenario_windows(scenario, scenario.date);
-  ASSERT_EQ(windows.size(), 3U);
+  ASSERT_EQ(windows.size(), test::sanitizer_scale(3U, 5U));
   providers::write_scenario_recording(file.path, scenario, scenario.date, scenario.seed);
   const auto journal = file.directory / "run.jsonl";
   const auto* plan = server::find_plan("eod-100k");
@@ -114,8 +128,12 @@ TEST(MultiDayReplay, OneRunCarriesTheAccountThroughEverySessionAndItsJournalVeri
     // The run stops a few minutes into Thursday's overnight session: a stopped run
     // verifies through what it played.
     const auto stop = at(wednesday, 21, 1);
+    std::optional<providers::ReplayBatch> pending;
     while (const auto batch = batches.next()) {
-      if (batch->time > stop) break;
+      if (batch->time > stop) {
+        if (test::sanitizer_build()) pending = *batch;
+        break;
+      }
       for (const auto& event : batch->events)
         if (const auto* definition = std::get_if<md::ContractDefinition>(&event)) ids[definition->contract.osi_symbol()] = definition->id;
       desk.replay_batch(batch->events, batch->received, batch->time);
@@ -180,6 +198,16 @@ TEST(MultiDayReplay, OneRunCarriesTheAccountThroughEverySessionAndItsJournalVeri
     EXPECT_EQ(snapshot.dividends.front().ex_date, thursday);
     EXPECT_EQ(snapshot.dividends.front().shares, shares);
     EXPECT_EQ(snapshot.dividends.front().amount, Money::parse("1.75") * shares);
+    if (test::sanitizer_build()) {
+      ASSERT_TRUE(pending);
+      desk.replay_batch(pending->events, pending->received, pending->time);
+      while (const auto batch = batches.next()) {
+        desk.replay_batch(batch->events, batch->received, batch->time);
+        if (batch->time >= windows.back().first) break;
+      }
+      EXPECT_EQ(desk.trading_view()->snapshot->evaluation.day, (md::Date{2026, 9, 18}));
+      EXPECT_EQ(desk.trading_view()->snapshot->evaluation.days.size(), 2U);
+    }
     desk.stop();
   }
   // The first batch starts Wednesday; Thursday's overnight session rolls it over.
@@ -190,10 +218,14 @@ TEST(MultiDayReplay, OneRunCarriesTheAccountThroughEverySessionAndItsJournalVeri
     for (const auto& event : payload.at("events"))
       if (event.at("type") == "day_rollover") rollovers.emplace_back(event.at("payload").at("day"), record.time);
   }
-  ASSERT_EQ(rollovers.size(), 2U);
+  ASSERT_EQ(rollovers.size(), test::sanitizer_scale(2U, 3U));
   EXPECT_EQ(rollovers[0].first, json({{"year", 2026}, {"month", 9}, {"day", 16}}));
   EXPECT_EQ(rollovers[1].first, json({{"year", 2026}, {"month", 9}, {"day", 17}}));
   EXPECT_EQ(rollovers[1].second, windows[2].first);
+  if (test::sanitizer_build()) {
+    EXPECT_EQ(rollovers[2].first, json({{"year", 2026}, {"month", 9}, {"day", 18}}));
+    EXPECT_EQ(rollovers[2].second, windows[4].first);
+  }
   const auto verified = server::verify_run(journal);
   EXPECT_TRUE(verified.matched) << verified.message;
 }
@@ -327,6 +359,7 @@ TEST(MultiDayReplay, OpeningVolumeAdmitsCappedOrdersAndResetsOnTheNextDate) {
 }
 
 TEST(MultiDayReplay, EvaluationDeadlineFailsAfterItsLastDateAndRestartReproducesIt) {
+  const test::SanitizerScenarioScale scale;
   test::RecordingFile file;
   const auto scenarios = file.directory / "scenarios";
   std::filesystem::create_directory(scenarios);

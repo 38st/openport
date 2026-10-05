@@ -16,6 +16,7 @@
 #include "openport/pricing/binomial.hpp"
 #include "openport/providers/scenario.hpp"
 #include "openport/trading/types.hpp"
+#include "support/sanitizer.hpp"
 
 namespace {
 using namespace openport;
@@ -279,6 +280,9 @@ TEST(DemoMarket, LegacyRecordingsAreUnchanged) {
       {"trend", 11930710970999195785ULL}, {"chop", 10781388607768009831ULL},
       {"selloff", 16480548078743839308ULL}, {"overnight", 11921129588866157280ULL}};
   for (const auto& [id, hash] : expected) {
+    // Keep a full regular recording and the distinct overnight path under ASan;
+    // their pinned hashes are unchanged. Release checks all five full days.
+    if (test::sanitizer_build() && id != "reversal" && id != "overnight") continue;
     const auto& scenarios = providers::builtin_scenarios();
     const auto day = std::find_if(scenarios.begin(), scenarios.end(), [&](const auto& s) { return s.id == id; });
     ASSERT_NE(day, scenarios.end());
@@ -637,6 +641,7 @@ TEST(DemoMarket, AmMonthliesAndSameDatePmSeriesHaveSeparateLastTradingDays) {
 }
 
 TEST(DemoMarket, AmQuotesEndAtTheirLastRegularCloseBeforeCurbAndOvernight) {
+  const test::SanitizerScenarioScale scale;
   for (const auto& [date, root] : std::vector<std::pair<md::Date, std::string>>{
       {{2026, 9, 17}, "SPX"}, {{2026, 9, 15}, "VIX"}, {{2026, 9, 22}, "VIXW"}, {{2024, 6, 17}, "VIX"}}) {
     auto scenario = index_scenario();

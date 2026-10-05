@@ -12,6 +12,7 @@
 
 #include "trading/margin_detail.hpp"
 #include "openport/trading/session.hpp"
+#include "support/sanitizer.hpp"
 
 namespace openport::trading {
 namespace {
@@ -76,7 +77,8 @@ TEST(TradingMarginAllocation, SeededMixedExpirySubadditivityRate) {
         contracts.push_back(*md::parse_osi(std::string("SPY") + expiry + type + "00" + std::to_string(strike) + "000"));
   struct Counts { int checked = 0, pairing = 0, joint = 0; };
   Counts margin, ira;
-  for (int trial = 0; trial < 20736; ++trial) {
+  const int trials = test::sanitizer_scale(20736, 2048);
+  for (int trial = 0; trial < trials; ++trial) {
     const auto na = 2 + next() % 6, nb = 2 + next() % 6;
     auto shuffled = contracts;
     std::vector<MarginLeg> a, b, ab;
@@ -110,12 +112,12 @@ TEST(TradingMarginAllocation, SeededMixedExpirySubadditivityRate) {
     RecordProperty(std::string(name) + "_pairing_violations", count.pairing);
     RecordProperty(std::string(name) + "_joint_violations", count.joint);
   }
-  EXPECT_EQ(margin.checked, 20736);
-  EXPECT_EQ(ira.checked, 5423);
+  EXPECT_EQ(margin.checked, trials);
+  EXPECT_EQ(ira.checked, test::sanitizer_scale(5423, 525));
   // Before this change: pairing 34/47, joint 26/1 (margin/allowed IRA).
   // A bounded search is not universally subadditive. Lock the measured limits
   // while permitting future improvements; print both counts above on every run.
-  EXPECT_LE(margin.joint, 10);
+  EXPECT_LE(margin.joint, test::sanitizer_scale(10, 1));
   EXPECT_EQ(ira.joint, 0);
 }
 

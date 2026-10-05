@@ -117,6 +117,10 @@ if(OPENPORT_BUILD_PROVIDERS)
     providers/dxlink.cpp
   )
   add_library(openport::providers ALIAS openport_providers)
+  if(OPENPORT_BUILD_TESTS AND OPENPORT_SANITIZE)
+    # Only scoped test fixtures enable sampling; apps keep the full generator.
+    target_compile_definitions(openport_providers PRIVATE OPENPORT_SANITIZER_TEST_SUPPORT)
+  endif()
   target_link_libraries(openport_providers PUBLIC openport::recording)
   target_link_libraries(openport_providers
     PUBLIC openport::core openport::net nlohmann_json::nlohmann_json

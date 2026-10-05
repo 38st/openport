@@ -1,3 +1,4 @@
+#include "support/sanitizer.hpp"
 #include "support/contract_capture.hpp"
 #include <algorithm>
 #include <array>
@@ -688,6 +689,7 @@ TEST(Desk, DemoLateRestartDoesNotInventAnAmOpeningPrint) {
 }
 
 TEST(ReproducibleRun, AmOpeningSettlementIsGatedByDriverAndNamesScenarioOrRecording) {
+  const test::SanitizerScenarioScale scale;
   test::RecordingFile file;
   const auto source = file.directory / "am-overnight.json";
   {

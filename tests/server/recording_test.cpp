@@ -1,3 +1,4 @@
+#include "support/sanitizer.hpp"
 #include "support/recording.hpp"
 #include "support/scripted_market.hpp"
 
@@ -858,6 +859,7 @@ TEST(ReplayHost, AnInterruptedDriverSixRunResumesWhereItStoppedWithTheSameJourna
 }
 
 TEST(ReplayHost, InterruptedMultiSessionRunKeepsSessionsDividendsAndVerifiesAtTheEnd) {
+  const test::SanitizerScenarioScale scale;
   using nlohmann::json;
   test::RecordingFile file;
   const auto scenarios = file.directory / "scenarios";

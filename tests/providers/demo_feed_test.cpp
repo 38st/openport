@@ -1,3 +1,4 @@
+#include "support/sanitizer.hpp"
 #include "support/recording.hpp"
 
 #include <cerrno>
@@ -298,6 +299,7 @@ TEST(DemoFeed, RecoveredTimeResumesItsDateOrSelectsTheFollowingOne) {
 }
 
 TEST(DemoFeed, RotatesWithoutStoppedStatusPreservesIdsAndDeletesFiles) {
+  const test::SanitizerScenarioScale scale;
   auto clock = std::make_shared<DemoClock>();
   providers::DemoProvider provider(settings(clock));
   test::EventCollector sink;
@@ -413,6 +415,7 @@ TEST(DemoFeed, NoRecoveredMarketTimeKeepsTheDefaultFirstDate) {
 }
 
 TEST(DemoFeed, RestartAfterLatestMainOrNamedJournalStillFills) {
+  const test::SanitizerScenarioScale scale;
   for (const bool named_ahead : {false, true}) {
     SCOPED_TRACE(named_ahead ? "named account ahead" : "main account ahead");
     test::RecordingFile journals;
@@ -521,6 +524,7 @@ TEST(DemoFeed, RestartPartWayThroughADateResumesItAfterTheSavedTime) {
 }
 
 TEST(DemoFeed, GeneratedDividendsReachLiveSharesAndWarningsUnlessASourceIsExplicit) {
+  const test::SanitizerScenarioScale scale;
   for (const int mode : {0, 1, 2}) {
     SCOPED_TRACE(mode);  // generated, explicit empty source, legacy revision
     auto clock = std::make_shared<DemoClock>();
@@ -578,6 +582,7 @@ TEST(DemoFeed, GeneratedDividendsReachLiveSharesAndWarningsUnlessASourceIsExplic
 }
 
 TEST(DemoFeed, ConsecutiveDaysFillRollAndSettleWithLivePaperAccounts) {
+  const test::SanitizerScenarioScale scale;
   auto clock = std::make_shared<DemoClock>();
   providers::DemoProvider provider(settings(clock));
   test::RecordingFile journals;

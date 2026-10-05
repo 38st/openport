@@ -20,6 +20,9 @@ target_include_directories(openport_tests PRIVATE ${CMAKE_CURRENT_SOURCE_DIR} ${
 target_compile_definitions(openport_tests PRIVATE
   OPENPORT_VERSION="${PROJECT_VERSION}"
   OPENPORT_TEST_DATA_DIR="${CMAKE_CURRENT_SOURCE_DIR}/data")
+if(OPENPORT_SANITIZE)
+  target_compile_definitions(openport_tests PRIVATE OPENPORT_SANITIZER_BUILD)
+endif()
 
 if(OPENPORT_BUILD_PROVIDERS)
   target_sources(openport_tests PRIVATE
@@ -108,3 +111,8 @@ target_link_libraries(openport_tests PRIVATE openport::trading nlohmann_json::nl
 
 include(GoogleTest)
 gtest_discover_tests(openport_tests DISCOVERY_TIMEOUT 60)
+if(OPENPORT_SANITIZE)
+  # Run after discovery so COST can refer to the individual GoogleTest names.
+  set_property(DIRECTORY APPEND PROPERTY TEST_INCLUDE_FILES
+    "${CMAKE_CURRENT_SOURCE_DIR}/CTestCosts.cmake")
+endif()

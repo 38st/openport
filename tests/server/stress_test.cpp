@@ -1,3 +1,4 @@
+#include "support/sanitizer.hpp"
 #include "support/recording.hpp"
 
 #include <fstream>
@@ -187,6 +188,7 @@ TEST(StressReplay, AuthoredHaltMessagesUseNewYorkTimeAndTheRegularOrEarlyClose) 
 }
 
 TEST(StressReplay, WideChainKeepsStrikesNearSpotAfterLargeMoveAndReachesMarginFloors) {
+  const test::SanitizerScenarioScale scale;
   auto data = script();
   data["strike_window"] = 0.3;
   data["events"] = json::array({{{"type", "spike"}, {"at", "09:32"}, {"move", 0.16}, {"iv", 0}}});

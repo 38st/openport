@@ -1,6 +1,10 @@
 #include "openport/providers/demo.hpp"
 #include "openport/providers/scenario.hpp"
 
+#ifdef OPENPORT_SANITIZER_TEST_SUPPORT
+#include "scenario_sampling.hpp"
+#endif
+
 #include <algorithm>
 #include <array>
 #include <chrono>
@@ -658,6 +662,19 @@ void write_scenario_recording(const std::filesystem::path& path, const Scenario&
       const double rut = kRutOpen * std::exp(kRutBeta * (log_level - log_reference) + rut_idio);
       const double vix = vix_level(ratio, play.spot_vol, noise, play.iv_shift, event_iv);
       if (!after_close) { close_ndx = ndx; close_rut = rut; close_vix = vix; }
+#ifdef OPENPORT_SANITIZER_TEST_SUPPORT
+      // Still advance every random draw and latent price. Only the repeated
+      // chain pricing/publication is sampled, so opens and closing levels keep
+      // their original path. Authored event edges must also have live snapshots.
+      if (!detail::keep_scenario_snapshot(now, w)) {
+        const bool event_edge = std::any_of(play.events.begin(), play.events.end(), [&](const auto& event) {
+          if (event.type == "gap") return false;
+          const auto at = event_time(event, w), end = event_time(event, w, true);
+          return std::abs(now - at) <= w.step || std::abs(now - end) <= w.step;
+        });
+        if (!event_edge) continue;
+      }
+#endif
       if (regular) {
         if (!after_close)
           for (const auto& [symbol, price] : std::array<std::pair<const char*, double>, 4>{{
