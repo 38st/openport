@@ -4,7 +4,8 @@
 # CTest's private, writable Testing/Temporary/CTestCostData.txt cache.
 # Discovery order (and therefore -I shard membership) remains unchanged.
 function(openport_test_cost name seconds)
-  if("${name}" IN_LIST openport_tests_TESTS)
+  list(FIND openport_tests_TESTS "${name}" index)
+  if(NOT index EQUAL -1)
     set_tests_properties("${name}" PROPERTIES COST "${seconds}")
   endif()
 endfunction()
