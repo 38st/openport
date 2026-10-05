@@ -23,8 +23,13 @@ CI runs on every push and pull request: the C++ suite with GCC 13 on Ubuntu 24.0
 Apple Clang on macOS, both with `-DOPENPORT_WERROR=ON`, again under AddressSanitizer
 and UndefinedBehaviorSanitizer with GCC 13, the web checks, the Python client and a
 Docker smoke test. The sanitizer job uses four parallel runners, each running
-every fourth discovered CTest test with four local processes. All tests keep their
-full-size inputs; none are excluded. Its `RelWithDebInfo` flags are `-O1 -g1 -DNDEBUG`
+every fourth discovered CTest test with four local processes, using checked-in
+CTest cost hints to start expensive tests first. Under `OPENPORT_SANITIZE`, the
+slow generated-feed, multi-session replay and backtest fixtures sample intraday
+snapshots while retaining openings, event edges and session boundaries; legacy
+recording checks sample fewer days and the seeded margin sweep uses fewer trials.
+No tests are excluded, and the regular GCC, macOS and local builds retain the
+full-size workloads. Its `RelWithDebInfo` flags are `-O1 -g1 -DNDEBUG`
 to reduce compile time while retaining function names and source lines in sanitizer
 backtraces. To reproduce a shard after configuring with the workflow's flags, run
 `ctest --test-dir build -j 4 --output-on-failure --no-tests=error -I 1,,4`

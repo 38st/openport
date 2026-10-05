@@ -112,8 +112,9 @@ jobs:
           TMPDIR: ${{ runner.temp }}
           ASAN_OPTIONS: detect_leaks=1:abort_on_error=1
           UBSAN_OPTIONS: print_stacktrace=1:halt_on_error=1
-        # Interleave the complete discovered suite across runners, including
-        # full-size generation tests. Every test belongs to exactly one shard.
+        # Interleave the complete discovered suite across runners. Sanitizer
+        # fixtures scale repeated work; no test is excluded. tests/CTestCosts.cmake
+        # starts expensive tests first within each shard without changing its IDs.
         run: >
           ctest --test-dir build -j 4 --output-on-failure --timeout 1500
           --no-tests=error -I ${{ matrix.shard }},,${{ strategy.job-total }}
