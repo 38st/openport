@@ -4,6 +4,7 @@
 
 #include <boost/asio/io_context.hpp>
 #include <boost/asio/ip/tcp.hpp>
+#include <boost/asio/steady_timer.hpp>
 #include <boost/beast/core.hpp>
 #include <boost/beast/http.hpp>
 #include <boost/beast/websocket.hpp>
@@ -12,6 +13,7 @@
 #include <condition_variable>
 #include <future>
 #include <thread>
+#include <utility>
 #include <vector>
 
 #include "openport/server/sandboxes.hpp"
@@ -322,6 +324,108 @@ TEST(WebPolicy, FailedWebServerStartStillConsumesTheSingleStartAttempt) {
 }
 
 namespace {
+TEST(WebServer, AsyncResponsesOutliveReadTimeoutAndKeepAlive) {
+  for (const auto& [method, target] : {std::pair{http::verb::get, "/api/replay"},
+                                      std::pair{http::verb::get, "/api/replay/history"},
+                                      std::pair{http::verb::put, "/api/replay"}}) {
+    SCOPED_TRACE(std::string(http::to_string(method)) + " " + target);
+    std::promise<server::ApiCompletion> pending;
+    auto completion = pending.get_future();
+    server::WebServer web("127.0.0.1", 0, {},
+        [&](const server::ApiRequest& request, server::ApiCompletion complete) {
+          if (request.target == "/api/status") complete({200, "{}"});
+          else pending.set_value(std::move(complete));
+        }, {}, {}, {}, {}, false, {}, {}, {}, std::chrono::seconds(1));
+    web.start(1);
+    asio::io_context io;
+    beast::tcp_stream connection(io);
+    connection.connect({asio::ip::make_address("127.0.0.1"), web.port()});
+    http::request<http::string_body> request{method, target, 11};
+    request.set(http::field::host, "localhost");
+    if (method == http::verb::put) {
+      request.set(http::field::content_type, "application/json");
+      request.body() = R"({"until":"next"})";
+    }
+    request.prepare_payload();
+    http::write(connection, request);
+    ASSERT_EQ(completion.wait_for(std::chrono::seconds(10)), std::future_status::ready);
+
+    // Delay only the completion, leaving the server's single I/O thread free.
+    // Start after dispatch so the wait certainly exceeds the request read budget.
+    const auto body = nlohmann::json{{"data", std::string(128 * 1024, 'x')}}.dump();
+    asio::steady_timer delay(io, std::chrono::seconds(2));
+    delay.async_wait([complete = completion.get(), body](beast::error_code ec) {
+      if (!ec) complete({200, body});
+    });
+    beast::flat_buffer buffer;
+    http::response<http::string_body> response;
+    beast::error_code read_error;
+    connection.expires_after(std::chrono::seconds(10));
+    http::async_read(connection, buffer, response,
+                     [&](beast::error_code ec, std::size_t) { read_error = ec; });
+    io.run();
+    ASSERT_FALSE(read_error) << read_error.message();
+    EXPECT_EQ(response.result_int(), 200);
+    EXPECT_EQ(response.body(), body);
+    EXPECT_TRUE(response.keep_alive());
+
+    // The same connection remains usable after the slow response, including
+    // honoring a subsequent Connection: close request.
+    http::request<http::empty_body> next{http::verb::get, "/api/status", 11};
+    next.set(http::field::host, "localhost");
+    next.keep_alive(false);
+    http::write(connection, next);
+    response = {};
+    connection.expires_after(std::chrono::seconds(10));
+    http::async_read(connection, buffer, response,
+                     [&](beast::error_code ec, std::size_t) { read_error = ec; });
+    io.restart();
+    io.run();
+    ASSERT_FALSE(read_error) << read_error.message();
+    EXPECT_EQ(response.result_int(), 200);
+    EXPECT_EQ(response.body(), "{}");
+    EXPECT_FALSE(response.keep_alive());
+  }
+}
+
+TEST(WebServer, IdleKeepAliveConnectionClosesAfterReadTimeout) {
+  server::WebServer web("127.0.0.1", 0, {},
+      [](const server::ApiRequest&) { return server::ApiResponse{200, "{}"}; },
+      {}, {}, {}, {}, false, {}, {}, {}, std::chrono::seconds(1));
+  web.start(1);
+  asio::io_context io;
+  beast::tcp_stream connection(io);
+  connection.connect({asio::ip::make_address("127.0.0.1"), web.port()});
+  http::request<http::empty_body> request{http::verb::get, "/api/status", 11};
+  request.set(http::field::host, "localhost");
+  const auto started = std::chrono::steady_clock::now();
+  http::write(connection, request);
+  beast::flat_buffer buffer;
+  http::response<http::string_body> response;
+  beast::error_code read_error;
+  connection.expires_after(std::chrono::seconds(10));
+  http::async_read(connection, buffer, response,
+                   [&](beast::error_code ec, std::size_t) { read_error = ec; });
+  io.run();
+  ASSERT_FALSE(read_error) << read_error.message();
+  ASSERT_EQ(response.result_int(), 200);
+  ASSERT_TRUE(response.keep_alive());
+
+  // Wait for the server to close the idle connection. A separate client deadline
+  // bounds failures; a client-side timeout must not count as a server close.
+  char byte;
+  connection.expires_after(std::chrono::seconds(10));
+  connection.async_read_some(asio::buffer(&byte, 1),
+      [&](beast::error_code ec, std::size_t bytes) {
+        read_error = ec;
+        EXPECT_EQ(bytes, 0u);
+      });
+  io.restart();
+  io.run();
+  EXPECT_EQ(read_error, asio::error::eof) << read_error.message();
+  EXPECT_GE(std::chrono::steady_clock::now() - started, std::chrono::seconds(1));
+}
+
 TEST(WebServer, AsyncPostDeleteRoundTripsAndSecurityHeaders) {
   std::mutex mutex;
   std::condition_variable ready;
