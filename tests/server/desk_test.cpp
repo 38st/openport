@@ -2240,47 +2240,73 @@ TEST(ReplayRun, StopCancelsAndJoinsBackgroundVerification) {
 TEST(ReplayRun, HistoryWaitsForTheStoppingJournalsFinalSync) {
   test::RecordingFile file;
   write_stream(file.path, true);
-  std::promise<void> syncing, release;
+  std::promise<void> syncing, release, complete_order;
   auto entered = syncing.get_future();
   const auto released = release.get_future().share();
+  const auto order_released = complete_order.get_future().share();
+  std::promise<server::ApiResponse> ordered;
+  auto order = ordered.get_future();
   std::atomic<bool> hold{false};
+  std::atomic<unsigned> syncs{0};
   server::Engine::Options options;
   options.paper_journal = file.directory / "main.jsonl";
   options.analytics.fallback_rate = 0;
   options.journal_io.clock = [] { return std::chrono::steady_clock::time_point{}; };
   options.journal_io.sync = [&](int) {
+    ++syncs;
     if (hold.exchange(false)) { syncing.set_value(); released.wait(); }
     return true;
   };
   server::ReplayHost host({file.directory, options, false});
   const auto started = replay_call(host, "POST", "/api/replay", {{"file", "session.oprec"}, {"speed", 1}, {"paused", true}});
   ASSERT_EQ(started.status, 201) << started.body;
+  const auto id = json::parse(started.body).at("replay").at("id");
   ASSERT_TRUE(test::recording_eventually([&] { return !json::parse(host.tick()).at("replay").at("fast_forwarding").get<bool>(); }));
-  const auto paused_time = json::parse(host.tick()).at("replay").at("settled_through");
-  ASSERT_EQ(replay_call(host, "PUT", "/api/replay", {{"paused", false}}).status, 200);
-  // A pending pause barrier can still flush the next command. A resumed batch
-  // proves that barrier has completed before we leave an unsynced record.
-  ASSERT_TRUE(test::recording_eventually([&] {
-    return json::parse(host.tick()).at("replay").at("settled_through") != paused_time;
-  }));
-  // This command records input even if the order is rejected. Leave it unsynced.
+  // Drain the initial pause barrier and keep playback idle, with no batch in flight.
+  ASSERT_EQ(replay_call(host, "PUT", "/api/replay", {{"paused", true}}).status, 200);
+  // The owner thread invokes completion after recording the command, before its
+  // paused-loop flush. Hold it here so the last record stays unsynced until stop
+  // owns the history handoff; merely arming a hook before stop can catch the
+  // pause flush triggered by stop's abort(), before it acquires that lock.
   const test::ScriptedMarket market;
-  const auto ordered = replay_call(host, "POST", "/api/replay/orders", {{"client_order_id", "before-stop"}, {"symbol", market.symbol()},
-      {"side", "buy"}, {"type", "market"}, {"quantity", 1}, {"time_in_force", "ioc"}});
-  ASSERT_EQ(ordered.status, 201) << ordered.body;
+  server::ApiRequest request{"POST", "/api/replay/orders", json{{"client_order_id", "before-stop"}, {"symbol", market.symbol()},
+      {"side", "buy"}, {"type", "market"}, {"quantity", 1}, {"time_in_force", "ioc"}}.dump()};
+  request.content_type = "application/json";
+  request.actor = "test-actor";
+  ASSERT_TRUE(host.handle(request, [&](server::ApiResponse response) {
+    const bool accepted = response.status == 201;
+    ordered.set_value(std::move(response));
+    if (accepted) order_released.wait();
+  }));
+  const auto order_waiting = order.wait_for(5min);
+  if (order_waiting != std::future_status::ready) complete_order.set_value();
+  ASSERT_EQ(order_waiting, std::future_status::ready);
+  const auto order_response = order.get();
+  ASSERT_EQ(order_response.status, 201) << order_response.body;
   hold = true;
   auto stopping = std::async(std::launch::async, [&] { host.stop(); });
+  // stop_session removes the active session only after acquiring handoff_mutex_,
+  // which it holds through the engine's final sync and history finalization.
+  const bool retiring = test::recording_eventually([&] { return host.tick().empty(); });
+  complete_order.set_value();
+  EXPECT_TRUE(retiring);
+  if (!retiring) { release.set_value(); stopping.get(); return; }
   // Wait for the sync itself; the deadline only guards against a stuck worker.
   const auto waiting = entered.wait_for(5min);
   EXPECT_EQ(waiting, std::future_status::ready);
   if (waiting != std::future_status::ready) { release.set_value(); stopping.get(); return; }
+  const auto final_syncs = syncs.load();
   auto listing = std::async(std::launch::async, [&] { return replay_call(host, "GET", "/api/replay"); });
   EXPECT_EQ(listing.wait_for(20ms), std::future_status::timeout);
   release.set_value();
   stopping.get();
+  EXPECT_EQ(syncs.load(), final_syncs);
   const auto response = listing.get();
   ASSERT_EQ(response.status, 200) << response.body;
-  EXPECT_EQ(json::parse(response.body).at("history").size(), 1U);
+  const auto body = json::parse(response.body);
+  EXPECT_TRUE(body.at("replay").is_null());
+  ASSERT_EQ(body.at("history").size(), 1U);
+  EXPECT_EQ(body.at("history").at(0).at("id"), id);
 }
 
 // B17 and D16: a step runs on the host's control thread, so neither its caller nor a
